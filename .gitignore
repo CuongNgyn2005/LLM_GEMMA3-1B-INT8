@@ -1,0 +1,29 @@
+# Vivado generated files
+*.wdb
+*.jou
+*.log
+*.pb
+*.str
+*.zip
+*.tar
+*.tar.gz
+
+.Xil/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+
+# Simulation outputs
+xsim.dir/
+*.vcd
+*.fst
+*.saif
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

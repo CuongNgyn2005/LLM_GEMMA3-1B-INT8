@@ -1,0 +1,364 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+-----------------------------------------------------------------------------------------
+| Tool Version      : Vivado v.2022.2 (win64) Build 3671981 Fri Oct 14 05:00:03 MDT 2022
+| Date              : Tue Jun  2 11:36:00 2026
+| Host              : Cuong-Desktop running 64-bit major release  (build 9200)
+| Command           : report_timing_summary -file vpu_synth_timing_300mhz.rpt
+| Design            : VPU_Top
+| Device            : xczu7ev-ffvc1156
+| Speed File        : -2  PRODUCTION 1.30 05-15-2022
+| Temperature Grade : E
+-----------------------------------------------------------------------------------------
+
+Timing Summary Report
+
+------------------------------------------------------------------------------------------------
+| Timer Settings
+| --------------
+------------------------------------------------------------------------------------------------
+
+  Enable Multi Corner Analysis               :  Yes
+  Enable Pessimism Removal                   :  Yes
+  Pessimism Removal Resolution               :  Nearest Common Node
+  Enable Input Delay Default Clock           :  No
+  Enable Preset / Clear Arcs                 :  No
+  Disable Flight Delays                      :  No
+  Ignore I/O Paths                           :  No
+  Timing Early Launch at Borrowing Latches   :  No
+  Borrow Time for Max Delay Exceptions       :  Yes
+  Merge Timing Exceptions                    :  Yes
+
+  Corner  Analyze    Analyze    
+  Name    Max Paths  Min Paths  
+  ------  ---------  ---------  
+  Slow    Yes        Yes        
+  Fast    Yes        Yes        
+
+
+------------------------------------------------------------------------------------------------
+| Report Methodology
+| ------------------
+------------------------------------------------------------------------------------------------
+
+No report available as report_methodology has not been run prior. Run report_methodology on the current design for the summary of methodology violations.
+
+
+
+check_timing report
+
+Table of Contents
+-----------------
+1. checking no_clock (0)
+2. checking constant_clock (0)
+3. checking pulse_width_clock (0)
+4. checking unconstrained_internal_endpoints (0)
+5. checking no_input_delay (278)
+6. checking no_output_delay (36)
+7. checking multiple_clock (0)
+8. checking generated_clocks (0)
+9. checking loops (0)
+10. checking partial_input_delay (0)
+11. checking partial_output_delay (0)
+12. checking latch_loops (0)
+
+1. checking no_clock (0)
+------------------------
+ There are 0 register/latch pins with no clock.
+
+
+2. checking constant_clock (0)
+------------------------------
+ There are 0 register/latch pins with constant_clock.
+
+
+3. checking pulse_width_clock (0)
+---------------------------------
+ There are 0 register/latch pins which need pulse_width check
+
+
+4. checking unconstrained_internal_endpoints (0)
+------------------------------------------------
+ There are 0 pins that are not constrained for maximum delay.
+
+ There are 0 pins that are not constrained for maximum delay due to constant clock.
+
+
+5. checking no_input_delay (278)
+--------------------------------
+ There are 278 input ports with no input delay specified. (HIGH)
+
+ There are 0 input ports with no input delay but user has a false path constraint.
+
+
+6. checking no_output_delay (36)
+--------------------------------
+ There are 36 ports with no output delay specified. (HIGH)
+
+ There are 0 ports with no output delay but user has a false path constraint
+
+ There are 0 ports with no output delay but with a timing clock defined on it or propagating through it
+
+
+7. checking multiple_clock (0)
+------------------------------
+ There are 0 register/latch pins with multiple clocks.
+
+
+8. checking generated_clocks (0)
+--------------------------------
+ There are 0 generated clocks that are not connected to a clock source.
+
+
+9. checking loops (0)
+---------------------
+ There are 0 combinational loops in the design.
+
+
+10. checking partial_input_delay (0)
+------------------------------------
+ There are 0 input ports with partial input delay specified.
+
+
+11. checking partial_output_delay (0)
+-------------------------------------
+ There are 0 ports with partial output delay specified.
+
+
+12. checking latch_loops (0)
+----------------------------
+ There are 0 combinational latch loops in the design through latch input
+
+
+
+------------------------------------------------------------------------------------------------
+| Design Timing Summary
+| ---------------------
+------------------------------------------------------------------------------------------------
+
+    WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
+    -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
+      0.510        0.000                      0                 1585       -0.070      -42.011                    889                 1585        1.391        0.000                       0                  1099  
+
+
+Timing constraints are not met.
+
+
+------------------------------------------------------------------------------------------------
+| Clock Summary
+| -------------
+------------------------------------------------------------------------------------------------
+
+Clock    Waveform(ns)         Period(ns)      Frequency(MHz)
+-----    ------------         ----------      --------------
+vpu_clk  {0.000 1.666}        3.333           300.030         
+
+
+------------------------------------------------------------------------------------------------
+| Intra Clock Table
+| -----------------
+------------------------------------------------------------------------------------------------
+
+Clock             WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
+-----             -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
+vpu_clk             0.510        0.000                      0                 1585       -0.070      -42.011                    889                 1585        1.391        0.000                       0                  1099  
+
+
+------------------------------------------------------------------------------------------------
+| Inter Clock Table
+| -----------------
+------------------------------------------------------------------------------------------------
+
+From Clock    To Clock          WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints  
+----------    --------          -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------  
+
+
+------------------------------------------------------------------------------------------------
+| Other Path Groups Table
+| -----------------------
+------------------------------------------------------------------------------------------------
+
+Path Group    From Clock    To Clock          WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints  
+----------    ----------    --------          -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------  
+
+
+------------------------------------------------------------------------------------------------
+| Timing Details
+| --------------
+------------------------------------------------------------------------------------------------
+
+
+---------------------------------------------------------------------------------------------------
+From Clock:  vpu_clk
+  To Clock:  vpu_clk
+
+Setup :            0  Failing Endpoints,  Worst Slack        0.510ns,  Total Violation        0.000ns
+Hold  :          889  Failing Endpoints,  Worst Slack       -0.070ns,  Total Violation      -42.011ns
+PW    :            0  Failing Endpoints,  Worst Slack        1.391ns,  Total Violation        0.000ns
+---------------------------------------------------------------------------------------------------
+
+
+Max Delay Paths
+--------------------------------------------------------------------------------------
+Slack (MET) :             0.510ns  (required time - arrival time)
+  Source:                 u_pmau/dequant_mul/DSP_A_B_DATA_INST/CLK
+                            (rising edge-triggered cell DSP_A_B_DATA clocked by vpu_clk  {rise@0.000ns fall@1.666ns period=3.333ns})
+  Destination:            u_pmau/deq_s2_value_reg[31]/D
+                            (rising edge-triggered cell FDRE clocked by vpu_clk  {rise@0.000ns fall@1.666ns period=3.333ns})
+  Path Group:             vpu_clk
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            3.333ns  (vpu_clk rise@3.333ns - vpu_clk rise@0.000ns)
+  Data Path Delay:        2.668ns  (logic 2.388ns (89.505%)  route 0.280ns (10.495%))
+  Logic Levels:           8  (DSP_ALU=2 DSP_M_DATA=1 DSP_MULTIPLIER=1 DSP_OUTPUT=2 DSP_PREADD_DATA=1 LUT3=1)
+  Clock Path Skew:        -0.145ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    2.927ns = ( 6.260 - 3.333 ) 
+    Source Clock Delay      (SCD):    3.355ns
+    Clock Pessimism Removal (CPR):    0.283ns
+  Clock Uncertainty:      0.035ns  ((TSJ^2 + TIJ^2)^1/2 + DJ) / 2 + PE
+    Total System Jitter     (TSJ):    0.071ns
+    Total Input Jitter      (TIJ):    0.000ns
+    Discrete Jitter          (DJ):    0.000ns
+    Phase Error              (PE):    0.000ns
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock vpu_clk rise edge)    0.000     0.000 r  
+                                                      0.000     0.000 r  CLK (IN)
+                         net (fo=0)                   0.000     0.000    CLK_IBUF_inst/I
+                         INBUF (Prop_INBUF_PAD_O)     0.582     0.582 r  CLK_IBUF_inst/INBUF_INST/O
+                         net (fo=1, unplaced)         0.000     0.582    CLK_IBUF_inst/OUT
+                         IBUFCTRL (Prop_IBUFCTRL_I_O)
+                                                      0.000     0.582 r  CLK_IBUF_inst/IBUFCTRL_INST/O
+                         net (fo=1, unplaced)         0.161     0.743    CLK_IBUF
+                         BUFGCE (Prop_BUFGCE_I_O)     0.028     0.771 r  CLK_IBUF_BUFG_inst/O
+                         net (fo=1108, unplaced)      2.584     3.355    u_pmau/dequant_mul/CLK
+                         DSP_A_B_DATA                                 r  u_pmau/dequant_mul/DSP_A_B_DATA_INST/CLK
+  -------------------------------------------------------------------    -------------------
+                         DSP_A_B_DATA (Prop_DSP_A_B_DATA_CLK_B2_DATA[17])
+                                                      0.212     3.567 r  u_pmau/dequant_mul/DSP_A_B_DATA_INST/B2_DATA[17]
+                         net (fo=1, unplaced)         0.000     3.567    u_pmau/dequant_mul/DSP_A_B_DATA.B2_DATA<17>
+                         DSP_PREADD_DATA (Prop_DSP_PREADD_DATA_B2_DATA[17]_B2B1[17])
+                                                      0.073     3.640 r  u_pmau/dequant_mul/DSP_PREADD_DATA_INST/B2B1[17]
+                         net (fo=1, unplaced)         0.000     3.640    u_pmau/dequant_mul/DSP_PREADD_DATA.B2B1<17>
+                         DSP_MULTIPLIER (Prop_DSP_MULTIPLIER_B2B1[17]_V[43])
+                                                      0.609     4.249 f  u_pmau/dequant_mul/DSP_MULTIPLIER_INST/V[43]
+                         net (fo=1, unplaced)         0.000     4.249    u_pmau/dequant_mul/DSP_MULTIPLIER.V<43>
+                         DSP_M_DATA (Prop_DSP_M_DATA_V[43]_V_DATA[43])
+                                                      0.046     4.295 r  u_pmau/dequant_mul/DSP_M_DATA_INST/V_DATA[43]
+                         net (fo=1, unplaced)         0.000     4.295    u_pmau/dequant_mul/DSP_M_DATA.V_DATA<43>
+                         DSP_ALU (Prop_DSP_ALU_V_DATA[43]_ALU_OUT[47])
+                                                      0.571     4.866 f  u_pmau/dequant_mul/DSP_ALU_INST/ALU_OUT[47]
+                         net (fo=1, unplaced)         0.000     4.866    u_pmau/dequant_mul/DSP_ALU.ALU_OUT<47>
+                         DSP_OUTPUT (Prop_DSP_OUTPUT_ALU_OUT[47]_PCOUT[47])
+                                                      0.122     4.988 r  u_pmau/dequant_mul/DSP_OUTPUT_INST/PCOUT[47]
+                         net (fo=1, unplaced)         0.014     5.002    u_pmau/dequant_mul__0/PCIN[47]
+                         DSP_ALU (Prop_DSP_ALU_PCIN[47]_ALU_OUT[29])
+                                                      0.546     5.548 f  u_pmau/dequant_mul__0/DSP_ALU_INST/ALU_OUT[29]
+                         net (fo=1, unplaced)         0.000     5.548    u_pmau/dequant_mul__0/DSP_ALU.ALU_OUT<29>
+                         DSP_OUTPUT (Prop_DSP_OUTPUT_ALU_OUT[29]_P[29])
+                                                      0.109     5.657 r  u_pmau/dequant_mul__0/DSP_OUTPUT_INST/P[29]
+                         net (fo=1, unplaced)         0.218     5.875    u_pmau/dequant_mul__0_n_76
+                         LUT3 (Prop_LUT3_I2_O)        0.100     5.975 r  u_pmau/deq_s2_value[31]_i_1/O
+                         net (fo=1, unplaced)         0.048     6.023    u_pmau/result_final_value[31]
+                         FDRE                                         r  u_pmau/deq_s2_value_reg[31]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock vpu_clk rise edge)    3.333     3.333 r  
+                                                      0.000     3.333 r  CLK (IN)
+                         net (fo=0)                   0.000     3.333    CLK_IBUF_inst/I
+                         INBUF (Prop_INBUF_PAD_O)     0.331     3.664 r  CLK_IBUF_inst/INBUF_INST/O
+                         net (fo=1, unplaced)         0.000     3.664    CLK_IBUF_inst/OUT
+                         IBUFCTRL (Prop_IBUFCTRL_I_O)
+                                                      0.000     3.664 r  CLK_IBUF_inst/IBUFCTRL_INST/O
+                         net (fo=1, unplaced)         0.133     3.797    CLK_IBUF
+                         BUFGCE (Prop_BUFGCE_I_O)     0.024     3.821 r  CLK_IBUF_BUFG_inst/O
+                         net (fo=1108, unplaced)      2.439     6.260    u_pmau/CLK_IBUF_BUFG
+                         FDRE                                         r  u_pmau/deq_s2_value_reg[31]/C
+                         clock pessimism              0.283     6.543    
+                         clock uncertainty           -0.035     6.508    
+                         FDRE (Setup_FDRE_C_D)        0.025     6.533    u_pmau/deq_s2_value_reg[31]
+  -------------------------------------------------------------------
+                         required time                          6.533    
+                         arrival time                          -6.023    
+  -------------------------------------------------------------------
+                         slack                                  0.510    
+
+
+
+
+
+Min Delay Paths
+--------------------------------------------------------------------------------------
+Slack (VIOLATED) :        -0.070ns  (arrival time - required time)
+  Source:                 u_pmau/mult_pipe_reg[0][9]/C
+                            (rising edge-triggered cell FDRE clocked by vpu_clk  {rise@0.000ns fall@1.666ns period=3.333ns})
+  Destination:            u_pmau/sum_pipe_reg[0][0][10]/D
+                            (rising edge-triggered cell FDRE clocked by vpu_clk  {rise@0.000ns fall@1.666ns period=3.333ns})
+  Path Group:             vpu_clk
+  Path Type:              Hold (Min at Fast Process Corner)
+  Requirement:            0.000ns  (vpu_clk rise@0.000ns - vpu_clk rise@0.000ns)
+  Data Path Delay:        0.121ns  (logic 0.068ns (56.198%)  route 0.053ns (43.802%))
+  Logic Levels:           1  (CARRY8=1)
+  Clock Path Skew:        0.145ns (DCD - SCD - CPR)
+    Destination Clock Delay (DCD):    1.763ns
+    Source Clock Delay      (SCD):    1.413ns
+    Clock Pessimism Removal (CPR):    0.205ns
+
+    Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
+  -------------------------------------------------------------------    -------------------
+                         (clock vpu_clk rise edge)    0.000     0.000 r  
+                                                      0.000     0.000 r  CLK (IN)
+                         net (fo=0)                   0.000     0.000    CLK_IBUF_inst/I
+                         INBUF (Prop_INBUF_PAD_O)     0.216     0.216 r  CLK_IBUF_inst/INBUF_INST/O
+                         net (fo=1, unplaced)         0.000     0.216    CLK_IBUF_inst/OUT
+                         IBUFCTRL (Prop_IBUFCTRL_I_O)
+                                                      0.000     0.216 r  CLK_IBUF_inst/IBUFCTRL_INST/O
+                         net (fo=1, unplaced)         0.066     0.282    CLK_IBUF
+                         BUFGCE (Prop_BUFGCE_I_O)     0.017     0.299 r  CLK_IBUF_BUFG_inst/O
+                         net (fo=1108, unplaced)      1.114     1.413    u_pmau/CLK_IBUF_BUFG
+                         FDRE                                         r  u_pmau/mult_pipe_reg[0][9]/C
+  -------------------------------------------------------------------    -------------------
+                         FDRE (Prop_FDRE_C_Q)         0.037     1.450 r  u_pmau/mult_pipe_reg[0][9]/Q
+                         net (fo=2, unplaced)         0.046     1.496    u_pmau/mult_pipe_reg_n_0_[0][9]
+                         CARRY8 (Prop_CARRY8_DI[1]_O[2])
+                                                      0.031     1.527 r  u_pmau/sum_pipe_reg[0][0][15]_i_1/O[2]
+                         net (fo=1, unplaced)         0.007     1.534    u_pmau/sum_comb[0][0][10]
+                         FDRE                                         r  u_pmau/sum_pipe_reg[0][0][10]/D
+  -------------------------------------------------------------------    -------------------
+
+                         (clock vpu_clk rise edge)    0.000     0.000 r  
+                                                      0.000     0.000 r  CLK (IN)
+                         net (fo=0)                   0.000     0.000    CLK_IBUF_inst/I
+                         INBUF (Prop_INBUF_PAD_O)     0.402     0.402 r  CLK_IBUF_inst/INBUF_INST/O
+                         net (fo=1, unplaced)         0.000     0.402    CLK_IBUF_inst/OUT
+                         IBUFCTRL (Prop_IBUFCTRL_I_O)
+                                                      0.000     0.402 r  CLK_IBUF_inst/IBUFCTRL_INST/O
+                         net (fo=1, unplaced)         0.083     0.485    CLK_IBUF
+                         BUFGCE (Prop_BUFGCE_I_O)     0.019     0.504 r  CLK_IBUF_BUFG_inst/O
+                         net (fo=1108, unplaced)      1.259     1.763    u_pmau/CLK_IBUF_BUFG
+                         FDRE                                         r  u_pmau/sum_pipe_reg[0][0][10]/C
+                         clock pessimism             -0.205     1.558    
+                         FDRE (Hold_FDRE_C_D)         0.046     1.604    u_pmau/sum_pipe_reg[0][0][10]
+  -------------------------------------------------------------------
+                         required time                         -1.604    
+                         arrival time                           1.534    
+  -------------------------------------------------------------------
+                         slack                                 -0.070    
+
+
+
+
+
+Pulse Width Checks
+--------------------------------------------------------------------------------------
+Clock Name:         vpu_clk
+Waveform(ns):       { 0.000 1.666 }
+Period(ns):         3.333
+Sources:            { CLK }
+
+Check Type        Corner  Lib Pin   Reference Pin  Required(ns)  Actual(ns)  Slack(ns)  Location  Pin
+Min Period        n/a     BUFGCE/I  n/a            1.290         3.333       2.043                CLK_IBUF_BUFG_inst/I
+Low Pulse Width   Slow    FDRE/C    n/a            0.275         1.666       1.391                status_state_reg[0]/C
+High Pulse Width  Slow    FDRE/C    n/a            0.275         1.667       1.392                status_state_reg[0]/C
+
+
+
