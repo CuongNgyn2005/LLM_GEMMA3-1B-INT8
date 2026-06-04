@@ -1,4 +1,6 @@
-# Yêu Cầu Viết Testbench cho module VPU_Top (AXI-Stream)
+# Legacy Testbench Prompt for VPU_Top (obsolete AXI-Stream direction)
+
+Note: file nay la prompt cu truoc khi VPU duoc doi sang AXI4-Full. Testbench hien tai cua VPU dung AXI4-Full; PMAU_Full chi dung valid/ready noi bo.
 
 ## Mục tiêu:
 Viết một module testbench (`tb_VPU_Top.v`) bằng Verilog để kiểm tra tính đúng đắn của khối `VPU_Top`. Khối này sử dụng giao diện AXI-Stream thuần túy.

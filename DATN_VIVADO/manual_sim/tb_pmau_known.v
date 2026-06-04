@@ -27,7 +27,7 @@ module tb_pmau_known;
 
     always #5 clk = ~clk;
 
-    PMAU_Streaming #(
+    PMAU_Full #(
         .NUM_LANES(NUM_LANES),
         .ACT_WIDTH(ACT_WIDTH),
         .WEIGHT_WIDTH(WEIGHT_WIDTH),

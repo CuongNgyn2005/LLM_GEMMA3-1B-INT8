@@ -4,12 +4,12 @@
 
 This directory contains comprehensive testbenches for verifying the VPU (Vector Processing Unit) RTL design:
 
-1. **tb_PMAU_Streaming.v** - Unit testbench for PMAU_Streaming core
+1. **tb_PMAU_Full.v** - Unit testbench for PMAU_Full core
 2. **tb_VPU_Top.v** - Integration testbench for VPU_Top module
 
 ## Test Coverage
 
-### tb_PMAU_Streaming.v
+### tb_PMAU_Full.v
 
 Tests the parallel multiply-accumulate unit with streaming interface.
 
@@ -64,8 +64,8 @@ Tests the complete VPU with FSM-controlled streaming.
 1. Open Vivado 2023.2 (or compatible version)
 2. File → Create Project
 3. Add sources:
-   - RTL: `../RTL/PMAU_Streaming.v`, `../RTL/VPU_Top.v`
-   - Testbench: `tb_VPU_Top.v` or `tb_PMAU_Streaming.v`
+   - RTL: `../RTL/PMAU_Full.v`, `../RTL/VPU_Top.v`
+   - Testbench: `tb_VPU_Top.v` or `tb_PMAU_Full.v`
 4. Tools → Run Simulation → Run Behavioral Simulation
 5. View waveforms in Wave window
 
@@ -75,18 +75,18 @@ Tests the complete VPU with FSM-controlled streaming.
 - Xilinx Vivado 2023.2+ installed
 - Bash shell (Linux/macOS) or PowerShell (Windows)
 
-**Run PMAU_Streaming testbench:**
+**Run PMAU_Full testbench:**
 ```bash
 cd TESTBENCH
-xvlog -work xsim_work ../RTL/PMAU_Streaming.v ../RTL/VPU_Top.v tb_PMAU_Streaming.v
-xelab -work xsim_work -top tb_PMAU_Streaming tb_PMAU_Streaming
-xsim -work xsim_work tb_PMAU_Streaming
+xvlog -work xsim_work ../RTL/PMAU_Full.v ../RTL/VPU_Top.v tb_PMAU_Full.v
+xelab -work xsim_work -top tb_PMAU_Full tb_PMAU_Full
+xsim -work xsim_work tb_PMAU_Full
 ```
 
 **Run VPU_Top testbench:**
 ```bash
 cd TESTBENCH
-xvlog -work xsim_work ../RTL/PMAU_Streaming.v ../RTL/VPU_Top.v tb_VPU_Top.v
+xvlog -work xsim_work ../RTL/PMAU_Full.v ../RTL/VPU_Top.v tb_VPU_Top.v
 xelab -work xsim_work -top tb_VPU_Top tb_VPU_Top
 xsim -work xsim_work tb_VPU_Top
 ```
@@ -100,8 +100,8 @@ chmod +x run_simulation.sh
 # Run VPU_Top testbench (default)
 ./run_simulation.sh tb_VPU_Top
 
-# Run PMAU_Streaming testbench
-./run_simulation.sh tb_PMAU_Streaming
+# Run PMAU_Full testbench
+./run_simulation.sh tb_PMAU_Full
 
 # Run with debug/waveform output
 ./run_simulation.sh tb_VPU_Top 2
@@ -118,7 +118,7 @@ $rtl_dir = "..\RTL"
 $tb_name = "tb_VPU_Top"
 
 # Compile and run
-& "$vivado_path\xvlog.bat" -work xsim_work "$rtl_dir\PMAU_Streaming.v" "$rtl_dir\VPU_Top.v" "$tb_name.v"
+& "$vivado_path\xvlog.bat" -work xsim_work "$rtl_dir\PMAU_Full.v" "$rtl_dir\VPU_Top.v" "$tb_name.v"
 & "$vivado_path\xelab.bat" -work xsim_work -top $tb_name $tb_name
 & "$vivado_path\xsim.bat" -work xsim_work $tb_name
 ```
@@ -130,11 +130,11 @@ Then run:
 
 ## Expected Output
 
-### For tb_PMAU_Streaming.v
+### For tb_PMAU_Full.v
 
 ```
 [TB] ============================================================
-[TB] PMAU_Streaming Unit Test Started
+[TB] PMAU_Full Unit Test Started
 [TB] Configuration: NUM_LANES=16, VEC_SIZE=64, NUM_BEATS=4
 [TB] Clock Period: 10 ns (100.0 MHz)
 [TB] ============================================================
@@ -256,7 +256,7 @@ If a test fails:
 
 ## Architecture Details
 
-### PMAU_Streaming Pipeline
+### PMAU_Full Pipeline
 
 ```
 Input (Beat 0-3)
@@ -311,7 +311,7 @@ parameter CLOCK_PERIOD = 10;      // 100 MHz (10ns)
 
 ## Known Limitations
 
-1. **Dequantization**: Currently a placeholder in PMAU_Streaming
+1. **Dequantization**: Currently a placeholder in PMAU_Full
    - FP16 multiply IP needs to be integrated
    - Tests verify accumulation, not dequantization accuracy
 
@@ -333,7 +333,7 @@ Based on testbench execution:
 
 ## Future Enhancements
 
-1. Add protocol checker for AXI-Stream compliance
+1. Add protocol checker for internal valid/ready handshake compliance
 2. Parameterize NUM_LANES and test with 8, 32 lanes
 3. Add code coverage metrics
 4. Formal property verification (SVA assertions)

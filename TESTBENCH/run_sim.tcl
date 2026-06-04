@@ -7,8 +7,8 @@
 #   2. File → Create Project
 #   3. Set project directory to: TESTBENCH/vivado_proj
 #   4. Add sources:
-#        - RTL: ../RTL/PMAU_Streaming.v, ../RTL/VPU_Top.v
-#        - Testbench: tb_VPU_Top.v (or tb_PMAU_Streaming.v)
+#        - RTL: ../RTL/PMAU_Full.v, ../RTL/VPU_Top.v
+#        - Testbench: tb_VPU_Top.v (or tb_PMAU_Full.v)
 #   5. Tools → Run Tcl Script
 #   6. Select this file: run_sim.tcl
 #
@@ -51,7 +51,7 @@ if {![file exists "$proj_dir/$proj_name.xpr"]} {
 
 puts "\[SOURCES\] Adding RTL files..."
 add_files -norecurse -force {
-    ../RTL/PMAU_Streaming.v
+    ../RTL/PMAU_Full.v
     ../RTL/VPU_Top.v
 }
 

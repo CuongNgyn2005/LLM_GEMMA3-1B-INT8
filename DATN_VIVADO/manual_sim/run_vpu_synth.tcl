@@ -1,4 +1,4 @@
-read_verilog ../../RTL/PMAU_Streaming.v
+read_verilog ../../RTL/PMAU_Full.v
 read_verilog ../../RTL/VPU_Top.v
 
 synth_design -top VPU_Top -part xczu7ev-ffvc1156-2-e

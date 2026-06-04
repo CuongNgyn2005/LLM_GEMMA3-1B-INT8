@@ -8,7 +8,7 @@
 #   ./run_simulation.sh <testbench_name> [verbosity_level]
 #
 # Supported testbenches:
-#   - tb_PMAU_Streaming     (Unit test for PMAU core)
+#   - tb_PMAU_Full     (Unit test for PMAU core)
 #   - tb_VPU_Top            (Integration test for VPU)
 #
 # Verbosity levels:
@@ -78,7 +78,7 @@ print_status "Compiling RTL sources with xvlog..."
 
 # Compile RTL modules
 xvlog -work xsim_work \
-    "${RTL_DIR}/PMAU_Streaming.v" \
+    "${RTL_DIR}/PMAU_Full.v" \
     "${RTL_DIR}/VPU_Top.v" \
     2>&1 | tee -a "${LOG_DIR}/compile.log"
 

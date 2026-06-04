@@ -1,4 +1,4 @@
-read_verilog ../../RTL/PMAU_Streaming.v
+read_verilog ../../RTL/PMAU_Full.v
 read_verilog ../../RTL/Matrix_Vector_Multiplication.v
 read_verilog ../../RTL/MY_IP.v
 read_verilog ../../RTL/VPU_Top.v

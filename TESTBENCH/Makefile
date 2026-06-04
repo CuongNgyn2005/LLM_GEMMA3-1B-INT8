@@ -3,7 +3,7 @@
 # ============================================================================
 # 
 # Usage:
-#   make tb_pmau          - Run PMAU_Streaming testbench
+#   make tb_pmau          - Run PMAU_Full testbench
 #   make tb_vpu           - Run VPU_Top testbench
 #   make all              - Run all testbenches
 #   make clean            - Remove simulation artifacts
@@ -34,13 +34,13 @@ XSIM := $(VIVADO_PATH)/bin/xsim
 WORK := xsim_work
 
 # RTL and TB files
-PMAU_STREAMING_RTL := $(RTL_DIR)/PMAU_Streaming.v
+PMAU_Full_RTL := $(RTL_DIR)/PMAU_Full.v
 VPU_TOP_RTL := $(RTL_DIR)/VPU_Top.v
-TB_PMAU := $(TB_DIR)/tb_PMAU_Streaming.v
+TB_PMAU := $(TB_DIR)/tb_PMAU_Full.v
 TB_VPU := $(TB_DIR)/tb_VPU_Top.v
 
 # Testbench names
-TB_PMAU_NAME := tb_PMAU_Streaming
+TB_PMAU_NAME := tb_PMAU_Full
 TB_VPU_NAME := tb_VPU_Top
 
 # ============================================================================
@@ -59,7 +59,7 @@ help:
 	@echo "Targets:"
 	@echo "  make help          - Show this help message"
 	@echo "  make setup         - Create simulation directories"
-	@echo "  make tb_pmau       - Run PMAU_Streaming testbench"
+	@echo "  make tb_pmau       - Run PMAU_Full testbench"
 	@echo "  make tb_vpu        - Run VPU_Top testbench"
 	@echo "  make all           - Run all testbenches"
 	@echo "  make clean         - Remove all simulation artifacts"
@@ -86,17 +86,17 @@ setup:
 	@echo "[SETUP] Done."
 
 # ============================================================================
-# PMAU_Streaming Testbench
+# PMAU_Full Testbench
 # ============================================================================
 
 tb_pmau: setup
 	@echo ""
 	@echo "============================================================================"
-	@echo "Running PMAU_Streaming Testbench"
+	@echo "Running PMAU_Full Testbench"
 	@echo "============================================================================"
 	@echo "[COMPILE] Compiling RTL sources..."
 	@cd $(SIM_DIR) && $(XVLOG) -work $(WORK) \
-		$(abspath $(PMAU_STREAMING_RTL)) \
+		$(abspath $(PMAU_Full_RTL)) \
 		$(abspath $(VPU_TOP_RTL)) \
 		2>&1 | tee -a $(abspath $(LOG_DIR))/pmau_compile.log
 	@if [ $$? -ne 0 ]; then echo "[ERROR] Compilation failed!"; exit 1; fi
@@ -134,7 +134,7 @@ tb_vpu: setup
 	@echo "============================================================================"
 	@echo "[COMPILE] Compiling RTL sources..."
 	@cd $(SIM_DIR) && $(XVLOG) -work $(WORK) \
-		$(abspath $(PMAU_STREAMING_RTL)) \
+		$(abspath $(PMAU_Full_RTL)) \
 		$(abspath $(VPU_TOP_RTL)) \
 		2>&1 | tee -a $(abspath $(LOG_DIR))/vpu_compile.log
 	@if [ $$? -ne 0 ]; then echo "[ERROR] Compilation failed!"; exit 1; fi

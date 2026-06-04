@@ -1,18 +1,19 @@
 /*
  *-----------------------------------------------------------------------------
- * Module      : PMAU_Streaming
- * Description : Streaming parallel multiply-accumulate unit for the VPU.
+ * Module      : PMAU_Full
+ * Description : Internal parallel multiply-accumulate unit for the VPU.
  *
  * This block consumes one paired activation/weight beat per cycle when both
- * input AXI-Stream channels are valid.  The datapath is fully pipelined:
+ * internal activation/weight valid signals are asserted.  The datapath is
+ * fully pipelined:
  *
  *   Stage 0          : NUM_LANES signed INT8 x INT8 multiplies
  *   Stage 1..log2(N) : registered binary adder tree
  *   Commit stage     : row accumulator, fixed-point dequant, result FIFO
  *
  * Throughput is one input beat per clock while the result FIFO has enough
- * space for completed rows already in flight.  The result channel obeys AXI
- * valid/ready semantics: result_valid stays asserted until result_ready.
+ * space for completed rows already in flight.  The result channel uses a
+ * simple valid/ready handshake internal to the AXI4-Full VPU wrapper.
  *
  * Notes:
  * - NUM_LANES must be a power of two.  16/32/64/128 are the intended values.
@@ -27,7 +28,7 @@
 
 `timescale 1ns/1ps
 
-module PMAU_Streaming #(
+module PMAU_Full #(
     parameter NUM_LANES          = 16,
     parameter ACT_WIDTH          = 8,
     parameter WEIGHT_WIDTH       = 8,
@@ -43,13 +44,13 @@ module PMAU_Streaming #(
     // Control
     input  wire [1:0]                        compute_mode,
 
-    // Activation input, AXI-Stream slave
+    // Activation input, internal valid/ready beat
     input  wire [ACT_WIDTH*NUM_LANES-1:0]    activation_data,
     input  wire                              activation_valid,
     output wire                              activation_ready,
     input  wire                              activation_last,
 
-    // Weight input, AXI-Stream slave
+    // Weight input, internal valid/ready beat
     input  wire [WEIGHT_WIDTH*NUM_LANES-1:0] weight_data,
     input  wire [SCALE_WIDTH-1:0]            scale_factor,
     input  wire                              weight_valid,
@@ -59,7 +60,7 @@ module PMAU_Streaming #(
     // Reserved for future AXPY mode
     input  wire [15:0]                       scalar_axpy,
 
-    // Result output, AXI-Stream master
+    // Result output, internal valid/ready beat
     output wire [ACC_WIDTH-1:0]              result_data,
     output wire                              result_valid,
     input  wire                              result_ready,

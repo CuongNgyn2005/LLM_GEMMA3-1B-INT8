@@ -12,12 +12,12 @@
 
 - ✅ **tb_VPU_Top.v** (579 lines)
   - Integration testbench for VPU_Top module
-  - Tests AXI-Stream interface compliance
+  - Tests internal valid/ready handshake behavior
   - Golden model for self-checking
   - 2 test cases: Ideal streaming + Backpressure
 
-- ✅ **tb_PMAU_Streaming.v** (480 lines)
-  - Unit testbench for PMAU_Streaming core
+- ✅ **tb_PMAU_Full.v** (480 lines)
+  - Unit testbench for PMAU_Full core
   - Tests multiply-accumulate pipeline
   - Pipeline latency measurement
   - 3 test cases: Single DOT, Multiple, Input stalling
@@ -78,7 +78,7 @@
 - Lanes: 16 (4 beats per row)
 - Clock: 100 MHz (10ns period)
 
-### tb_PMAU_Streaming.v Test Cases
+### tb_PMAU_Full.v Test Cases
 
 | Test Case | Description | Status |
 |-----------|-------------|--------|
@@ -101,7 +101,7 @@
 
 ### Functionality
 
-1. **AXI-Stream Compliance**
+1. **Internal Valid/Ready Handshake**
    - Proper tvalid/tready handshaking
    - tlast signal handling for token boundaries
    - Ready/valid propagation
@@ -148,7 +148,7 @@ cd h:\DATN\DATN_RTL\TESTBENCH
 $vivado = "C:\Xilinx\Vivado\2023.2\bin"
 $rtl = "..\RTL"
 mkdir -Force .\sim\xsim_work | Out-Null
-& "$vivado\xvlog.bat" -work .\sim\xsim_work $rtl\PMAU_Streaming.v $rtl\VPU_Top.v .\tb_VPU_Top.v
+& "$vivado\xvlog.bat" -work .\sim\xsim_work $rtl\PMAU_Full.v $rtl\VPU_Top.v .\tb_VPU_Top.v
 & "$vivado\xelab.bat" -work .\sim\xsim_work -top tb_VPU_Top tb_VPU_Top
 & "$vivado\xsim.bat" -work .\sim\xsim_work tb_VPU_Top
 ```
@@ -166,7 +166,7 @@ mkdir -Force .\sim\xsim_work | Out-Null
 ```bash
 cd TESTBENCH
 make tb_vpu      # Run VPU_Top
-make tb_pmau     # Run PMAU_Streaming
+make tb_pmau     # Run PMAU_Full
 make all         # Run both
 make clean       # Clean artifacts
 ```
@@ -212,10 +212,10 @@ make clean       # Clean artifacts
 [TB] [PASS] All tests passed!
 ```
 
-### tb_PMAU_Streaming Output
+### tb_PMAU_Full Output
 ```
 [TB] ============================================================
-[TB] PMAU_Streaming Unit Test Started
+[TB] PMAU_Full Unit Test Started
 [TB] Configuration: NUM_LANES=16, VEC_SIZE=64, NUM_BEATS=4
 [TB] Clock Period: 10 ns (100.0 MHz)
 [TB] ============================================================
@@ -244,7 +244,7 @@ make clean       # Clean artifacts
 
 ## 🔍 Verification Points
 
-### AXI-Stream Compliance
+### Internal Valid/Ready Handshake
 - ✅ Ready/Valid handshaking
 - ✅ tlast signal marking token boundaries
 - ✅ tready back-pressure handling
@@ -267,7 +267,7 @@ make clean       # Clean artifacts
 
 ## 📈 Metrics Captured
 
-### PMAU_Streaming
+### PMAU_Full
 - Pipeline latency: ~5-7 cycles
 - Throughput: 1 result per (NUM_BEATS × CLOCK_PERIOD) + latency
 - Accuracy: Exact INT32 match with golden model
@@ -285,7 +285,7 @@ make clean       # Clean artifacts
 | File | Lines | Purpose |
 |------|-------|---------|
 | tb_VPU_Top.v | 579 | Integration testbench with 2 test cases |
-| tb_PMAU_Streaming.v | 480 | Unit testbench with 3 test cases |
+| tb_PMAU_Full.v | 480 | Unit testbench with 3 test cases |
 | README_TESTBENCH.md | 450+ | Full documentation & debugging guide |
 | QUICKSTART_WINDOWS.md | 300+ | Windows quick start & PowerShell guide |
 | run_simulation.sh | 150+ | Linux/macOS bash automation |
@@ -302,7 +302,7 @@ make clean       # Clean artifacts
 ## ✨ Highlights
 
 1. **Two-Level Testing**
-   - Unit tests (PMAU_Streaming core)
+   - Unit tests (PMAU_Full core)
    - Integration tests (VPU_Top with FSM)
 
 2. **Golden Model Self-Checking**
@@ -332,7 +332,7 @@ make clean       # Clean artifacts
 ## 🎓 Learning Resources
 
 Each testbench demonstrates:
-- AXI-Stream protocol implementation
+- Internal valid/ready protocol implementation
 - Behavioral simulation in Verilog
 - Self-checking test methodology
 - Pipeline latency measurement
@@ -355,13 +355,13 @@ Each testbench demonstrates:
    - Adjust parameters if needed
 
 3. **Integrate into Block Design**
-   - Add PMAU_Streaming and VPU_Top to Vivado IP
+   - Add PMAU_Full and VPU_Top to Vivado IP
    - Connect to AXI DMA
    - Run co-simulation with testbenches
 
 4. **Implement Dequantization IP**
    - Add FP16 multiply core
-   - Integrate into PMAU_Streaming output
+   - Integrate into PMAU_Full output
    - Extend testbenches to verify FP16 output
 
 5. **System Integration**

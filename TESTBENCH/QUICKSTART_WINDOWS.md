@@ -47,7 +47,7 @@ $rtl = "..\RTL"
 mkdir -Force .\sim | Out-Null
 
 # Compile
-& "$vivado\xvlog.bat" -work .\sim\xsim_work $rtl\PMAU_Streaming.v $rtl\VPU_Top.v .\tb_VPU_Top.v
+& "$vivado\xvlog.bat" -work .\sim\xsim_work $rtl\PMAU_Full.v $rtl\VPU_Top.v .\tb_VPU_Top.v
 
 # Elaborate
 & "$vivado\xelab.bat" -work .\sim\xsim_work -top tb_VPU_Top tb_VPU_Top
@@ -56,12 +56,12 @@ mkdir -Force .\sim | Out-Null
 & "$vivado\xsim.bat" -work .\sim\xsim_work tb_VPU_Top
 ```
 
-For **PMAU_Streaming** testbench (unit test):
+For **PMAU_Full** testbench (unit test):
 ```powershell
-# Same steps, but use tb_PMAU_Streaming.v at the end
-& "$vivado\xvlog.bat" -work .\sim\xsim_work $rtl\PMAU_Streaming.v $rtl\VPU_Top.v .\tb_PMAU_Streaming.v
-& "$vivado\xelab.bat" -work .\sim\xsim_work -top tb_PMAU_Streaming tb_PMAU_Streaming
-& "$vivado\xsim.bat" -work .\sim\xsim_work tb_PMAU_Streaming
+# Same steps, but use tb_PMAU_Full.v at the end
+& "$vivado\xvlog.bat" -work .\sim\xsim_work $rtl\PMAU_Full.v $rtl\VPU_Top.v .\tb_PMAU_Full.v
+& "$vivado\xelab.bat" -work .\sim\xsim_work -top tb_PMAU_Full tb_PMAU_Full
+& "$vivado\xsim.bat" -work .\sim\xsim_work tb_PMAU_Full
 ```
 
 **Expected Output:**
@@ -107,7 +107,7 @@ function Compile-RTL {
     mkdir -Force $log_dir | Out-Null
     
     & "$vivado_path\xvlog.bat" -work $work_dir `
-        "$rtl_dir\PMAU_Streaming.v" `
+        "$rtl_dir\PMAU_Full.v" `
         "$rtl_dir\VPU_Top.v" `
         "$tb.v" | Tee-Object -FilePath "$log_dir\compile.log"
     
@@ -190,8 +190,8 @@ Write-Host "====================================================================
 # Run VPU_Top testbench
 .\run_test.ps1 -testbench "tb_VPU_Top"
 
-# Run PMAU_Streaming testbench
-.\run_test.ps1 -testbench "tb_PMAU_Streaming"
+# Run PMAU_Full testbench
+.\run_test.ps1 -testbench "tb_PMAU_Full"
 
 # Clean and run fresh
 .\run_test.ps1 -testbench "tb_VPU_Top" -action "both"
@@ -251,7 +251,7 @@ Write-Host "====================================================================
   - Simulates slow downstream (random tready drops)
   - Verifies data integrity under realistic conditions
 
-**tb_PMAU_Streaming.v:**
+**tb_PMAU_Full.v:**
 - **Test 1**: Single DOT product
   - Measures pipeline latency (~6 cycles)
   - Verifies correct INT8×INT8 → INT32 accumulation
@@ -331,7 +331,7 @@ parameter CLOCK_PERIOD = 10;      // 10ns = 100MHz
 
 1. ✅ Run testbenches to verify RTL logic
 2. 📊 Review waveforms for timing/handshaking
-3. 🔧 Integrate PMAU_Streaming into Vivado Block Design
+3. 🔧 Integrate PMAU_Full into Vivado Block Design
 4. 🚀 Implement dequantization IP for FP16 output
 5. 📈 Run full system integration tests
 

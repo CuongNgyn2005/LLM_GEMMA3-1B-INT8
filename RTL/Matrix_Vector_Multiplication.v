@@ -6,7 +6,7 @@
  *
  * The AXI wrapper writes tensor data into these memory windows, configures the
  * active matrix size, then pulses ctrl_start.  The compute path feeds one
- * NUM_LANES-wide INT8 activation/weight beat per clock into PMAU_Streaming
+ * NUM_LANES-wide INT8 activation/weight beat per clock into PMAU_Full
  * after the first BRAM read latency cycle.  Results are stored one row per
  * 128-bit result word, using the low ACC_WIDTH bits.
  *
@@ -169,7 +169,7 @@ module Matrix_Vector_Multiplication #(
     assign active_row      = row_idx_r;
     assign active_col_beat = read_beat_idx_r;
 
-    PMAU_Streaming #(
+    PMAU_Full #(
         .NUM_LANES         (NUM_LANES),
         .ACT_WIDTH         (ACT_WIDTH),
         .WEIGHT_WIDTH      (WEIGHT_WIDTH),

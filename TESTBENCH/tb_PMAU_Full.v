@@ -1,9 +1,9 @@
 /*
  *-----------------------------------------------------------------------------
- * Description   : Unit testbench for PMAU_Streaming module
+ * Description   : Unit testbench for PMAU_Full module
  *                 - Tests parallel multiply-accumulate with pipelined adder tree
  *                 - Verifies DOT product computation for INT8 inputs
- *                 - Tests AXI-Stream interface compliance
+ *                 - Tests internal valid/ready handshake behavior
  *                 - Tests accumulation across multiple data beats
  *                 - Golden model verification
  *
@@ -17,7 +17,7 @@
 
 `timescale 1ns/1ps
 
-module tb_PMAU_Streaming;
+module tb_PMAU_Full;
 
     //-------------------------------------//
     //        Test Parameters              //
@@ -95,7 +95,7 @@ module tb_PMAU_Streaming;
     //   DUT Instantiation                 //
     //-------------------------------------//
     
-    PMAU_Streaming #(
+    PMAU_Full #(
         .NUM_LANES(NUM_LANES),
         .ACT_WIDTH(ACT_WIDTH),
         .WEIGHT_WIDTH(WEIGHT_WIDTH),
@@ -161,7 +161,7 @@ module tb_PMAU_Streaming;
         repeat (5) @(posedge clk);
         
         $display("[TB] ============================================================");
-        $display("[TB] PMAU_Streaming Unit Test Started");
+        $display("[TB] PMAU_Full Unit Test Started");
         $display("[TB] Configuration: NUM_LANES=%0d, VEC_SIZE=%0d, NUM_BEATS=%0d",
                  NUM_LANES, VEC_SIZE, NUM_BEATS);
         $display("[TB] Clock Period: %0d ns (%.1f MHz)", 
