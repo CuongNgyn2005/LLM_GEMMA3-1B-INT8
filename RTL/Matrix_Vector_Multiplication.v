@@ -80,6 +80,9 @@ module Matrix_Vector_Multiplication #(
     localparam ACT_BEAT_WIDTH       = NUM_LANES * ACT_WIDTH;
     localparam WEIGHT_BEAT_WIDTH    = NUM_LANES * WEIGHT_WIDTH;
     localparam AXI_BYTE_COUNT       = AXI_DATA_WIDTH / 8;
+    localparam ACT_BYTE_COUNT       = ACT_BEAT_WIDTH / 8;
+    localparam WEIGHT_BYTE_COUNT    = WEIGHT_BEAT_WIDTH / 8;
+    localparam RESULT_BYTE_COUNT    = ACC_WIDTH / 8;
     localparam ACT_ADDR_WIDTH       = clog2(MAX_COL_BEATS);
     localparam RESULT_ADDR_WIDTH    = clog2(MAX_ROWS);
     localparam WEIGHT_DEPTH         = MAX_ROWS * MAX_COL_BEATS;
@@ -103,15 +106,11 @@ module Matrix_Vector_Multiplication #(
     localparam [2:0] S_DONE         = 3'd3;
     localparam [2:0] S_ERROR        = 3'd4;
 
-    (* ram_style = "block" *) reg [ACT_BEAT_WIDTH-1:0]    act_mem    [0:MAX_COL_BEATS-1];
-    (* ram_style = "block" *) reg [WEIGHT_BEAT_WIDTH-1:0] weight_mem [0:WEIGHT_DEPTH-1];
-    (* ram_style = "block" *) reg [ACC_WIDTH-1:0]         result_mem [0:MAX_ROWS-1];
-
-    reg [ACT_BEAT_WIDTH-1:0]    act_compute_data;
-    reg [WEIGHT_BEAT_WIDTH-1:0] weight_compute_data;
+    wire [ACT_BEAT_WIDTH-1:0]   act_compute_data;
+    wire [WEIGHT_BEAT_WIDTH-1:0] weight_compute_data;
     reg [ACT_BEAT_WIDTH-1:0]    act_pmau_data;
     reg [WEIGHT_BEAT_WIDTH-1:0] weight_pmau_data;
-    reg [ACC_WIDTH-1:0]         result_cpu_rd_data;
+    wire [ACC_WIDTH-1:0]        result_cpu_rd_data;
     reg [ACT_ADDR_WIDTH-1:0]    act_compute_addr;
     reg [WEIGHT_ADDR_WIDTH-1:0] weight_compute_addr;
     reg                         compute_rd_en;
@@ -213,39 +212,70 @@ module Matrix_Vector_Multiplication #(
         (mm_rd_region == REGION_RESULT);
     wire rd_index_ok = result_rd_hit;
 
-    integer act_byte_i;
-    always @(posedge CLK) begin
-        if (act_wr_hit) begin
-            for (act_byte_i = 0; act_byte_i < AXI_BYTE_COUNT; act_byte_i = act_byte_i + 1)
-                if (mm_wr_strb[act_byte_i] && (act_byte_i < (ACT_BEAT_WIDTH/8)))
-                    act_mem[mm_wr_index[ACT_ADDR_WIDTH-1:0]][8*act_byte_i +: 8]
-                        <= mm_wr_data[8*act_byte_i +: 8];
-        end
+    wire [ACT_BYTE_COUNT-1:0]    act_wr_strobe =
+        mm_wr_strb[ACT_BYTE_COUNT-1:0];
+    wire [WEIGHT_BYTE_COUNT-1:0] weight_wr_strobe =
+        mm_wr_strb[WEIGHT_BYTE_COUNT-1:0];
+    wire [RESULT_BYTE_COUNT-1:0] result_wr_strobe =
+        {RESULT_BYTE_COUNT{pmau_result_fire && (row_idx_r < MAX_ROWS_16)}};
 
-        if (compute_rd_en)
-            act_compute_data <= act_mem[act_compute_addr];
-    end
+    wire [ACT_BEAT_WIDTH-1:0]    act_cpu_rd_unused;
+    wire [WEIGHT_BEAT_WIDTH-1:0] weight_cpu_rd_unused;
+    wire [ACC_WIDTH-1:0]         result_compute_rd_unused;
 
-    integer weight_byte_i;
-    always @(posedge CLK) begin
-        if (weight_wr_hit) begin
-            for (weight_byte_i = 0; weight_byte_i < AXI_BYTE_COUNT; weight_byte_i = weight_byte_i + 1)
-                if (mm_wr_strb[weight_byte_i] && (weight_byte_i < (WEIGHT_BEAT_WIDTH/8)))
-                    weight_mem[mm_wr_index[WEIGHT_ADDR_WIDTH-1:0]][8*weight_byte_i +: 8]
-                        <= mm_wr_data[8*weight_byte_i +: 8];
-        end
+    Dual_Port_BRAM #(
+        .AWIDTH (ACT_ADDR_WIDTH),
+        .DWIDTH (ACT_BEAT_WIDTH)
+    ) u_act_bram (
+        .clka  (CLK),
+        .ena   (act_wr_hit),
+        .wea   (act_wr_strobe),
+        .addra (mm_wr_index[ACT_ADDR_WIDTH-1:0]),
+        .dina  (mm_wr_data[ACT_BEAT_WIDTH-1:0]),
+        .douta (act_cpu_rd_unused),
+        .clkb  (CLK),
+        .enb   (compute_rd_en),
+        .web   ({ACT_BYTE_COUNT{1'b0}}),
+        .addrb (act_compute_addr),
+        .dinb  ({ACT_BEAT_WIDTH{1'b0}}),
+        .doutb (act_compute_data)
+    );
 
-        if (compute_rd_en)
-            weight_compute_data <= weight_mem[weight_compute_addr];
-    end
+    Dual_Port_BRAM #(
+        .AWIDTH (WEIGHT_ADDR_WIDTH),
+        .DWIDTH (WEIGHT_BEAT_WIDTH)
+    ) u_weight_bram (
+        .clka  (CLK),
+        .ena   (weight_wr_hit),
+        .wea   (weight_wr_strobe),
+        .addra (mm_wr_index[WEIGHT_ADDR_WIDTH-1:0]),
+        .dina  (mm_wr_data[WEIGHT_BEAT_WIDTH-1:0]),
+        .douta (weight_cpu_rd_unused),
+        .clkb  (CLK),
+        .enb   (compute_rd_en),
+        .web   ({WEIGHT_BYTE_COUNT{1'b0}}),
+        .addrb (weight_compute_addr),
+        .dinb  ({WEIGHT_BEAT_WIDTH{1'b0}}),
+        .doutb (weight_compute_data)
+    );
 
-    always @(posedge CLK) begin
-        if (pmau_result_fire && (row_idx_r < MAX_ROWS_16))
-            result_mem[row_idx_r[RESULT_ADDR_WIDTH-1:0]] <= pmau_result_data;
-
-        if (result_rd_hit)
-            result_cpu_rd_data <= result_mem[mm_rd_index[RESULT_ADDR_WIDTH-1:0]];
-    end
+    Dual_Port_BRAM #(
+        .AWIDTH (RESULT_ADDR_WIDTH),
+        .DWIDTH (ACC_WIDTH)
+    ) u_result_bram (
+        .clka  (CLK),
+        .ena   (result_rd_hit),
+        .wea   ({RESULT_BYTE_COUNT{1'b0}}),
+        .addra (mm_rd_index[RESULT_ADDR_WIDTH-1:0]),
+        .dina  ({ACC_WIDTH{1'b0}}),
+        .douta (result_cpu_rd_data),
+        .clkb  (CLK),
+        .enb   (pmau_result_fire && (row_idx_r < MAX_ROWS_16)),
+        .web   (result_wr_strobe),
+        .addrb (row_idx_r[RESULT_ADDR_WIDTH-1:0]),
+        .dinb  (pmau_result_data),
+        .doutb (result_compute_rd_unused)
+    );
 
     always @(posedge CLK) begin
         if (!RST) begin

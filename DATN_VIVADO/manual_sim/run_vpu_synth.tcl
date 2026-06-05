@@ -1,3 +1,4 @@
+read_verilog ../../RTL/Dual_Port_BRAM.v
 read_verilog ../../RTL/PMAU_Full.v
 read_verilog ../../RTL/VPU_Top.v
 
