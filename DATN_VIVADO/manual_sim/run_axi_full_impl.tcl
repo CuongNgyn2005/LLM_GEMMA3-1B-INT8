@@ -1,6 +1,7 @@
 read_verilog ../../RTL/Dual_Port_BRAM.v
 read_verilog ../../RTL/PMAU_Full.v
 read_verilog ../../RTL/Matrix_Vector_Multiplication.v
+read_verilog ../../RTL/AXI4_Mapping.v
 read_verilog ../../RTL/MY_IP.v
 read_verilog ../../RTL/VPU_Top.v
 

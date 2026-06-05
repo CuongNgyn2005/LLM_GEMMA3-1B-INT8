@@ -23,17 +23,25 @@ This project targets an INT8-quantized Gemma3-1B accelerator on the Xilinx ZCU10
                       | AXI4-Full memory-mapped
                       v
         +-------------+-------------+
-        | AXI4_Mapping              |
-        | - S_AXI_* board-facing    |
-        | - optional base translate |
+        | VPU_Top                   |
+        | - project top module      |
+        | - AXI4-Full ports         |
         +-------------+-------------+
                       |
                       v
         +-------------+-------------+
-        | VPU_Top / MY_IP           |
+        | MY_IP                     |
         | - AXI4-Full slave         |
+        | - AW/W/B/AR/R protocol    |
+        | - burst sequencing        |
+        +-------------+-------------+
+                      |
+                      v
+        +-------------+-------------+
+        | AXI4_Mapping              |
+        | - local address map       |
         | - config/status registers |
-        | - burst access windows    |
+        | - memory-window decode    |
         +-------------+-------------+
                       |
                       v
@@ -55,7 +63,7 @@ This project targets an INT8-quantized Gemma3-1B accelerator on the Xilinx ZCU10
 
 ## AXI4-Full Address Map
 
-`AXI4_Mapping.v` defaults to the physical base address `40'h00A0_0000_00` and translates it to the local VPU offset space. If the Vivado AXI interconnect already strips the base address, the local address is passed through unchanged.
+`AXI4_Mapping.v` is now an internal module under `MY_IP`. It owns the local register map, memory-window decode, and optional physical-base translation from `40'h00A0_0000_00` into the local VPU offset space. If the Vivado AXI interconnect already strips the base address, the local address is passed through unchanged.
 
 | Local offset | Purpose |
 |---:|---|
