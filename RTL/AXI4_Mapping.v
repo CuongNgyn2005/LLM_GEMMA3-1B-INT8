@@ -363,5 +363,32 @@ module AXI4_Mapping #(
         .mm_rd_valid       (core_rd_valid),
         .mm_rd_error       (core_rd_error)
     );
+ila_0 debug(
+clk,
 
+
+probe0,
+probe1,
+probe2,
+probe3,
+probe4,
+probe5,
+probe6,
+probe7,
+probe8,
+probe9,
+probe10,
+probe11,
+probe12,
+probe13,
+probe14,
+probe15,
+probe16,
+probe17,
+probe18,
+probe19,
+probe20,
+probe21,
+probe22
+);
 endmodule
