@@ -1,0 +1,66 @@
+DATN_RTL manual uploaded log
+Date: 2026-06-06
+
+Scope
+- Updated D:/DOAN/llama.cpp/ggml/src/ggml-cpu/fpga_host.cpp for the DATN_RTL bitstream_matrix.bit VPU address map.
+- Updated D:/DOAN/llama.cpp/ggml/src/ggml-cpu/fpga_host.h comments/API declaration order for the new host path.
+- Updated D:/DOAN/llama.cpp/src/CMakeLists.txt so llama target no longer references missing src/fpga_host.cpp/src/fpga_host.h files.
+
+Address decisions
+- VPU/IP physical base: 0xA0000000.
+- Vivado address editor range: 0xA0000000 - 0xAFFFFFFF.
+- Project reserved DDR range: 0x70000000 - 0x7FFFFFFF.
+- Current DATN_RTL RTL is an AXI4-Full slave with internal BRAM windows, so the host writes data directly to IP windows under 0xA0000000 instead of passing DDR buffer addresses to the IP.
+
+Implemented host flow
+1. Open /dev/mem with O_RDWR | O_SYNC.
+2. mmap VPU base 0xA0000000.
+3. Read VPU limits at local offset 0x70 when available.
+4. For each accepted llama.cpp Q8_0 x F32 matmul:
+   - quantize activation F32 to q8_0 blocks of 32 values;
+   - for each output-row tile of up to 128 rows;
+   - for each K block of 32 values;
+   - write activation to local offset 0x00010000;
+   - write weights to local offset 0x00100000 using row * MAX_COL_BEATS + beat;
+   - write ROWS/COLS/COL_BEATS/SCALE/MODE registers;
+   - start at CTRL offset 0x00;
+   - poll STATUS offset 0x10 for done/error;
+   - read INT32 partials from local offset 0x00200000;
+   - multiply partials by activation and weight q8_0 scales in software and accumulate F32 output.
+
+Known fallback behavior
+- Attention/FLASH_ATTN_EXT is not sent to FPGA, because bitstream_matrix.bit exposes GEMV only and has no KV-cache/attention register path.
+- Invalid shapes or unsupported tensor types return to the normal CPU path.
+- If a hardware timeout/error happens after a shape was accepted, thread 0 computes a local q8_0 software fallback so worker threads that already returned do not leave dst uncomputed.
+
+Local verification performed
+- CMake configure with USE_FPGA=ON passed:
+  cmake -S . -B build_codex_fpga_check -DUSE_FPGA=ON -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
+- CMake no longer reports missing src/fpga_host.cpp or src/fpga_host.h.
+
+Local verification not completed
+- Full build on this Windows/MinGW machine cannot validate the Linux FPGA path. MinGW failed in ggml-cpu.c at pthread_once_t/PTHREAD_ONCE_INIT, before compiling the new Linux /dev/mem driver.
+- WSL retry on 2026-06-06 still cannot enter a Linux shell in this Codex session:
+  - wsl --status reports Default Version: 2.
+  - wsl --list --verbose and wsl -e bash both report: Windows Subsystem for Linux has no installed distributions.
+  Linux build validation is still not available locally until a WSL distro is visible to this environment.
+- FPGA manager upload and runtime test were not run because this machine has no direct ZCU104 access.
+
+Expected runtime log
+- During model execution, follow:
+  tail -f /tmp/fpga_debug.log
+
+Follow-up debug pass on 2026-06-06
+- Inspected DATN_RTL/MANUAL_UPLOADED/build_run_log.txt after the model produced no visible response.
+- Bitstream programming reached state "operating"; the board-side failure is not an FPGA manager load failure.
+- Found a host log bug in llama.cpp/tools/main/main.cpp: fpga_init() returns 0 on success, but main.cpp treated non-zero as success. This caused "main: FPGA host init failed:" to be printed even when /dev/mem mmap later succeeded.
+- Fixed main.cpp to use fpga_init() == 0.
+- Added FPGA_DISABLE=1 runtime switch in ggml/src/ggml-cpu/fpga_host.cpp for CPU-only comparison.
+- Added FPGA_SELF_TEST=1 runtime switch in fpga_host.cpp. When enabled, init runs a 1-row x 32-column INT8 VPU smoke test and expects result 32 before enabling FPGA acceleration.
+- Added DATN_RTL/MANUAL_UPLOADED/fpga_mmio_smoke_test.cpp, a standalone /dev/mem diagnostic for the same 1x32 VPU check.
+- Rewrote DATN_RTL/MANUAL_UPLOADED/zcu104_commands.sh so it removes build_mem before rebuilding, programs bitstream_matrix.bit, runs the smoke test, runs llama-cli with FPGA_SELF_TEST=1, and prints a CPU-only fallback command.
+
+Important build-log finding
+- The ZCU104 build log compiled both ggml/src/ggml-cpu/fpga_host.cpp.o and src/CMakeFiles/llama.dir/fpga_host.cpp.o.
+- Current local CMake only compiles ggml/src/ggml-cpu/fpga_host.cpp for the ggml-cpu target.
+- If the board still compiles src/fpga_host.cpp.o after syncing, the board source tree or CMake cache is stale.

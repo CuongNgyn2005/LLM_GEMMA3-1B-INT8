@@ -1,0 +1,43 @@
+Register map used by fpga_host.cpp
+
+Physical IP base
+- 0xA0000000
+
+Vivado segment
+- 0xA0000000 - 0xAFFFFFFF
+
+Local register offsets
+- 0x00000000 CTRL
+  - bit 0: start
+  - bit 1: clear done/error
+- 0x00000010 STATUS
+  - bit 0: done
+  - bit 1: busy
+  - bit 2: error
+- 0x00000020 ROWS
+- 0x00000030 COLS
+- 0x00000040 COL_BEATS
+- 0x00000050 SCALE, written as 0x00003C00
+- 0x00000060 MODE, written as 0
+- 0x00000070 LIMITS
+  - bits 15:0: MAX_ROWS
+  - bits 31:16: MAX_COL_BEATS
+- 0x00000080 PROGRESS
+
+Local memory windows
+- 0x00010000 activation BRAM write window
+- 0x00100000 weight BRAM write window
+- 0x00200000 result BRAM read window
+
+Data packing
+- AXI beat width: 128 bits = 16 signed INT8 lanes.
+- NUM_LANES: 16.
+- q8_0 block size: 32 lanes = 2 VPU beats.
+- Weight BRAM index: row * MAX_COL_BEATS + beat.
+- Result BRAM index: row.
+
+Important limitation
+- This RTL does not expose HLS-style REG_A_LO/REG_BQS_LO/REG_C_LO registers.
+- This RTL does not use ZDMA or read DDR physical buffers directly.
+- The project DDR range 0x70000000 - 0x7FFFFFFF remains documented/reserved, but this host path writes directly into VPU local AXI windows.
+

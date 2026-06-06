@@ -1,0 +1,450 @@
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ sudo su
+[sudo] password for debian:
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# echo 0 > /sys/class/fpga_manager/fpga0/flags
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# cp bitstream_matrix.bit /lib/firmware/
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# echo bitstream_matrix.bit > /sys/class/fpga_manager/fpga0/firmware
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# cat /sys/class/fpga_manager/fpga0/state
+operating
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# exit
+exit
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ cat /proc/meminfo | grep -E "MemTotal|MemFree|CmaTotal|CmaFree"
+MemTotal:        1775444 kB
+MemFree:          139396 kB
+CmaTotal:         262144 kB
+CmaFree:           78092 kB
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ dmesg | grep -i "memory\|reserved\|linear"
+[    0.000000] Memory limited to 1792MB
+[    0.000000] cma: Reserved 256 MiB at 0x0000000060000000
+[    0.000000] Early memory node ranges
+[    0.000000]   DMA32 zone: 0 pages reserved
+[    0.000000] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.000000] Memory: 1511188K/1835008K available (13952K kernel code, 982K rwdata, 3928K rodata, 2112K init, 586K bss, 61676K reserved, 262144K cma-reserved)
+[    0.021290] Mount-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.021307] Mountpoint-cache hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.030337] futex hash table entries: 1024 (order: 4, 65536 bytes, linear)
+[    2.238219] tcp_listen_portaddr_hash hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    2.238255] TCP established hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    2.238368] TCP bind hash table entries: 16384 (order: 6, 262144 bytes, linear)
+[    2.238642] UDP hash table entries: 1024 (order: 3, 32768 bytes, linear)
+[    2.238689] UDP-Lite hash table entries: 1024 (order: 3, 32768 bytes, linear)
+[    2.352241] EDAC DEVICE0: Giving out device to module zynqmp-ocm-edac controller zynqmp_ocm: DEV ff960000.memory-controller (INTERRUPT)
+[    6.622756] Freeing unused kernel memory: 2112K
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ exit
+logout
+Connection to 192.168.50.26 closed.
+                                                                                                                                                                                         ?
+
+ ? 2026-06-06 ? ? 02:33.16 ? ? /home/mobaxterm ? ssh debian@192.168.50.26
+Debian GNU/Linux 11
+
+BeagleBoard.org Debian Bullseye Xfce Image 2023-03-30
+Support: https://bbb.io/debian
+default username:password is [debian:temppwd]
+
+debian@192.168.50.26's password:
+
+The programs included with the Debian GNU/Linux system are free software;
+the exact distribution terms for each program are described in the
+individual files in /usr/share/doc/*/copyright.
+
+Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+permitted by applicable law.
+Last login: Sat Jun  6 09:21:48 2026 from 192.168.50.3
+debian@ZCU104-01:~$ cd Cuong_test/
+debian@ZCU104-01:~/Cuong_test$ ls
+GEMMA3.cpp-MODEL-IN-FPGA
+debian@ZCU104-01:~/Cuong_test$ cd GEMMA3.cpp-MODEL-IN-FPGA/
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ sudo su
+[sudo] password for debian:
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# echo 0 > /sys/class/fpga_manager/fpga0/flags
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# cp bitstream_matrix.bit /lib/firmware/
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# echo bitstream_matrix.bit > /sys/class/fpga_manager/fpga0/firmware
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# cat /sys/class/fpga_manager/fpga0/state
+operating
+root@ZCU104-01:/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA# exit
+exit
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ ls
+AUTHORS                   DA_1_wrapper.bit                Makefile             bitstream3.bit          cmake                          grammars            requirements
+BUILD_GUIDE_ZCU104_02.md  DA_bit.bit                      QUICK_REFERENCE.txt  bitstream4.bit          common                         hls_accelerator     requirements.txt
+CMakeLists.txt            DA_bit2.bit                     README.md            bitstream5.bit          convert_hf_to_gguf.py          hw_check.sh         scripts
+CMakePresets.json         DA_bitstream.bit                SECURITY.md          bitstream6.bit          convert_hf_to_gguf_update.py   include             src
+CODEOWNERS                DA_wrapper.bit                  bitstream            bitstream7.bit          convert_llama_ggml_to_gguf.py  licenses            tests
+CONTRIBUTING.md           DAbitstream.bit                 bitstream.bit        bitstream8.bit          convert_lora_to_gguf.py        media               tools
+DA.bit                    D_A.bit                         bitstream1.bit       bitstream9.bit          design_1_wrapper.xsa           models              vendor
+DA1_wrapper.bit           D_Abitstream.bit                bitstream10.bit      bitstream_matrix.bit    docs                           mypy.ini            verify_fpga_addresses.sh
+DA2_wrapper.bit           DoAn_wrapper.bit                bitstream11.bit      bitstream_wrapper.bit   examples                       pocs                verify_hardware.sh
+DA2bitstream.bit          FPGA_ACTION_PLAN.md             bitstream12.bit      build-xcframework.sh    flake.lock                     poetry.lock
+DATN1_wrapper.bit         FPGA_FINAL_REPORT.md            bitstream13.bit      check_fpga_memory.sh    flake.nix                      prompts
+DATN_wrapper.bin          HARDWARE_VERIFICATION_GUIDE.md  bitstream14.bit      check_memory_layout.sh  ggml                           pyproject.toml
+DATN_wrapper.bit          KERNAL_FORWARD                  bitstream2.bit       ci                      gguf-py                        pyrightconfig.json
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ cmake -S . -B build_mem \
+    -DUSE_FPGA=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLAMA_CURL=OFF
+-- The C compiler identification is GNU 10.2.1
+-- The CXX compiler identification is GNU 10.2.1
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+CMAKE_BUILD_TYPE=Release
+-- Found Git: /usr/bin/git (found version "2.30.2")
+-- The ASM compiler identification is GNU
+-- Found assembler: /usr/bin/cc
+-- Looking for pthread.h
+-- Looking for pthread.h - found
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Failed
+-- Check if compiler accepts -pthread
+-- Check if compiler accepts -pthread - yes
+-- Found Threads: TRUE
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+-- CMAKE_SYSTEM_PROCESSOR: aarch64
+-- GGML_SYSTEM_ARCH: ARM
+-- Including CPU backend
+-- Found OpenMP_C: -fopenmp (found version "4.5")
+-- Found OpenMP_CXX: -fopenmp (found version "4.5")
+-- Found OpenMP: TRUE (found version "4.5")
+-- ARM detected
+-- Performing Test GGML_COMPILER_SUPPORTS_FP16_FORMAT_I3E
+-- Performing Test GGML_COMPILER_SUPPORTS_FP16_FORMAT_I3E - Failed
+-- Performing Test GGML_MACHINE_SUPPORTS_dotprod
+-- Performing Test GGML_MACHINE_SUPPORTS_dotprod - Failed
+-- Performing Test GGML_MACHINE_SUPPORTS_nodotprod
+-- Performing Test GGML_MACHINE_SUPPORTS_nodotprod - Success
+-- Performing Test GGML_MACHINE_SUPPORTS_i8mm
+-- Performing Test GGML_MACHINE_SUPPORTS_i8mm - Failed
+-- Performing Test GGML_MACHINE_SUPPORTS_noi8mm
+-- Performing Test GGML_MACHINE_SUPPORTS_noi8mm - Success
+-- Performing Test GGML_MACHINE_SUPPORTS_sve
+-- Performing Test GGML_MACHINE_SUPPORTS_sve - Failed
+-- Performing Test GGML_MACHINE_SUPPORTS_nosve
+-- Performing Test GGML_MACHINE_SUPPORTS_nosve - Success
+-- Performing Test GGML_MACHINE_SUPPORTS_sme
+-- Performing Test GGML_MACHINE_SUPPORTS_sme - Failed
+-- Performing Test GGML_MACHINE_SUPPORTS_nosme
+-- Performing Test GGML_MACHINE_SUPPORTS_nosme - Failed
+-- ARM feature FMA enabled
+-- Adding CPU backend variant ggml-cpu: -mcpu=cortex-a53+nodotprod+noi8mm+nosve
+-- ggml version: 0.0.191
+-- ggml commit:  3fd1bea
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA/build_mem
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ cmake --build build_mem --target llama-cli -j2
+[  3%] Building CXX object common/CMakeFiles/build_info.dir/build-info.cpp.o
+[  3%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[  3%] Built target build_info
+[  3%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[  3%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[  6%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[  6%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[ 10%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[ 10%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[ 10%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[ 13%] Linking CXX shared library ../../bin/libggml-base.so
+[ 13%] Built target ggml-base
+[ 17%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[ 17%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[ 17%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[ 17%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[ 20%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[ 20%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[ 24%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+[ 24%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+[ 24%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+[ 27%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[ 27%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[ 31%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+[ 31%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/llamafile/sgemm.cpp.o
+[ 31%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/quants.c.o
+[ 34%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/arm/repack.cpp.o
+[ 34%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/fpga_host.cpp.o
+/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA/ggml/src/ggml-cpu/fpga_host.cpp: In function 'int fpga_init()':
+/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA/ggml/src/ggml-cpu/fpga_host.cpp:438:18: warning: cast from type 'volatile uint8_t*' {aka 'volatile unsigned char*'} to type 'void*' casts away qualifiers [-Wcast-qual]
+  438 |     if (g_vpu && (void *) g_vpu != MAP_FAILED) {
+      |                  ^~~~~~~~~~~~~~
+/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA/ggml/src/ggml-cpu/fpga_host.cpp: In function 'void fpga_cleanup()':
+/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA/ggml/src/ggml-cpu/fpga_host.cpp:492:18: warning: cast from type 'volatile uint8_t*' {aka 'volatile unsigned char*'} to type 'void*' casts away qualifiers [-Wcast-qual]
+  492 |     if (g_vpu && (void *) g_vpu != MAP_FAILED) {
+      |                  ^~~~~~~~~~~~~~
+/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA/ggml/src/ggml-cpu/fpga_host.cpp:493:16: warning: cast from type 'volatile uint8_t*' {aka 'volatile unsigned char*'} to type 'void*' casts away qualifiers [-Wcast-qual]
+  493 |         munmap((void *) g_vpu, VPU_MMAP_SIZE);
+      |                ^~~~~~~~~~~~~~
+/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA/ggml/src/ggml-cpu/fpga_host.cpp: In function 'int fpga_try_matmul_extended(const ggml_tensor*, const ggml_tensor*, const ggml_tensor*, int, int, int, int)':
+/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA/ggml/src/ggml-cpu/fpga_host.cpp:570:19: warning: cast from type 'volatile uint8_t*' {aka 'volatile unsigned char*'} to type 'void*' casts away qualifiers [-Wcast-qual]
+  570 |     if (!g_vpu || (void *) g_vpu == MAP_FAILED) {
+      |                   ^~~~~~~~~~~~~~
+[ 37%] Linking CXX shared library ../../bin/libggml-cpu.so
+[ 37%] Built target ggml-cpu
+[ 41%] Building CXX object ggml/src/CMakeFiles/ggml.dir/ggml-backend-reg.cpp.o
+[ 41%] Linking CXX shared library ../../bin/libggml.so
+[ 41%] Built target ggml
+[ 41%] Building CXX object src/CMakeFiles/llama.dir/llama.cpp.o
+[ 41%] Building CXX object src/CMakeFiles/llama.dir/llama-adapter.cpp.o
+[ 44%] Building CXX object src/CMakeFiles/llama.dir/llama-arch.cpp.o
+[ 44%] Building CXX object src/CMakeFiles/llama.dir/llama-batch.cpp.o
+[ 48%] Building CXX object src/CMakeFiles/llama.dir/llama-chat.cpp.o
+[ 48%] Building CXX object src/CMakeFiles/llama.dir/llama-context.cpp.o
+[ 48%] Building CXX object src/CMakeFiles/llama.dir/llama-cparams.cpp.o
+[ 51%] Building CXX object src/CMakeFiles/llama.dir/llama-grammar.cpp.o
+[ 51%] Building CXX object src/CMakeFiles/llama.dir/llama-graph.cpp.o
+[ 55%] Building CXX object src/CMakeFiles/llama.dir/llama-hparams.cpp.o
+[ 55%] Building CXX object src/CMakeFiles/llama.dir/llama-impl.cpp.o
+[ 55%] Building CXX object src/CMakeFiles/llama.dir/llama-io.cpp.o
+[ 58%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache.cpp.o
+[ 58%] Building CXX object src/CMakeFiles/llama.dir/llama-kv-cache-iswa.cpp.o
+[ 62%] Building CXX object src/CMakeFiles/llama.dir/llama-memory.cpp.o
+[ 62%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-hybrid.cpp.o
+[ 62%] Building CXX object src/CMakeFiles/llama.dir/llama-memory-recurrent.cpp.o
+[ 65%] Building CXX object src/CMakeFiles/llama.dir/llama-mmap.cpp.o
+[ 65%] Building CXX object src/CMakeFiles/llama.dir/llama-model-loader.cpp.o
+[ 68%] Building CXX object src/CMakeFiles/llama.dir/llama-model-saver.cpp.o
+[ 68%] Building CXX object src/CMakeFiles/llama.dir/llama-model.cpp.o
+[ 68%] Building CXX object src/CMakeFiles/llama.dir/llama-quant.cpp.o
+[ 72%] Building CXX object src/CMakeFiles/llama.dir/llama-sampling.cpp.o
+[ 72%] Building CXX object src/CMakeFiles/llama.dir/llama-vocab.cpp.o
+[ 75%] Building CXX object src/CMakeFiles/llama.dir/unicode-data.cpp.o
+[ 75%] Building CXX object src/CMakeFiles/llama.dir/unicode.cpp.o
+[ 75%] Building CXX object src/CMakeFiles/llama.dir/fpga_host.cpp.o
+[ 79%] Linking CXX shared library ../bin/libllama.so
+[ 79%] Built target llama
+[ 82%] Building CXX object common/CMakeFiles/common.dir/arg.cpp.o
+[ 82%] Building CXX object common/CMakeFiles/common.dir/chat-parser.cpp.o
+[ 82%] Building CXX object common/CMakeFiles/common.dir/chat.cpp.o
+[ 82%] Building CXX object common/CMakeFiles/common.dir/common.cpp.o
+[ 86%] Building CXX object common/CMakeFiles/common.dir/console.cpp.o
+[ 86%] Building CXX object common/CMakeFiles/common.dir/json-partial.cpp.o
+[ 89%] Building CXX object common/CMakeFiles/common.dir/json-schema-to-grammar.cpp.o
+[ 89%] Building CXX object common/CMakeFiles/common.dir/llguidance.cpp.o
+[ 89%] Building CXX object common/CMakeFiles/common.dir/log.cpp.o
+[ 93%] Building CXX object common/CMakeFiles/common.dir/ngram-cache.cpp.o
+[ 93%] Building CXX object common/CMakeFiles/common.dir/regex-partial.cpp.o
+[ 96%] Building CXX object common/CMakeFiles/common.dir/sampling.cpp.o
+[ 96%] Building CXX object common/CMakeFiles/common.dir/speculative.cpp.o
+[ 96%] Linking CXX static library libcommon.a
+[ 96%] Built target common
+[100%] Building CXX object tools/main/CMakeFiles/llama-cli.dir/main.cpp.o
+[100%] Linking CXX executable ../../bin/llama-cli
+[100%] Built target llama-cli
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ cmake --build build_mem --target llama-cli -j2
+Consolidate compiler generated dependencies of target build_info
+Consolidate compiler generated dependencies of target ggml-base
+[  0%] Built target build_info
+[ 13%] Built target ggml-base
+Consolidate compiler generated dependencies of target ggml-cpu
+[ 37%] Built target ggml-cpu
+Consolidate compiler generated dependencies of target ggml
+[ 41%] Built target ggml
+Consolidate compiler generated dependencies of target llama
+[ 79%] Built target llama
+Consolidate compiler generated dependencies of target common
+[ 96%] Built target common
+Consolidate compiler generated dependencies of target llama-cli
+[100%] Built target llama-cli
+debian@ZCU104-01:~/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA$ sudo ./build_mem/bin/llama-cli \
+    -m /home/debian/soc/models/gemma-3-1b-it-Q8_0.gguf \
+    -p "Please write about AI" \
+    -n 64
+[sudo] password for debian:
+build: 191 (3fd1bea) with cc (Debian 10.2.1-6) 10.2.1 20210110 for aarch64-linux-gnu
+main: llama backend init
+main: load the model and apply lora adapter, if any
+main: FPGA host init failed:
+llama_model_loader: loaded meta data with 38 key-value pairs and 340 tensors from /home/debian/soc/models/gemma-3-1b-it-Q8_0.gguf (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = gemma3
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                               general.name str              = Gemma 3 1b It
+llama_model_loader: - kv   3:                           general.finetune str              = it
+llama_model_loader: - kv   4:                           general.basename str              = gemma-3
+llama_model_loader: - kv   5:                         general.size_label str              = 1B
+llama_model_loader: - kv   6:                            general.license str              = gemma
+llama_model_loader: - kv   7:                   general.base_model.count u32              = 1
+llama_model_loader: - kv   8:                  general.base_model.0.name str              = Gemma 3 1b Pt
+llama_model_loader: - kv   9:          general.base_model.0.organization str              = Google
+llama_model_loader: - kv  10:              general.base_model.0.repo_url str              = https://huggingface.co/google/gemma-3...
+llama_model_loader: - kv  11:                               general.tags arr[str,1]       = ["text-generation"]
+llama_model_loader: - kv  12:                      gemma3.context_length u32              = 32768
+llama_model_loader: - kv  13:                    gemma3.embedding_length u32              = 1152
+llama_model_loader: - kv  14:                         gemma3.block_count u32              = 26
+llama_model_loader: - kv  15:                 gemma3.feed_forward_length u32              = 6912
+llama_model_loader: - kv  16:                gemma3.attention.head_count u32              = 4
+llama_model_loader: - kv  17:    gemma3.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  18:                gemma3.attention.key_length u32              = 256
+llama_model_loader: - kv  19:              gemma3.attention.value_length u32              = 256
+llama_model_loader: - kv  20:                          general.file_type u32              = 7
+llama_model_loader: - kv  21:                      gemma3.rope.freq_base f32              = 1000000.000000
+llama_model_loader: - kv  22:            gemma3.attention.sliding_window u32              = 512
+llama_model_loader: - kv  23:             gemma3.attention.head_count_kv u32              = 1
+llama_model_loader: - kv  24:                       tokenizer.ggml.model str              = llama
+llama_model_loader: - kv  25:                         tokenizer.ggml.pre str              = default
+llama_model_loader: - kv  26:                      tokenizer.ggml.tokens arr[str,262144]  = ["<pad>", "<eos>", "<bos>", "<unk>", ...
+llama_model_loader: - kv  27:                      tokenizer.ggml.scores arr[f32,262144]  = [-1000.000000, -1000.000000, -1000.00...
+llama_model_loader: - kv  28:                  tokenizer.ggml.token_type arr[i32,262144]  = [3, 3, 3, 3, 3, 4, 3, 3, 3, 3, 3, 3, ...
+llama_model_loader: - kv  29:                tokenizer.ggml.bos_token_id u32              = 2
+llama_model_loader: - kv  30:                tokenizer.ggml.eos_token_id u32              = 1
+llama_model_loader: - kv  31:            tokenizer.ggml.unknown_token_id u32              = 3
+llama_model_loader: - kv  32:            tokenizer.ggml.padding_token_id u32              = 0
+llama_model_loader: - kv  33:               tokenizer.ggml.add_bos_token bool             = true
+llama_model_loader: - kv  34:               tokenizer.ggml.add_eos_token bool             = false
+llama_model_loader: - kv  35:                    tokenizer.chat_template str              = {{ bos_token }}\n{%- if messages[0]['r...
+llama_model_loader: - kv  36:            tokenizer.ggml.add_space_prefix bool             = false
+llama_model_loader: - kv  37:               general.quantization_version u32              = 2
+llama_model_loader: - type  f32:  157 tensors
+llama_model_loader: - type q8_0:  183 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = Q8_0
+print_info: file size   = 1013.54 MiB (8.50 BPW)
+load: special_eos_id is not in special_eog_ids - the tokenizer config may be incorrect
+load: printing all EOG tokens:
+load:   - 1 ('<eos>')
+load:   - 106 ('<end_of_turn>')
+load: special tokens cache size = 6414
+load: token to piece cache size = 1.9446 MB
+print_info: arch             = gemma3
+print_info: vocab_only       = 0
+print_info: n_ctx_train      = 32768
+print_info: n_embd           = 1152
+print_info: n_layer          = 26
+print_info: n_head           = 4
+print_info: n_head_kv        = 1
+print_info: n_rot            = 256
+print_info: n_swa            = 512
+print_info: is_swa_any       = 1
+print_info: n_embd_head_k    = 256
+print_info: n_embd_head_v    = 256
+print_info: n_gqa            = 4
+print_info: n_embd_k_gqa     = 256
+print_info: n_embd_v_gqa     = 256
+print_info: f_norm_eps       = 0.0e+00
+print_info: f_norm_rms_eps   = 1.0e-06
+print_info: f_clamp_kqv      = 0.0e+00
+print_info: f_max_alibi_bias = 0.0e+00
+print_info: f_logit_scale    = 0.0e+00
+print_info: f_attn_scale     = 6.2e-02
+print_info: n_ff             = 6912
+print_info: n_expert         = 0
+print_info: n_expert_used    = 0
+print_info: causal attn      = 1
+print_info: pooling type     = 0
+print_info: rope type        = 2
+print_info: rope scaling     = linear
+print_info: freq_base_train  = 1000000.0
+print_info: freq_scale_train = 1
+print_info: n_ctx_orig_yarn  = 32768
+print_info: rope_finetuned   = unknown
+print_info: model type       = 1B
+print_info: model params     = 999.89 M
+print_info: general.name     = Gemma 3 1b It
+print_info: vocab type       = SPM
+print_info: n_vocab          = 262144
+print_info: n_merges         = 0
+print_info: BOS token        = 2 '<bos>'
+print_info: EOS token        = 1 '<eos>'
+print_info: EOT token        = 106 '<end_of_turn>'
+print_info: UNK token        = 3 '<unk>'
+print_info: PAD token        = 0 '<pad>'
+print_info: LF token         = 248 '<0x0A>'
+print_info: EOG token        = 1 '<eos>'
+print_info: EOG token        = 106 '<end_of_turn>'
+print_info: max token length = 48
+load_tensors: loading model tensors, this can take a while... (mmap = true)
+load_tensors:   CPU_Mapped model buffer size =  1013.54 MiB
+.......................................................................
+llama_context: constructing llama_context
+llama_context: n_seq_max     = 1
+llama_context: n_ctx         = 4096
+llama_context: n_ctx_per_seq = 4096
+llama_context: n_batch       = 2048
+llama_context: n_ubatch      = 512
+llama_context: causal_attn   = 1
+llama_context: flash_attn    = auto
+llama_context: kv_unified    = false
+llama_context: freq_base     = 1000000.0
+llama_context: freq_scale    = 1
+llama_context: n_ctx_per_seq (4096) < n_ctx_train (32768) -- the full capacity of the model will not be utilized
+llama_context:        CPU  output buffer size =     1.00 MiB
+llama_kv_cache_iswa: creating non-SWA KV cache, size = 4096 cells
+llama_kv_cache:        CPU KV buffer size =    16.00 MiB
+llama_kv_cache: size =   16.00 MiB (  4096 cells,   4 layers,  1/1 seqs), K (f16):    8.00 MiB, V (f16):    8.00 MiB
+llama_kv_cache_iswa: creating     SWA KV cache, size = 1024 cells
+llama_kv_cache:        CPU KV buffer size =    22.00 MiB
+llama_kv_cache: size =   22.00 MiB (  1024 cells,  22 layers,  1/1 seqs), K (f16):   11.00 MiB, V (f16):   11.00 MiB
+llama_context: Flash Attention was auto, set to enabled
+llama_context:        CPU compute buffer size =   514.25 MiB
+llama_context: graph nodes  = 1049
+llama_context: graph splits = 1
+common_init_from_params: added <eos> logit bias = -inf
+common_init_from_params: added <end_of_turn> logit bias = -inf
+common_init_from_params: setting dry_penalty_last_n to ctx_size = 4096
+common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+[FPGA] Kernel ready!
+[DEBUG-HOOK] FPGA hook active (initialized=1)
+[DEBUG-HOOK] FPGA hook active (initialized=1)
+[DEBUG-HOOK] FPGA hook active (initialized=1)
+[DEBUG-HOOK] FPGA hook active (initialized=1)
+[DEBUG-HOOK] FPGA hook active (initialized=1)
+[DEBUG-HOOK] FPGA hook active (initialized=1)
+[DEBUG-HOOK] FPGA hook active (initialized=1)
+[DEBUG-HOOK] FPGA hook active (initialized=1)
+main: llama threadpool init, n_threads = 4
+main: chat template is available, enabling conversation mode (disable it with -no-cnv)
+*** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?
+main: chat template example:
+<start_of_turn>user
+You are a helpful assistant
+
+Hello<end_of_turn>
+<start_of_turn>model
+Hi there<end_of_turn>
+<start_of_turn>user
+How are you?<end_of_turn>
+<start_of_turn>model
+
+
+system_info: n_threads = 4 (n_threads_batch = 4) / 4 | CPU : NEON = 1 | ARM_FMA = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 |
+
+main: interactive mode on.
+sampler seed: 3185202141
+sampler params:
+        repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+        dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 4096
+        top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.800
+        mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000
+sampler chain: logits -> logit-bias -> penalties -> dry -> top-n-sigma -> top-k -> typical -> top-p -> min-p -> xtc -> temp-ext -> dist
+generate: n_ctx = 4096, n_batch = 2048, n_predict = 64, n_keep = 1
+
+== Running in interactive mode. ==
+ - Press Ctrl+C to interject at any time.
+ - Press Return to return control to the AI.
+ - To return control without starting a new line, end your input with '/'.
+ - If you want to submit another line, end your input with '\'.
+ - Not using system message. To change it, set a different value via -sys PROMPT
+
+user
+Please write about AI
+model
+
+llama_perf_sampler_print:    sampling time =       0.03 ms /    13 runs   (    0.00 ms per token, 393939.39 tokens per second)
+
+--- Detailed Function Profiling (within sampler print) ---
+llama_perf_sampler_print: Total_Attn_MHA       time =       1.83 ms ( 39.45 %)
+llama_perf_sampler_print: Total_FFN            time =       0.82 ms ( 17.73 %)
+llama_perf_sampler_print: Total_MoE_FFN        time =       0.00 ms (  0.00 %)
+llama_perf_sampler_print: Total_Norm           time =       1.99 ms ( 42.82 %)
+llama_perf_sampler_print: Total Profiled       time =       4.64 ms
+----------------------------------------------------------
+llama_perf_context_print:        load time =  206861.07 ms
+llama_perf_context_print: prompt eval time =       0.00 ms /     1 tokens (    0.00 ms per token,      inf tokens per second)
+llama_perf_context_print:        eval time =       0.00 ms /     1 runs   (    0.00 ms per token,      inf tokens per second)
+llama_perf_context_print:       total time =  221736.51 ms /     2 tokens
+llama_perf_context_print:    graphs reused =          0
+Interrupted by user
