@@ -1,0 +1,101 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2022.2 (win64) Build 3671981 Fri Oct 14 05:00:03 MDT 2022
+| Date         : Mon Jun  8 17:25:50 2026
+| Host         : Cuong-Desktop running 64-bit major release  (build 9200)
+| Command      : report_utilization -hierarchical -hierarchical_depth 6 -file D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/dsp_vpu_synth_hier_utilization.rpt
+| Design       : VPU_Top
+| Device       : xczu7ev-ffvc1156-2-e
+| Speed File   : -2
+| Design State : Synthesized
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Utilization Design Information
+
+Table of Contents
+-----------------
+1. Utilization by Hierarchy
+
+1. Utilization by Hierarchy
+---------------------------
+
++-----------------------------------------+---------------------------------+------------+------------+---------+------+------+--------+--------+------+------------+
+|                 Instance                |              Module             | Total LUTs | Logic LUTs | LUTRAMs | SRLs |  FFs | RAMB36 | RAMB18 | URAM | DSP Blocks |
++-----------------------------------------+---------------------------------+------------+------------+---------+------+------+--------+--------+------+------------+
+| VPU_Top                                 |                           (top) |       4064 |       3251 |       0 |  813 | 6286 |    145 |      1 |    0 |         18 |
+|   (VPU_Top)                             |                           (top) |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|   dbg_hub                               |                      dbg_hub_CV |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|   u_my_ip                               |                           MY_IP |       4064 |       3251 |       0 |  813 | 6286 |    145 |      1 |    0 |         18 |
+|     (u_my_ip)                           |                           MY_IP |        179 |        179 |       0 |    0 |  393 |      0 |      0 |    0 |          0 |
+|     u_axi4_mapping                      |                    AXI4_Mapping |       3885 |       3072 |       0 |  813 | 5893 |    145 |      1 |    0 |         18 |
+|       (u_axi4_mapping)                  |                    AXI4_Mapping |        212 |        212 |       0 |    0 |  453 |      0 |      0 |    0 |          0 |
+|       debug                             |                           ila_0 |       2568 |       1771 |       0 |  797 | 3887 |     12 |      1 |    0 |          0 |
+|         (debug)                         |                           ila_0 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|         inst                            |                 ila_v6_2_12_ila |       2568 |       1771 |       0 |  797 | 3887 |     12 |      1 |    0 |          0 |
+|           (inst)                        |                 ila_v6_2_12_ila |          1 |          1 |       0 |    0 |    6 |      0 |      0 |    0 |          0 |
+|           ila_core_inst                 |            ila_v6_2_12_ila_core |       2567 |       1770 |       0 |  797 | 3881 |     12 |      1 |    0 |          0 |
+|             (ila_core_inst)             |            ila_v6_2_12_ila_core |        447 |          0 |       0 |  447 |  490 |      0 |      0 |    0 |          0 |
+|             ila_trace_memory_inst       |    ila_v6_2_12_ila_trace_memory |          0 |          0 |       0 |    0 |    0 |     12 |      1 |    0 |          0 |
+|             u_ila_cap_ctrl              | ila_v6_2_12_ila_cap_ctrl_legacy |         96 |         49 |       0 |   47 |  173 |      0 |      0 |    0 |          0 |
+|             u_ila_regs                  |        ila_v6_2_12_ila_register |       1324 |       1323 |       0 |    1 | 1745 |      0 |      0 |    0 |          0 |
+|             u_ila_reset_ctrl            |      ila_v6_2_12_ila_reset_ctrl |          9 |          9 |       0 |    0 |   34 |      0 |      0 |    0 |          0 |
+|             u_trig                      |         ila_v6_2_12_ila_trigger |        525 |        225 |       0 |  300 |  966 |      0 |      0 |    0 |          0 |
+|             xsdb_memory_read_inst       |      ltlib_v1_0_0_generic_memrd |        166 |        164 |       0 |    2 |  473 |      0 |      0 |    0 |          0 |
+|       u_gemv                            |    Matrix_Vector_Multiplication |       1105 |       1089 |       0 |   16 | 1553 |    133 |      0 |    0 |         18 |
+|         (u_gemv)                        |    Matrix_Vector_Multiplication |        206 |        206 |       0 |    0 |  216 |      0 |      0 |    0 |          0 |
+|         u_act_bram                      |                  Dual_Port_BRAM |         65 |         65 |       0 |    0 |    0 |      4 |      0 |    0 |          0 |
+|         u_pmau                          |                       PMAU_Full |        614 |        598 |       0 |   16 | 1337 |      0 |      0 |    0 |         18 |
+|           (u_pmau)                      |                       PMAU_Full |        614 |        598 |       0 |   16 | 1337 |      0 |      0 |    0 |          2 |
+|           GEN_MULT[0].u_mult_gen_0      |                   mult_gen_0__1 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[0].u_mult_gen_0)  |                   mult_gen_0__1 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__1 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[10].u_mult_gen_0     |                  mult_gen_0__11 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[10].u_mult_gen_0) |                  mult_gen_0__11 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |           mult_gen_v12_0_18__11 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[11].u_mult_gen_0     |                  mult_gen_0__12 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[11].u_mult_gen_0) |                  mult_gen_0__12 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |           mult_gen_v12_0_18__12 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[12].u_mult_gen_0     |                  mult_gen_0__13 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[12].u_mult_gen_0) |                  mult_gen_0__13 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |           mult_gen_v12_0_18__13 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[13].u_mult_gen_0     |                  mult_gen_0__14 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[13].u_mult_gen_0) |                  mult_gen_0__14 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |           mult_gen_v12_0_18__14 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[14].u_mult_gen_0     |                  mult_gen_0__15 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[14].u_mult_gen_0) |                  mult_gen_0__15 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |           mult_gen_v12_0_18__15 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[15].u_mult_gen_0     |                      mult_gen_0 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[15].u_mult_gen_0) |                      mult_gen_0 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |               mult_gen_v12_0_18 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[1].u_mult_gen_0      |                   mult_gen_0__2 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[1].u_mult_gen_0)  |                   mult_gen_0__2 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__2 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[2].u_mult_gen_0      |                   mult_gen_0__3 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[2].u_mult_gen_0)  |                   mult_gen_0__3 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__3 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[3].u_mult_gen_0      |                   mult_gen_0__4 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[3].u_mult_gen_0)  |                   mult_gen_0__4 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__4 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[4].u_mult_gen_0      |                   mult_gen_0__5 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[4].u_mult_gen_0)  |                   mult_gen_0__5 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__5 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[5].u_mult_gen_0      |                   mult_gen_0__6 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[5].u_mult_gen_0)  |                   mult_gen_0__6 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__6 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[6].u_mult_gen_0      |                   mult_gen_0__7 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[6].u_mult_gen_0)  |                   mult_gen_0__7 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__7 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[7].u_mult_gen_0      |                   mult_gen_0__8 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[7].u_mult_gen_0)  |                   mult_gen_0__8 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__8 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[8].u_mult_gen_0      |                   mult_gen_0__9 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[8].u_mult_gen_0)  |                   mult_gen_0__9 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |            mult_gen_v12_0_18__9 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|           GEN_MULT[9].u_mult_gen_0      |                  mult_gen_0__10 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|             (GEN_MULT[9].u_mult_gen_0)  |                  mult_gen_0__10 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          0 |
+|             U0                          |           mult_gen_v12_0_18__10 |          0 |          0 |       0 |    0 |    0 |      0 |      0 |    0 |          1 |
+|         u_result_bram                   |  Dual_Port_BRAM__parameterized1 |         64 |         64 |       0 |    0 |    0 |      1 |      0 |    0 |          0 |
+|         u_weight_bram                   |  Dual_Port_BRAM__parameterized0 |        156 |        156 |       0 |    0 |    0 |    128 |      0 |    0 |          0 |
++-----------------------------------------+---------------------------------+------------+------------+---------+------+------+--------+--------+------+------------+
+
+

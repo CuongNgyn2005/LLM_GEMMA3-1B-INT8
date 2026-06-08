@@ -1,0 +1,19 @@
+DSP48E2 instance count: 18
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/dequant_mul
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/dequant_mul__0
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[0].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[10].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[11].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[12].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[13].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[14].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[15].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[1].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[2].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[3].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[4].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[5].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[6].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[7].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[8].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg
+u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[9].u_mult_gen_0/U0/i_mult/gDSP.gDSP_only.iDSP/inferred_dsp.reg_mult.m_reg_reg

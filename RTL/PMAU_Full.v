@@ -7,8 +7,9 @@
  * internal activation/weight valid signals are asserted.  The datapath is
  * fully pipelined:
  *
- *   Stage 0          : NUM_LANES signed INT8 x INT8 multiplies
- *   Stage 1..log2(N) : registered binary adder tree
+ *   Stage 0          : NUM_LANES signed INT8 x INT8 mult_gen_0 instances
+ *   Stage 1          : multiplier-output capture after IP latency
+ *   Stage 2..log2(N) : registered binary adder tree
  *   Commit stage     : row accumulator, fixed-point dequant, result FIFO
  *
  * Throughput is one input beat per clock while the result FIFO has enough
@@ -82,10 +83,11 @@ module PMAU_Full #(
 
     localparam TREE_LEVELS      = clog2(NUM_LANES);
     localparam HALF_LANES       = NUM_LANES / 2;
-    localparam FIFO_PTR_WIDTH   = clog2(RESULT_FIFO_DEPTH);
-    localparam FIFO_COUNT_WIDTH = FIFO_PTR_WIDTH + 1;
-    localparam SCALE_EXT_WIDTH  = SCALE_WIDTH + 1;
-    localparam DEQUANT_WIDTH    = ACC_WIDTH + SCALE_EXT_WIDTH;
+    localparam FIFO_PTR_WIDTH    = clog2(RESULT_FIFO_DEPTH);
+    localparam FIFO_COUNT_WIDTH  = FIFO_PTR_WIDTH + 1;
+    localparam SCALE_EXT_WIDTH   = SCALE_WIDTH + 1;
+    localparam DEQUANT_WIDTH     = ACC_WIDTH + SCALE_EXT_WIDTH;
+    localparam MULT_IP_LATENCY   = 2;
     localparam [FIFO_COUNT_WIDTH-1:0] FIFO_DEPTH_COUNT = RESULT_FIFO_DEPTH;
     localparam [SCALE_WIDTH-1:0] FP16_ONE = 16'h3c00;
 
@@ -94,6 +96,9 @@ module PMAU_Full #(
     reg valid_pipe [0:TREE_LEVELS];
     reg last_pipe  [0:TREE_LEVELS];
     reg [SCALE_WIDTH-1:0] scale_pipe [0:TREE_LEVELS];
+    reg mult_valid_pipe [0:MULT_IP_LATENCY];
+    reg mult_last_pipe  [0:MULT_IP_LATENCY];
+    reg [SCALE_WIDTH-1:0] mult_scale_pipe [0:MULT_IP_LATENCY];
 
     reg                         deq_s1_valid;
     reg                         deq_s1_last;
@@ -124,6 +129,10 @@ module PMAU_Full #(
     integer pending_i;
     always @* begin
         pending_result_count = {FIFO_COUNT_WIDTH{1'b0}};
+        for (pending_i = 0; pending_i <= MULT_IP_LATENCY; pending_i = pending_i + 1) begin
+            if (mult_valid_pipe[pending_i] && mult_last_pipe[pending_i])
+                pending_result_count = pending_result_count + {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
+        end
         for (pending_i = 0; pending_i <= TREE_LEVELS; pending_i = pending_i + 1) begin
             if (valid_pipe[pending_i] && last_pipe[pending_i])
                 pending_result_count = pending_result_count + {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
@@ -154,22 +163,22 @@ module PMAU_Full #(
     wire input_fire = both_inputs_valid && can_accept_pair;
 
     // -------------------------------------------------------------------------
-    // Stage 0: signed INT8 x INT8 multiplies
+    // Stage 0: signed INT8 x INT8 Vivado multiplier IP instances
     // -------------------------------------------------------------------------
-    wire signed [MULT_WIDTH-1:0] mult_comb [0:NUM_LANES-1];
+    wire signed [MULT_WIDTH-1:0] mult_ip_product [0:NUM_LANES-1];
+    reg  signed [ACT_WIDTH-1:0]  mult_act_reg    [0:NUM_LANES-1];
+    reg  signed [WEIGHT_WIDTH-1:0] mult_weight_reg [0:NUM_LANES-1];
     reg  signed [MULT_WIDTH-1:0] mult_pipe [0:NUM_LANES-1];
 
     genvar lane_g;
     generate
         for (lane_g = 0; lane_g < NUM_LANES; lane_g = lane_g + 1) begin : GEN_MULT
-            wire signed [ACT_WIDTH-1:0] act_lane;
-            wire signed [WEIGHT_WIDTH-1:0] weight_lane;
-
-            assign act_lane =
-                activation_data[ACT_WIDTH*lane_g +: ACT_WIDTH];
-            assign weight_lane =
-                weight_data[WEIGHT_WIDTH*lane_g +: WEIGHT_WIDTH];
-            assign mult_comb[lane_g] = act_lane * weight_lane;
+            mult_gen_0 u_mult_gen_0 (
+                .CLK (CLK),
+                .A   (mult_act_reg[lane_g]),
+                .B   (mult_weight_reg[lane_g]),
+                .P   (mult_ip_product[lane_g])
+            );
         end
     endgenerate
 
@@ -208,10 +217,20 @@ module PMAU_Full #(
     integer k;
     integer level_i;
     integer node_i;
+    integer mult_lat_i;
     always @(posedge CLK) begin
         if (!RST) begin
-            for (k = 0; k < NUM_LANES; k = k + 1)
+            for (k = 0; k < NUM_LANES; k = k + 1) begin
+                mult_act_reg[k]    <= {ACT_WIDTH{1'b0}};
+                mult_weight_reg[k] <= {WEIGHT_WIDTH{1'b0}};
                 mult_pipe[k] <= {MULT_WIDTH{1'b0}};
+            end
+
+            for (mult_lat_i = 0; mult_lat_i <= MULT_IP_LATENCY; mult_lat_i = mult_lat_i + 1) begin
+                mult_valid_pipe[mult_lat_i] <= 1'b0;
+                mult_last_pipe[mult_lat_i]  <= 1'b0;
+                mult_scale_pipe[mult_lat_i] <= {SCALE_WIDTH{1'b0}};
+            end
 
             for (level_i = 0; level_i <= TREE_LEVELS; level_i = level_i + 1) begin
                 valid_pipe[level_i] <= 1'b0;
@@ -223,14 +242,36 @@ module PMAU_Full #(
                 for (node_i = 0; node_i < HALF_LANES; node_i = node_i + 1)
                     sum_pipe[level_i][node_i] <= {ACC_WIDTH{1'b0}};
         end else begin
-            valid_pipe[0] <= input_fire;
-            last_pipe[0]  <= input_fire && activation_last && weight_last;
+            for (k = 0; k < NUM_LANES; k = k + 1) begin
+                if (input_fire) begin
+                    mult_act_reg[k] <=
+                        activation_data[ACT_WIDTH*k +: ACT_WIDTH];
+                    mult_weight_reg[k] <=
+                        weight_data[WEIGHT_WIDTH*k +: WEIGHT_WIDTH];
+                end else begin
+                    mult_act_reg[k]    <= {ACT_WIDTH{1'b0}};
+                    mult_weight_reg[k] <= {WEIGHT_WIDTH{1'b0}};
+                end
+            end
+
+            mult_valid_pipe[0] <= input_fire;
+            mult_last_pipe[0]  <= input_fire && activation_last && weight_last;
             if (input_fire)
-                scale_pipe[0] <= scale_factor;
+                mult_scale_pipe[0] <= scale_factor;
+
+            for (mult_lat_i = 1; mult_lat_i <= MULT_IP_LATENCY; mult_lat_i = mult_lat_i + 1) begin
+                mult_valid_pipe[mult_lat_i] <= mult_valid_pipe[mult_lat_i-1];
+                mult_last_pipe[mult_lat_i]  <= mult_last_pipe[mult_lat_i-1];
+                mult_scale_pipe[mult_lat_i] <= mult_scale_pipe[mult_lat_i-1];
+            end
+
+            valid_pipe[0] <= mult_valid_pipe[MULT_IP_LATENCY];
+            last_pipe[0]  <= mult_last_pipe[MULT_IP_LATENCY];
+            scale_pipe[0] <= mult_scale_pipe[MULT_IP_LATENCY];
 
             for (k = 0; k < NUM_LANES; k = k + 1)
-                if (input_fire)
-                    mult_pipe[k] <= mult_comb[k];
+                if (mult_valid_pipe[MULT_IP_LATENCY])
+                    mult_pipe[k] <= mult_ip_product[k];
 
             for (level_i = 0; level_i < TREE_LEVELS; level_i = level_i + 1) begin
                 valid_pipe[level_i+1] <= valid_pipe[level_i];

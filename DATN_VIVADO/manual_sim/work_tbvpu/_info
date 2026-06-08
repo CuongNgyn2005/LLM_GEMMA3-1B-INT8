@@ -1,0 +1,210 @@
+m255
+K3
+13
+cModel Technology
+Z0 dD:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim
+vAXI4_Mapping
+Z1 DXx6 sv_std 3 std 0 22 F[19LRNL:5;XmIFh[XOPn1
+!i10b 1
+!s100 oPk`fDV`SC=k@YaGiFCMJ1
+IiPIe4M:e2A`XB7AUM[5oz0
+VV]cY<UdzSU8Z?6c@l6b243
+!s105 AXI4_Mapping_v_unit
+S1
+Z2 dD:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim
+w1780718424
+8..\..\RTL\AXI4_Mapping.v
+F..\..\RTL\AXI4_Mapping.v
+L0 17
+Z3 OV;L;10.1d;51
+r1
+!s85 0
+31
+Z4 !s108 1780910719.007000
+Z5 !s107 ..\..\TESTBENCH\tb_VPU_Top.v|..\..\RTL\VPU_Top.v|..\..\RTL\MY_IP.v|..\..\RTL\AXI4_Mapping.v|..\..\RTL\Matrix_Vector_Multiplication.v|..\..\RTL\PMAU_Full.v|..\..\RTL\Dual_Port_BRAM.v|..\..\MatMul_Verification\hardware\ila_0_stub_for_sim.v|.\mult_gen_0_stub.v|
+Z6 !s90 -sv|-work|work_tbvpu|.\mult_gen_0_stub.v|..\..\MatMul_Verification\hardware\ila_0_stub_for_sim.v|..\..\RTL\Dual_Port_BRAM.v|..\..\RTL\PMAU_Full.v|..\..\RTL\Matrix_Vector_Multiplication.v|..\..\RTL\AXI4_Mapping.v|..\..\RTL\MY_IP.v|..\..\RTL\VPU_Top.v|..\..\TESTBENCH\tb_VPU_Top.v|
+!s101 -O0
+Z7 o-sv -work work_tbvpu -O0
+n@a@x@i4_@mapping
+vDual_Port_BRAM
+R1
+!i10b 1
+!s100 Y:zFUc0^Z90XUK^DQKG0I0
+I1eYK9]D]m0Rb[0PE];kD<1
+V@AE6JEPX31P3Xo@L5WEU62
+!s105 Dual_Port_BRAM_v_unit
+S1
+R2
+w1780644268
+8..\..\RTL\Dual_Port_BRAM.v
+F..\..\RTL\Dual_Port_BRAM.v
+L0 21
+R3
+r1
+!s85 0
+31
+R4
+R5
+R6
+!s101 -O0
+R7
+n@dual_@port_@b@r@a@m
+vila_0
+R1
+!i10b 1
+!s100 NcKbMLRd1PPZzeG_mbb1T1
+I?@A8AON5EgTbU7hSgXk6Q3
+V^I25DCV78kS]4VIIg2OQm0
+!s105 ila_0_stub_for_sim_v_unit
+S1
+R2
+w1780835465
+8..\..\MatMul_Verification\hardware\ila_0_stub_for_sim.v
+F..\..\MatMul_Verification\hardware\ila_0_stub_for_sim.v
+L0 3
+R3
+r1
+!s85 0
+31
+R4
+R5
+R6
+!s101 -O0
+R7
+vMatrix_Vector_Multiplication
+R1
+!i10b 1
+!s100 Wo0CglF_8]jW;6GW`Q8I81
+IFmR43`SAzT]hQQzc>VdE@0
+V6n7ej7:;WS=N8fQNVjQNF1
+!s105 Matrix_Vector_Multiplication_v_unit
+S1
+R2
+w1780644346
+8..\..\RTL\Matrix_Vector_Multiplication.v
+F..\..\RTL\Matrix_Vector_Multiplication.v
+L0 27
+R3
+r1
+!s85 0
+31
+R4
+R5
+R6
+!s101 -O0
+R7
+n@matrix_@vector_@multiplication
+vmult_gen_0
+R1
+!i10b 1
+!s100 jK8F31O`lDQjOjGLAZ`m62
+I_gSdNbKR5VYb;G0Fzce<W3
+VPn>JK@PcUU11id<W1>2^[1
+!s105 mult_gen_0_stub_v_unit
+S1
+R2
+w1780896140
+8.\mult_gen_0_stub.v
+F.\mult_gen_0_stub.v
+L0 3
+R3
+r1
+!s85 0
+31
+R4
+R5
+R6
+!s101 -O0
+R7
+vMY_IP
+R1
+!i10b 1
+!s100 KVMLoNzIH_P>KzP`[KQj02
+IaQ>[Alc4aGK2fJXH0Zk2K2
+VY0C<E2NGY`05L2BX2]`2N2
+!s105 MY_IP_v_unit
+S1
+R2
+w1780672718
+8..\..\RTL\MY_IP.v
+F..\..\RTL\MY_IP.v
+L0 3
+R3
+r1
+!s85 0
+31
+R4
+R5
+R6
+!s101 -O0
+R7
+n@m@y_@i@p
+vPMAU_Full
+R1
+!i10b 1
+!s100 oFNUP;liW6l0h@8A90G3J3
+I5bKKza>2JQVBXcmWARUFM2
+VM[G465b5gWS`iZLf:2<:K1
+!s105 PMAU_Full_v_unit
+S1
+R2
+w1780899170
+8..\..\RTL\PMAU_Full.v
+F..\..\RTL\PMAU_Full.v
+L0 32
+R3
+r1
+!s85 0
+31
+R4
+R5
+R6
+!s101 -O0
+R7
+n@p@m@a@u_@full
+vtb_VPU_Top
+R1
+!i10b 1
+!s100 MD341^4IK^LJB93bJlHLE2
+I=P7PG7X^Uob[fR<2k_fRN0
+VJOhzWK29GWS3=WSCJOJR61
+!s105 tb_VPU_Top_v_unit
+S1
+R2
+w1780403982
+8..\..\TESTBENCH\tb_VPU_Top.v
+F..\..\TESTBENCH\tb_VPU_Top.v
+L0 3
+R3
+r1
+!s85 0
+31
+R4
+R5
+R6
+!s101 -O0
+R7
+ntb_@v@p@u_@top
+vVPU_Top
+R1
+!i10b 1
+!s100 F`2bj^fK:n[A??JB00=BK2
+IgPM`niVaF^X;c3lj4h:a<2
+VQ98o;YXMjn=kVZPE1iM]U1
+!s105 VPU_Top_v_unit
+S1
+R2
+w1780402215
+8..\..\RTL\VPU_Top.v
+F..\..\RTL\VPU_Top.v
+L0 14
+R3
+r1
+!s85 0
+31
+R4
+R5
+R6
+!s101 -O0
+R7
+n@v@p@u_@top
