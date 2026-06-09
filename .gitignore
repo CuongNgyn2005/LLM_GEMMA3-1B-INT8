@@ -1,7 +1,7 @@
 # Vivado generated files
 *.wdb
 *.jou
-*.log
+
 *.pb
 *.str
 *.zip
