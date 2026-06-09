@@ -18,11 +18,13 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
+#define FPGA_HOST_TRACE_VERSION "2026-06-09-zcu104-inline-trace-v2"
 
 #define FPGA_LOG_LEVEL_INFO   1
 #define FPGA_LOG_LEVEL_MATMUL 1
 #define FPGA_LOG_LEVEL_REG    0
 #define FPGA_LOG_LEVEL_TIMING 1
+#define FPGA_LOG_LEVEL_DATA   1
 
 static FILE * fpga_log_fp(void) {
     static FILE * fp = nullptr;
@@ -54,6 +56,7 @@ static FILE * fpga_log_fp(void) {
 #define LOGM(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_MATMUL, "MATMUL", fmt, ##__VA_ARGS__)
 #define LOGR(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_REG,    "REG",    fmt, ##__VA_ARGS__)
 #define LOGT(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_TIMING, "TIMING", fmt, ##__VA_ARGS__)
+#define LOGD(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_DATA,   "DATA",   fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) FPGA_LOG(1,                     "ERROR",  fmt, ##__VA_ARGS__)
 
 // Address map from DATN_RTL/RTL/AXI4_Mapping.v and Vivado design_1.bd.
@@ -81,8 +84,11 @@ static constexpr uint32_t STATUS_BUSY        = 0x00000002;
 static constexpr uint32_t STATUS_ERROR       = 0x00000004;
 
 static constexpr uint32_t ACT_BASE           = 0x00010000;
+static constexpr uint32_t ACT_END            = 0x00020000;
 static constexpr uint32_t WEIGHT_BASE        = 0x00100000;
+static constexpr uint32_t WEIGHT_END         = 0x00200000;
 static constexpr uint32_t RESULT_BASE        = 0x00200000;
+static constexpr uint32_t RESULT_END         = 0x00210000;
 
 static constexpr int      VPU_NUM_LANES      = 16;
 static constexpr int      VPU_QK8_0          = 32;
@@ -92,6 +98,8 @@ static constexpr int      VPU_DEFAULT_BEATS  = 256;
 static constexpr int      VPU_DEFAULT_COLS   = VPU_DEFAULT_BEATS * VPU_NUM_LANES;
 static constexpr uint32_t VPU_FP16_ONE       = 0x00003C00;
 static constexpr int      VPU_POLL_LIMIT     = 1000000;
+static constexpr int      TRACE_DEFAULT_CALLS = 8;
+static constexpr int      TRACE_ROWS          = 4;
 
 typedef struct {
     uint16_t d;
@@ -105,9 +113,12 @@ static volatile uint8_t *  g_vpu           = nullptr;
 static pthread_mutex_t     g_mutex         = PTHREAD_MUTEX_INITIALIZER;
 static long long           g_fpga_count    = 0;
 static long long           g_cpu_count     = 0;
+static long long           g_trace_blocks  = 0;
+static long long           g_trace_outputs = 0;
 static int                 g_vpu_max_rows  = VPU_DEFAULT_ROWS;
 static int                 g_vpu_max_beats = VPU_DEFAULT_BEATS;
 static int                 g_vpu_max_cols  = VPU_DEFAULT_COLS;
+static int                 g_address_map_logged = 0;
 
 static int g_current_layer_id = 0;
 int        g_current_seq_pos  = 0;
@@ -128,12 +139,132 @@ static bool env_flag_enabled(const char * name) {
            strcmp(value, "ON") == 0;
 }
 
+static bool env_flag_disabled(const char * name) {
+    const char * value = getenv(name);
+    if (!value || value[0] == '\0') {
+        return false;
+    }
+
+    return strcmp(value, "0") == 0 ||
+           strcmp(value, "false") == 0 ||
+           strcmp(value, "FALSE") == 0 ||
+           strcmp(value, "no") == 0 ||
+           strcmp(value, "NO") == 0 ||
+           strcmp(value, "off") == 0 ||
+           strcmp(value, "OFF") == 0;
+}
+
+static int env_int_value(const char * name, int fallback, int min_value, int max_value) {
+    const char * value = getenv(name);
+    if (!value || value[0] == '\0') {
+        return fallback;
+    }
+
+    char * end = nullptr;
+    errno = 0;
+    const long parsed = strtol(value, &end, 10);
+    if (errno != 0 || end == value) {
+        return fallback;
+    }
+
+    if (parsed < min_value) {
+        return min_value;
+    }
+    if (parsed > max_value) {
+        return max_value;
+    }
+    return (int) parsed;
+}
+
+static int trace_call_limit(void) {
+    return env_int_value("FPGA_TRACE_CALLS", TRACE_DEFAULT_CALLS, 0, 1000000);
+}
+
+static bool trace_data_enabled(void) {
+    return !env_flag_disabled("FPGA_TRACE_DATA") && trace_call_limit() > 0;
+}
+
 static inline void * mapped_vpu_ptr(void) {
     return const_cast<uint8_t *>(g_vpu);
 }
 
 static inline bool vpu_is_mapped(void) {
     return g_vpu && mapped_vpu_ptr() != MAP_FAILED;
+}
+
+static inline uint64_t local_to_phys(uint32_t off) {
+    return VPU_BASE_PHYS + (uint64_t) off;
+}
+
+static bool local_range_fits(uint32_t off, uint32_t bytes, uint32_t begin, uint32_t end) {
+    return bytes > 0 && off >= begin && off < end && bytes <= (end - off);
+}
+
+static bool mmap_range_fits(uint32_t off, uint32_t bytes) {
+    return bytes > 0 && (uint64_t) off + (uint64_t) bytes <= (uint64_t) VPU_MMAP_SIZE;
+}
+
+static void log_window(const char * name, uint32_t begin, uint32_t end, const char * access) {
+    const uint64_t phys_begin = local_to_phys(begin);
+    const uint64_t phys_end = local_to_phys(end - 1U);
+    LOGI("map %-8s %-2s local=0x%08x-0x%08x phys=0x%llx-0x%llx bytes=0x%x mmap_ok=%d",
+         name,
+         access,
+         begin,
+         end - 1U,
+         (unsigned long long) phys_begin,
+         (unsigned long long) phys_end,
+         end - begin,
+         mmap_range_fits(begin, end - begin) ? 1 : 0);
+}
+
+static void log_address_map_once(void) {
+    if (g_address_map_logged) {
+        return;
+    }
+    g_address_map_logged = 1;
+
+    LOGI("address safety: IP segment phys=0x%llx-0x%llx host_mmap=0x%llx-0x%llx",
+         (unsigned long long) VPU_BASE_PHYS,
+         (unsigned long long) (VPU_BASE_PHYS + VPU_RANGE_PHYS - 1ULL),
+         (unsigned long long) VPU_BASE_PHYS,
+         (unsigned long long) (VPU_BASE_PHYS + VPU_MMAP_SIZE - 1ULL));
+    LOGI("address safety: DDR reserved 0x%llx-0x%llx is not mmap'ed or written by this host path",
+         (unsigned long long) DDR_RESERVED_BEGIN,
+         (unsigned long long) DDR_RESERVED_END);
+    LOGI("register map: CTRL=0x%llx STATUS=0x%llx ROWS=0x%llx COLS=0x%llx COL_BEATS=0x%llx SCALE=0x%llx MODE=0x%llx LIMITS=0x%llx PROGRESS=0x%llx",
+         (unsigned long long) local_to_phys(REG_CTRL),
+         (unsigned long long) local_to_phys(REG_STATUS),
+         (unsigned long long) local_to_phys(REG_ROWS),
+         (unsigned long long) local_to_phys(REG_COLS),
+         (unsigned long long) local_to_phys(REG_COL_BEATS),
+         (unsigned long long) local_to_phys(REG_SCALE),
+         (unsigned long long) local_to_phys(REG_MODE),
+         (unsigned long long) local_to_phys(REG_LIMITS),
+         (unsigned long long) local_to_phys(REG_PROGRESS));
+    log_window("ACT_IN", ACT_BASE, ACT_END, "W");
+    log_window("WEIGHT", WEIGHT_BASE, WEIGHT_END, "W");
+    log_window("RESULT", RESULT_BASE, RESULT_END, "R");
+}
+
+static void log_i8x16_lanes(
+        const char * label,
+        long long trace_id,
+        uint32_t local_off,
+        int row,
+        int beat,
+        const int8_t * lanes) {
+    LOGD("%s trace=%lld local=0x%08x phys=0x%llx row=%d beat=%d lanes=[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]",
+         label,
+         trace_id,
+         local_off,
+         (unsigned long long) local_to_phys(local_off),
+         row,
+         beat,
+         (int) lanes[0],  (int) lanes[1],  (int) lanes[2],  (int) lanes[3],
+         (int) lanes[4],  (int) lanes[5],  (int) lanes[6],  (int) lanes[7],
+         (int) lanes[8],  (int) lanes[9],  (int) lanes[10], (int) lanes[11],
+         (int) lanes[12], (int) lanes[13], (int) lanes[14], (int) lanes[15]);
 }
 
 static inline uint32_t pack_u8x4(const int8_t * p) {
@@ -269,6 +400,44 @@ static void store_dst_value(
     *(float *) (base + row * dst->nb[0] + col * dst->nb[1]) = value;
 }
 
+static void log_dst_sample(const struct ggml_tensor * dst, int layer_id, int seq_pos) {
+    if (!trace_data_enabled()) {
+        return;
+    }
+    if (g_trace_outputs >= trace_call_limit()) {
+        return;
+    }
+
+    const long long trace_id = g_trace_outputs++;
+    const int64_t rows = std::min<int64_t>(dst->ne[0], TRACE_ROWS);
+    const int64_t cols = std::min<int64_t>(dst->ne[1], 1);
+
+    LOGD("dst sample trace=%lld layer=%d seq=%d ne=[%lld,%lld,%lld,%lld] nb=[%lld,%lld,%lld,%lld]",
+         trace_id,
+         layer_id,
+         seq_pos,
+         (long long) dst->ne[0],
+         (long long) dst->ne[1],
+         (long long) dst->ne[2],
+         (long long) dst->ne[3],
+         (long long) dst->nb[0],
+         (long long) dst->nb[1],
+         (long long) dst->nb[2],
+         (long long) dst->nb[3]);
+
+    for (int64_t col = 0; col < cols; ++col) {
+        for (int64_t row = 0; row < rows; ++row) {
+            const char * base = (const char *) dst->data;
+            const float value = *(const float *) (base + row * dst->nb[0] + col * dst->nb[1]);
+            LOGD("dst sample trace=%lld row=%lld col=%lld value=%g",
+                 trace_id,
+                 (long long) row,
+                 (long long) col,
+                 (double) value);
+        }
+    }
+}
+
 static bool fpga_validate_tensors(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
@@ -381,6 +550,51 @@ static bool fpga_run_q8_block(
         std::vector<int32_t> & partial) {
     partial.assign((size_t) rows, 0);
 
+    if (rows <= 0 || rows > g_vpu_max_rows) {
+        LOGE("address guard rejected rows=%d max_rows=%d", rows, g_vpu_max_rows);
+        return false;
+    }
+
+    const uint32_t act_bytes = (uint32_t) VPU_BLOCK_BEATS * 16U;
+    const uint32_t result_bytes = (uint32_t) rows * 16U;
+    const uint32_t weight_last_index =
+        (uint32_t) (rows - 1) * (uint32_t) g_vpu_max_beats + (uint32_t) (VPU_BLOCK_BEATS - 1);
+    const uint32_t weight_bytes_to_last =
+        weight_last_index * 16U + 16U;
+
+    if (!local_range_fits(ACT_BASE, act_bytes, ACT_BASE, ACT_END) ||
+        !local_range_fits(WEIGHT_BASE, weight_bytes_to_last, WEIGHT_BASE, WEIGHT_END) ||
+        !local_range_fits(RESULT_BASE, result_bytes, RESULT_BASE, RESULT_END) ||
+        !mmap_range_fits(ACT_BASE, act_bytes) ||
+        !mmap_range_fits(WEIGHT_BASE, weight_bytes_to_last) ||
+        !mmap_range_fits(RESULT_BASE, result_bytes)) {
+        LOGE("address guard rejected transfer: rows=%d row0=%lld k_block=%lld act_bytes=0x%x weight_bytes=0x%x result_bytes=0x%x",
+             rows,
+             (long long) row0,
+             (long long) k_block,
+             act_bytes,
+             weight_bytes_to_last,
+             result_bytes);
+        return false;
+    }
+
+    const bool trace_this = trace_data_enabled() && g_trace_blocks < trace_call_limit();
+    const long long trace_id = trace_this ? g_trace_blocks++ : -1;
+
+    if (trace_this) {
+        LOGD("block trace=%lld row0=%lld rows=%d k_block=%lld act_scale_fp16=0x%04x act_phys=0x%llx weight_phys=0x%llx-0x%llx result_phys=0x%llx-0x%llx",
+             trace_id,
+             (long long) row0,
+             rows,
+             (long long) k_block,
+             (unsigned) act.d,
+             (unsigned long long) local_to_phys(ACT_BASE),
+             (unsigned long long) local_to_phys(WEIGHT_BASE),
+             (unsigned long long) local_to_phys(WEIGHT_BASE + weight_bytes_to_last - 1U),
+             (unsigned long long) local_to_phys(RESULT_BASE),
+             (unsigned long long) local_to_phys(RESULT_BASE + result_bytes - 1U));
+    }
+
     wr32(REG_CTRL, CTRL_CLEAR_DONE);
     wr32(REG_ROWS, (uint32_t) rows);
     wr32(REG_COLS, VPU_QK8_0);
@@ -389,14 +603,33 @@ static bool fpga_run_q8_block(
     wr32(REG_MODE, 0);
 
     for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
-        write_i8x16(ACT_BASE + (uint32_t) beat * 16U, act.qs + beat * VPU_NUM_LANES);
+        const uint32_t act_off = ACT_BASE + (uint32_t) beat * 16U;
+        const int8_t * lanes = act.qs + beat * VPU_NUM_LANES;
+        write_i8x16(act_off, lanes);
+        if (trace_this) {
+            log_i8x16_lanes("ACT_WRITE", trace_id, act_off, 0, beat, lanes);
+        }
     }
 
     for (int row = 0; row < rows; ++row) {
         const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block);
         for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
             const uint32_t index = (uint32_t) row * (uint32_t) g_vpu_max_beats + (uint32_t) beat;
-            write_i8x16(WEIGHT_BASE + index * 16U, wb->qs + beat * VPU_NUM_LANES);
+            const uint32_t weight_off = WEIGHT_BASE + index * 16U;
+            const int8_t * lanes = wb->qs + beat * VPU_NUM_LANES;
+            write_i8x16(weight_off, lanes);
+            if (trace_this && row < TRACE_ROWS) {
+                if (beat == 0) {
+                    LOGD("weight scale trace=%lld row=%lld local_row=%d k_block=%lld scale_fp16=0x%04x scale_f32=%g",
+                         trace_id,
+                         (long long) (row0 + row),
+                         row,
+                         (long long) k_block,
+                         (unsigned) wb->d,
+                         (double) fp16_to_fp32(wb->d));
+                }
+                log_i8x16_lanes("WEIGHT_WRITE", trace_id, weight_off, row, beat, lanes);
+            }
         }
     }
 
@@ -413,7 +646,16 @@ static bool fpga_run_q8_block(
     }
 
     for (int row = 0; row < rows; ++row) {
-        partial[(size_t) row] = (int32_t) rd32(RESULT_BASE + (uint32_t) row * 16U);
+        const uint32_t result_off = RESULT_BASE + (uint32_t) row * 16U;
+        partial[(size_t) row] = (int32_t) rd32(result_off);
+        if (trace_this && row < TRACE_ROWS) {
+            LOGD("RESULT_READ trace=%lld local=0x%08x phys=0x%llx row=%d raw_i32=%d",
+                 trace_id,
+                 result_off,
+                 (unsigned long long) local_to_phys(result_off),
+                 row,
+                 partial[(size_t) row]);
+        }
     }
 
     return true;
@@ -537,12 +779,16 @@ int fpga_init(void) {
          (unsigned long long) VPU_BASE_PHYS,
          (unsigned long long) VPU_RANGE_PHYS,
          VPU_MMAP_SIZE);
+    LOGI("host trace version: %s", FPGA_HOST_TRACE_VERSION);
     LOGI("DDR reserved by project request: 0x%llx-0x%llx",
          (unsigned long long) DDR_RESERVED_BEGIN,
          (unsigned long long) DDR_RESERVED_END);
     LOGI("VPU limits: rows=%d col_beats=%d cols=%d raw_limits=0x%08x",
          g_vpu_max_rows, g_vpu_max_beats, g_vpu_max_cols, limits);
     LOGI("No ZDMA programming is used: current bitstream exposes an AXI4-Full slave with local BRAM windows");
+    LOGI("trace controls: FPGA_TRACE_DATA=0 disables data dump; FPGA_TRACE_CALLS=N changes default first %d traced blocks",
+         TRACE_DEFAULT_CALLS);
+    log_address_map_once();
 
     if (limits == 0U || limits == 0xFFFFFFFFU) {
         LOGE("REG_LIMITS read is suspicious (0x%08x); check bitstream load, AXI base address, and PS-PL interconnect",
@@ -625,7 +871,7 @@ extern "C" int fpga_try_matmul_extended(
     if (is_attention) {
         static int logged_attention_fallback = 0;
         if (!logged_attention_fallback) {
-            LOGI("attention path requested but bitstream_matrix.bit exposes only INT8 GEMV; using CPU fallback");
+            LOGI("attention path requested but current SoC/VPU bitstream exposes only INT8 GEMV; using CPU fallback");
             logged_attention_fallback = 1;
         }
         return 0;
@@ -666,6 +912,7 @@ extern "C" int fpga_try_matmul_extended(
     if (hw_ok) {
         g_fpga_count++;
         LOGM("done via FPGA total_fpga_calls=%lld", g_fpga_count);
+        log_dst_sample(dst, layer_id, seq_pos);
     } else {
         g_cpu_count++;
         LOGE("FPGA runtime failed; computing this accepted matmul with local q8_0 software fallback");
