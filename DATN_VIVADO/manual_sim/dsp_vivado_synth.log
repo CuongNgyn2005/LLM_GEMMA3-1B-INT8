@@ -1,0 +1,1088 @@
+#-----------------------------------------------------------
+# Vivado v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Mon Jun  8 17:23:12 2026
+# Process ID: 15240
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim
+# Command line: vivado.exe -mode batch -source .\run_dsp_vivado_synth.tcl -nojournal -log .\dsp_vivado_synth.log
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/./dsp_vivado_synth.log
+# Journal file: 
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+CRITICAL WARNING: [Common 17-741] No write access right to the local Tcl store at 'C'. XilinxTclStore is reverted to the installation area. If you want to use local Tcl Store, please change the access right and relaunch Vivado.
+WARNING: [Common 17-1509] Migration of commands.paini file failed with error : boost::filesystem::directory_iterator::construct: Access is denied: "C:\Users\PC\AppData\Roaming/Xilinx/Vivado/2022.2/commands"
+source {.\run_dsp_vivado_synth.tcl}
+# set script_dir [file normalize [file dirname [info script]]]
+# set repo_root  [file normalize [file join $script_dir ".." ".."]]
+# set project_dir [file join $script_dir "dsp_vpu_synth_project"]
+# set part_name "xczu7ev-ffvc1156-2-e"
+# create_project dsp_vpu_synth $project_dir -part $part_name -force
+create_project: Time (s): cpu = 00:00:04 ; elapsed = 00:00:09 . Memory (MB): peak = 1001.816 ; gain = 118.027
+# add_files [file join $repo_root "DATN_VIVADO" "src" "Dual_Port_BRAM.v"]
+# add_files [file join $repo_root "DATN_VIVADO" "src" "PMAU_Full.v"]
+# add_files [file join $repo_root "DATN_VIVADO" "src" "Matrix_Vector_Multiplication.v"]
+# add_files [file join $repo_root "DATN_VIVADO" "src" "AXI4_Mapping.v"]
+# add_files [file join $repo_root "DATN_VIVADO" "src" "MY_IP.v"]
+# add_files [file join $repo_root "DATN_VIVADO" "src" "VPU_Top.v"]
+# add_files [file join $repo_root "DATN_VIVADO" "project_1" "project_1.srcs" "sources_1" "ip" "mult_gen_0" "mult_gen_0.xci"]
+INFO: [IP_Flow 19-234] Refreshing IP repositories
+INFO: [IP_Flow 19-1704] No user IP repositories specified
+INFO: [IP_Flow 19-2313] Loaded Vivado IP repository 'D:/Xlinx/Vivado/2022.2/data/ip'.
+WARNING: [Vivado 12-13650] The IP file 'D:/DOAN/DATN_RTL/DATN_VIVADO/project_1/project_1.srcs/sources_1/ip/mult_gen_0/mult_gen_0.xci' has been moved from its original location, as a result the outputs for this IP will now be generated in 'd:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/mult_gen_0'. Alternatively a copy of the IP can be imported into the project using one of the 'import_ip' or 'import_files' commands.
+# add_files [file join $repo_root "DATN_VIVADO" "project_1" "project_1.srcs" "sources_1" "ip" "ila_0" "ila_0.xci"]
+WARNING: [Vivado 12-13650] The IP file 'D:/DOAN/DATN_RTL/DATN_VIVADO/project_1/project_1.srcs/sources_1/ip/ila_0/ila_0.xci' has been moved from its original location, as a result the outputs for this IP will now be generated in 'd:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0'. Alternatively a copy of the IP can be imported into the project using one of the 'import_ip' or 'import_files' commands.
+# generate_target all [get_ips mult_gen_0]
+# generate_target all [get_ips ila_0]
+# update_compile_order -fileset sources_1
+# synth_design -top VPU_Top -part $part_name
+Command: synth_design -top VPU_Top -part xczu7ev-ffvc1156-2-e
+Starting synth_design
+Attempting to get a license for feature 'Synthesis' and/or device 'xczu7ev'
+INFO: [Common 17-349] Got license for feature 'Synthesis' and/or device 'xczu7ev'
+INFO: [Device 21-403] Loading part xczu7ev-ffvc1156-2-e
+INFO: [Synth 8-7079] Multithreading enabled for synth_design using a maximum of 2 processes.
+INFO: [Synth 8-7078] Launching helper process for spawning children vivado processes
+INFO: [Synth 8-7075] Helper process launched with PID 18396
+INFO: [Synth 8-11241] undeclared symbol 'REGCCE', assumed default net type 'wire' [D:/Xlinx/Vivado/2022.2/data/verilog/src/unimacro/BRAM_SINGLE_MACRO.v:2170]
+INFO: [Synth 8-11241] undeclared symbol 'rddata_rst_i', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:2188]
+INFO: [Synth 8-11241] undeclared symbol 'datard_overflow', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:2235]
+INFO: [Synth 8-11241] undeclared symbol 'datard_underflow', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:2236]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6379]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6381]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6412]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6414]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6447]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6449]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:30]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:32]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:69]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:71]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:109]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:111]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:150]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:152]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:192]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:194]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:235]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:237]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:279]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:281]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:324]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:326]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:370]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:372]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:417]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:419]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:465]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:467]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:514]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:516]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:564]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:566]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:615]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_ext.vh:617]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6554]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6556]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6589]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:6591]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:30]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:32]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:69]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:71]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:109]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:111]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:150]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:152]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:192]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:194]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:235]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:237]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:279]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:281]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:324]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:326]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:370]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:372]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:417]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:419]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:465]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:467]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:514]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:516]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:564]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:566]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:615]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core.vh:617]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:10347]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:10349]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:10380]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:10382]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:10413]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/xsdbm_v3_0_vl_rfs.v:10415]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:30]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:32]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:65]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:67]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:100]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:102]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:135]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:137]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:170]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:172]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:205]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:207]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:240]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:242]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:275]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:277]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:310]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:312]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:345]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:347]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:380]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:382]
+INFO: [Synth 8-11241] undeclared symbol 'tms_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:415]
+INFO: [Synth 8-11241] undeclared symbol 'runtest_int', assumed default net type 'wire' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/verilog/xsdbm_v3_0_0_bs_core_vec.vh:417]
+INFO: [Common 17-14] Message 'Synth 8-11241' appears 100 times and further instances of the messages will be disabled. Use the Tcl command set_msg_config to change the current settings.
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4527]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4528]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4529]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4530]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4531]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4532]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4586]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4587]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:4588]
+WARNING: [Synth 8-10294] parameter declaration is not allowed here in this mode of Verilog [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/hdl/ila_v6_2_syn_rfs.v:5486]
+---------------------------------------------------------------------------------
+Starting RTL Elaboration : Time (s): cpu = 00:00:09 ; elapsed = 00:00:11 . Memory (MB): peak = 2550.578 ; gain = 350.672
+---------------------------------------------------------------------------------
+INFO: [Synth 8-6157] synthesizing module 'VPU_Top' [D:/DOAN/DATN_RTL/DATN_VIVADO/src/VPU_Top.v:14]
+INFO: [Synth 8-6157] synthesizing module 'MY_IP' [D:/DOAN/DATN_RTL/DATN_VIVADO/src/MY_IP.v:3]
+	Parameter C_S00_AXI_ID_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_DATA_WIDTH bound to: 128 - type: integer 
+	Parameter C_S00_AXI_ADDR_WIDTH bound to: 40 - type: integer 
+	Parameter C_S00_AXI_AWUSER_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_ARUSER_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_WUSER_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_RUSER_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_BUSER_WIDTH bound to: 1 - type: integer 
+	Parameter NUM_LANES bound to: 16 - type: integer 
+	Parameter ACT_WIDTH bound to: 8 - type: integer 
+	Parameter WEIGHT_WIDTH bound to: 8 - type: integer 
+	Parameter ACC_WIDTH bound to: 32 - type: integer 
+	Parameter SCALE_WIDTH bound to: 16 - type: integer 
+	Parameter SCALE_FRAC_BITS bound to: 15 - type: integer 
+	Parameter RESULT_FIFO_DEPTH bound to: 8 - type: integer 
+	Parameter MAX_ROWS bound to: 128 - type: integer 
+	Parameter MAX_COL_BEATS bound to: 256 - type: integer 
+INFO: [Synth 8-6157] synthesizing module 'AXI4_Mapping' [D:/DOAN/DATN_RTL/DATN_VIVADO/src/AXI4_Mapping.v:17]
+	Parameter AXI_DATA_WIDTH bound to: 128 - type: integer 
+	Parameter AXI_ADDR_WIDTH bound to: 40 - type: integer 
+	Parameter NUM_LANES bound to: 16 - type: integer 
+	Parameter ACT_WIDTH bound to: 8 - type: integer 
+	Parameter WEIGHT_WIDTH bound to: 8 - type: integer 
+	Parameter ACC_WIDTH bound to: 32 - type: integer 
+	Parameter SCALE_WIDTH bound to: 16 - type: integer 
+	Parameter SCALE_FRAC_BITS bound to: 15 - type: integer 
+	Parameter RESULT_FIFO_DEPTH bound to: 8 - type: integer 
+	Parameter MAX_ROWS bound to: 128 - type: integer 
+	Parameter MAX_COL_BEATS bound to: 256 - type: integer 
+INFO: [Synth 8-6157] synthesizing module 'Matrix_Vector_Multiplication' [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Matrix_Vector_Multiplication.v:27]
+	Parameter NUM_LANES bound to: 16 - type: integer 
+	Parameter ACT_WIDTH bound to: 8 - type: integer 
+	Parameter WEIGHT_WIDTH bound to: 8 - type: integer 
+	Parameter ACC_WIDTH bound to: 32 - type: integer 
+	Parameter SCALE_WIDTH bound to: 16 - type: integer 
+	Parameter SCALE_FRAC_BITS bound to: 15 - type: integer 
+	Parameter RESULT_FIFO_DEPTH bound to: 8 - type: integer 
+	Parameter AXI_DATA_WIDTH bound to: 128 - type: integer 
+	Parameter MAX_ROWS bound to: 128 - type: integer 
+	Parameter MAX_COL_BEATS bound to: 256 - type: integer 
+INFO: [Synth 8-6157] synthesizing module 'PMAU_Full' [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:32]
+	Parameter NUM_LANES bound to: 16 - type: integer 
+	Parameter ACT_WIDTH bound to: 8 - type: integer 
+	Parameter WEIGHT_WIDTH bound to: 8 - type: integer 
+	Parameter ACC_WIDTH bound to: 32 - type: integer 
+	Parameter SCALE_WIDTH bound to: 16 - type: integer 
+	Parameter SCALE_FRAC_BITS bound to: 15 - type: integer 
+	Parameter RESULT_FIFO_DEPTH bound to: 8 - type: integer 
+INFO: [Synth 8-638] synthesizing module 'mult_gen_0' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/mult_gen_0/synth/mult_gen_0.vhd:68]
+WARNING: [Synth 8-5640] Port 'zero_detect' is missing in component declaration [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/mult_gen_0/synth/mult_gen_0.vhd:71]
+WARNING: [Synth 8-5640] Port 'pcasc' is missing in component declaration [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/mult_gen_0/synth/mult_gen_0.vhd:71]
+	Parameter C_VERBOSITY bound to: 0 - type: integer 
+	Parameter C_MODEL_TYPE bound to: 0 - type: integer 
+	Parameter C_OPTIMIZE_GOAL bound to: 1 - type: integer 
+	Parameter C_XDEVICEFAMILY bound to: zynquplus - type: string 
+	Parameter C_HAS_CE bound to: 0 - type: integer 
+	Parameter C_HAS_SCLR bound to: 0 - type: integer 
+	Parameter C_LATENCY bound to: 2 - type: integer 
+	Parameter C_A_WIDTH bound to: 8 - type: integer 
+	Parameter C_A_TYPE bound to: 0 - type: integer 
+	Parameter C_B_WIDTH bound to: 8 - type: integer 
+	Parameter C_B_TYPE bound to: 0 - type: integer 
+	Parameter C_OUT_HIGH bound to: 15 - type: integer 
+	Parameter C_OUT_LOW bound to: 0 - type: integer 
+	Parameter C_MULT_TYPE bound to: 1 - type: integer 
+	Parameter C_CE_OVERRIDES_SCLR bound to: 0 - type: integer 
+	Parameter C_CCM_IMP bound to: 0 - type: integer 
+	Parameter C_B_VALUE bound to: 10000001 - type: string 
+	Parameter C_HAS_ZERO_DETECT bound to: 0 - type: integer 
+	Parameter C_ROUND_OUTPUT bound to: 0 - type: integer 
+	Parameter C_ROUND_PT bound to: 0 - type: integer 
+INFO: [Synth 8-3491] module 'mult_gen_v12_0_18' declared at 'd:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/mult_gen_0/hdl/mult_gen_v12_0_vh_rfs.vhd:21010' bound to instance 'U0' of component 'mult_gen_v12_0_18' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/mult_gen_0/synth/mult_gen_0.vhd:120]
+WARNING: [Synth 8-5974] attribute "use_dsp48" has been deprecated, please use "use_dsp" instead 
+INFO: [Synth 8-256] done synthesizing module 'mult_gen_0' (0#1) [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/mult_gen_0/synth/mult_gen_0.vhd:68]
+INFO: [Synth 8-6155] done synthesizing module 'PMAU_Full' (0#1) [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:32]
+INFO: [Synth 8-6157] synthesizing module 'Dual_Port_BRAM' [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Dual_Port_BRAM.v:21]
+	Parameter AWIDTH bound to: 8 - type: integer 
+	Parameter DWIDTH bound to: 128 - type: integer 
+INFO: [Synth 8-6155] done synthesizing module 'Dual_Port_BRAM' (0#1) [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Dual_Port_BRAM.v:21]
+INFO: [Synth 8-6157] synthesizing module 'Dual_Port_BRAM__parameterized0' [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Dual_Port_BRAM.v:21]
+	Parameter AWIDTH bound to: 15 - type: integer 
+	Parameter DWIDTH bound to: 128 - type: integer 
+INFO: [Synth 8-6155] done synthesizing module 'Dual_Port_BRAM__parameterized0' (0#1) [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Dual_Port_BRAM.v:21]
+INFO: [Synth 8-6157] synthesizing module 'Dual_Port_BRAM__parameterized1' [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Dual_Port_BRAM.v:21]
+	Parameter AWIDTH bound to: 7 - type: integer 
+	Parameter DWIDTH bound to: 32 - type: integer 
+INFO: [Synth 8-6155] done synthesizing module 'Dual_Port_BRAM__parameterized1' (0#1) [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Dual_Port_BRAM.v:21]
+INFO: [Synth 8-6155] done synthesizing module 'Matrix_Vector_Multiplication' (0#1) [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Matrix_Vector_Multiplication.v:27]
+WARNING: [Synth 8-4446] all outputs are unconnected for this instance and logic may be removed [D:/DOAN/DATN_RTL/DATN_VIVADO/src/AXI4_Mapping.v:366]
+INFO: [Synth 8-6157] synthesizing module 'ila_0' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:48]
+INFO: [Synth 8-6157] synthesizing module 'CFGLUT5' [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:1534]
+INFO: [Synth 8-6155] done synthesizing module 'CFGLUT5' (0#1) [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:1534]
+INFO: [Synth 8-6157] synthesizing module 'CARRY4' [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:1497]
+INFO: [Synth 8-6155] done synthesizing module 'CARRY4' (0#1) [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:1497]
+INFO: [Synth 8-6157] synthesizing module 'SRLC32E' [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:131794]
+INFO: [Synth 8-6155] done synthesizing module 'SRLC32E' (0#1) [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:131794]
+INFO: [Synth 8-6157] synthesizing module 'SRL16E' [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:131644]
+INFO: [Synth 8-6155] done synthesizing module 'SRL16E' (0#1) [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:131644]
+INFO: [Synth 8-6157] synthesizing module 'SRLC16E' [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:131733]
+INFO: [Synth 8-6155] done synthesizing module 'SRLC16E' (0#1) [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:131733]
+INFO: [Synth 8-6157] synthesizing module 'FDRE' [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:38708]
+INFO: [Synth 8-6155] done synthesizing module 'FDRE' (0#1) [D:/Xlinx/Vivado/2022.2/scripts/rt/data/unisim_comp.v:38708]
+WARNING: [Synth 8-7071] port 'clk_nobuf' of module 'ila_v6_2_12_ila' is unconnected for instance 'inst' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:3253]
+WARNING: [Synth 8-7071] port 'clkdiv_out' of module 'ila_v6_2_12_ila' is unconnected for instance 'inst' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:3253]
+WARNING: [Synth 8-7071] port 'trig_in' of module 'ila_v6_2_12_ila' is unconnected for instance 'inst' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:3253]
+WARNING: [Synth 8-7071] port 'trig_in_ack' of module 'ila_v6_2_12_ila' is unconnected for instance 'inst' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:3253]
+WARNING: [Synth 8-7071] port 'trig_out' of module 'ila_v6_2_12_ila' is unconnected for instance 'inst' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:3253]
+WARNING: [Synth 8-7071] port 'trig_out_ack' of module 'ila_v6_2_12_ila' is unconnected for instance 'inst' [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:3253]
+WARNING: [Synth 8-7023] instance 'inst' of module 'ila_v6_2_12_ila' has 1033 connections declared, but only 1027 given [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:3253]
+INFO: [Synth 8-6155] done synthesizing module 'ila_0' (0#1) [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:48]
+INFO: [Synth 8-6155] done synthesizing module 'AXI4_Mapping' (0#1) [D:/DOAN/DATN_RTL/DATN_VIVADO/src/AXI4_Mapping.v:17]
+INFO: [Synth 8-6155] done synthesizing module 'MY_IP' (0#1) [D:/DOAN/DATN_RTL/DATN_VIVADO/src/MY_IP.v:3]
+INFO: [Synth 8-6155] done synthesizing module 'VPU_Top' (0#1) [D:/DOAN/DATN_RTL/DATN_VIVADO/src/VPU_Top.v:14]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[1][4] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[1][5] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[1][6] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[1][7] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][2] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][3] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][4] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][5] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][6] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][7] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][1] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][2] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][3] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][4] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][5] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][6] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][7] was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:207]
+WARNING: [Synth 8-6014] Unused sequential element deq_s1_last_reg was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:316]
+WARNING: [Synth 8-6014] Unused sequential element deq_s2_last_reg was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/PMAU_Full.v:320]
+WARNING: [Synth 8-6014] Unused sequential element compute_rd_en_reg was removed.  [D:/DOAN/DATN_RTL/DATN_VIVADO/src/Matrix_Vector_Multiplication.v:237]
+WARNING: [Synth 8-3848] Net sl_iport0 in module/entity ila_0 does not have driver. [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/synth/ila_0.v:142]
+INFO: [Synth 8-6071] Mark debug on the nets applies keep_hierarchy on instance 'debug'. This will prevent further optimization [D:/DOAN/DATN_RTL/DATN_VIVADO/src/AXI4_Mapping.v:366]
+WARNING: [Synth 8-7129] Port CLKB in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[447] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[446] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[445] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[444] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[443] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[442] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[441] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[440] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[439] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[438] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[437] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[436] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[435] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[434] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[433] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[432] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[431] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[430] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[429] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[428] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[427] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[426] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[425] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[424] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[423] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[422] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[421] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[420] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[419] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[418] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[417] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[416] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[415] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[414] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[413] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[412] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[411] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[410] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[409] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[408] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[407] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[406] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[405] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[404] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[403] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[402] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[401] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[400] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[399] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[398] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[397] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[396] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[395] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[394] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[393] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[392] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[391] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[390] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[389] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[388] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[387] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[386] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[385] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[384] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[383] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[382] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[381] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[380] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[379] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[378] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[377] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[376] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[375] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[374] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[373] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[372] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[371] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[370] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[369] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[368] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[367] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[366] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[365] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[364] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[363] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[362] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[361] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[360] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[359] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[358] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[357] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[356] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[355] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[354] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[353] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[352] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[351] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[350] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+WARNING: [Synth 8-7129] Port DOUTA_I[349] in module blk_mem_gen_v8_4_5_blk_mem_output_block is either unconnected or has no load
+INFO: [Common 17-14] Message 'Synth 8-7129' appears 100 times and further instances of the messages will be disabled. Use the Tcl command set_msg_config to change the current settings.
+---------------------------------------------------------------------------------
+Finished RTL Elaboration : Time (s): cpu = 00:00:34 ; elapsed = 00:00:38 . Memory (MB): peak = 3174.590 ; gain = 974.684
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Handling Custom Attributes
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Handling Custom Attributes : Time (s): cpu = 00:00:34 ; elapsed = 00:00:38 . Memory (MB): peak = 3174.590 ; gain = 974.684
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished RTL Optimization Phase 1 : Time (s): cpu = 00:00:34 ; elapsed = 00:00:38 . Memory (MB): peak = 3174.590 ; gain = 974.684
+---------------------------------------------------------------------------------
+Netlist sorting complete. Time (s): cpu = 00:00:01 ; elapsed = 00:00:00.250 . Memory (MB): peak = 3174.590 ; gain = 0.000
+INFO: [Netlist 29-17] Analyzing 429 Unisim elements for replacement
+INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
+INFO: [Project 1-570] Preparing netlist for logic optimization
+
+Processing XDC Constraints
+Initializing timing engine
+Parsing XDC File [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/ila_v6_2/constraints/ila.xdc] for cell 'u_my_ip/u_axi4_mapping/debug/inst'
+Finished Parsing XDC File [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/ila_v6_2/constraints/ila.xdc] for cell 'u_my_ip/u_axi4_mapping/debug/inst'
+Completed Processing XDC Constraints
+
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.004 . Memory (MB): peak = 3212.070 ; gain = 0.000
+INFO: [Project 1-111] Unisim Transformation Summary:
+  A total of 327 instances were transformed.
+  CFGLUT5 => CFGLUT5 (SRL16E, SRLC32E): 300 instances
+  CFGLUT5 => SRLC32E: 27 instances
+
+Constraint Validation Runtime : Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.144 . Memory (MB): peak = 3212.070 ; gain = 0.000
+---------------------------------------------------------------------------------
+Finished Constraint Validation : Time (s): cpu = 00:00:44 ; elapsed = 00:00:48 . Memory (MB): peak = 3212.070 ; gain = 1012.164
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Loading Part and Timing Information
+---------------------------------------------------------------------------------
+Loading part: xczu7ev-ffvc1156-2-e
+INFO: [Synth 8-6742] Reading net delay rules and data
+---------------------------------------------------------------------------------
+Finished Loading Part and Timing Information : Time (s): cpu = 00:00:44 ; elapsed = 00:00:48 . Memory (MB): peak = 3212.070 ; gain = 1012.164
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Applying 'set_property' XDC Constraints
+---------------------------------------------------------------------------------
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[0].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[10].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[11].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[12].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[13].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[14].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[15].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[1].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[2].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[3].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[4].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[5].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[6].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[7].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[8].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/u_gemv/u_pmau/\GEN_MULT[9].u_mult_gen_0 . (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/debug. (constraint file  auto generated constraint).
+Applied set_property KEEP_HIERARCHY = SOFT for u_my_ip/u_axi4_mapping/debug/inst. (constraint file  auto generated constraint).
+---------------------------------------------------------------------------------
+Finished applying 'set_property' XDC Constraints : Time (s): cpu = 00:00:44 ; elapsed = 00:00:49 . Memory (MB): peak = 3212.070 ; gain = 1012.164
+---------------------------------------------------------------------------------
+INFO: [Synth 8-802] inferred FSM for state register 'state_r_reg' in module 'Matrix_Vector_Multiplication'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized0'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized1'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized2'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized3'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized4'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized5'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized6'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized7'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized8'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized9'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized10'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized11'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized12'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized13'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized14'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized15'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized16'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized17'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized18'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized19'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized20'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized21'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized22'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized23'
+INFO: [Synth 8-802] inferred FSM for state register 'current_state_reg' in module 'ltlib_v1_0_0_generic_memrd'
+INFO: [Synth 8-3971] The signal "Dual_Port_BRAM:/mem_reg" was recognized as a true dual port RAM template.
+WARNING: [Synth 8-6841] Block RAM (mem_reg) originally specified as a Byte Wide Write Enable RAM cannot take advantage of ByteWide feature and is implemented with single write enable per RAM due to following reason.
+(address width (15) is more than optimal threshold of 12. Implementing using BWWE will require more logic and timing would be suboptimal. Please use attribute ram_decomp = power if BWWE is desired.)
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-3971] The signal "Dual_Port_BRAM__parameterized0:/mem_reg" was recognized as a true dual port RAM template.
+INFO: [Synth 8-3971] The signal "Dual_Port_BRAM__parameterized1:/mem_reg" was recognized as a true dual port RAM template.
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+                  S_IDLE |                              000 |                              000
+                   S_RUN |                              010 |                              001
+           S_WAIT_RESULT |                              100 |                              010
+                  S_DONE |                              011 |                              011
+                 S_ERROR |                              001 |                              100
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3354] encoded FSM with state register 'state_r_reg' using encoding 'sequential' in module 'Matrix_Vector_Multiplication'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized0'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized1'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized2'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized3'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized4'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized5'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized6'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized7'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized8'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized9'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized10'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized11'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized12'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized13'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized14'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized15'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized16'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized17'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized18'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized19'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized20'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized21'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized22'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+                    IDLE |                             0001 |                             0001
+                     REG |                             0010 |                             0010
+                     P2S |                             0100 |                             0100
+                     S2P |                             1000 |                             1000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'xsdbs_v1_0_2_reg_p2s__parameterized23'
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+*
+              RESET_ADDR |                          0000001 |                          0000001
+            REQUEST_READ |                          0000010 |                          0000010
+           WAIT_READ_ACK |                          0000100 |                          0000100
+             OUTPUT_DATA |                          0001000 |                          0001000
+                    IDLE |                          0010000 |                          0010000
+         INCREMENT_BLOCK |                          0100000 |                          0100000
+       INCREMENT_ADDRESS |                          1000000 |                          1000000
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3898] No Re-encoding of one hot register 'current_state_reg' in module 'ltlib_v1_0_0_generic_memrd'
+---------------------------------------------------------------------------------
+Finished RTL Optimization Phase 2 : Time (s): cpu = 00:00:47 ; elapsed = 00:00:52 . Memory (MB): peak = 3212.070 ; gain = 1012.164
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start RTL Component Statistics 
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished RTL Component Statistics 
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Part Resource Summary
+---------------------------------------------------------------------------------
+Part Resources:
+DSPs: 1728 (col length:144)
+BRAMs: 624 (col length: RAMB18 144 RAMB36 72)
+---------------------------------------------------------------------------------
+Finished Part Resource Summary
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Cross Boundary and Area Optimization
+---------------------------------------------------------------------------------
+WARNING: [Synth 8-7080] Parallel synthesis criteria is not met
+WARNING: [Synth 8-3917] design VPU_Top has port s00_axi_bresp[1] driven by constant 0
+WARNING: [Synth 8-3917] design VPU_Top has port s00_axi_bresp[0] driven by constant 0
+WARNING: [Synth 8-3917] design VPU_Top has port s00_axi_buser[0] driven by constant 0
+WARNING: [Synth 8-3917] design VPU_Top has port s00_axi_ruser[0] driven by constant 0
+INFO: [Synth 8-3971] The signal "\u_my_ip/u_axi4_mapping/u_gemv/u_act_bram/mem_reg " was recognized as a true dual port RAM template.
+WARNING: [Synth 8-6841] Block RAM (mem_reg) originally specified as a Byte Wide Write Enable RAM cannot take advantage of ByteWide feature and is implemented with single write enable per RAM due to following reason.
+(address width (15) is more than optimal threshold of 12. Implementing using BWWE will require more logic and timing would be suboptimal. Please use attribute ram_decomp = power if BWWE is desired.)
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg "
+INFO: [Synth 8-3971] The signal "\u_my_ip/u_axi4_mapping/u_gemv/u_weight_bram/mem_reg " was recognized as a true dual port RAM template.
+INFO: [Synth 8-3971] The signal "VPU_Top/u_my_ip/u_axi4_mapping/u_gemv/u_result_bram/mem_reg" was recognized as a true dual port RAM template.
+---------------------------------------------------------------------------------
+Finished Cross Boundary and Area Optimization : Time (s): cpu = 00:01:08 ; elapsed = 00:01:14 . Memory (MB): peak = 3212.070 ; gain = 1012.164
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Applying XDC Timing Constraints
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Applying XDC Timing Constraints : Time (s): cpu = 00:01:22 ; elapsed = 00:01:28 . Memory (MB): peak = 3351.266 ; gain = 1151.359
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Timing Optimization
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Timing Optimization : Time (s): cpu = 00:01:23 ; elapsed = 00:01:29 . Memory (MB): peak = 3371.039 ; gain = 1171.133
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Technology Mapping
+---------------------------------------------------------------------------------
+INFO: [Synth 8-7052] The timing for the instance u_my_ip/u_axi4_mapping/u_gemv/u_result_bram/mem_reg (implemented as a Block RAM) might be sub-optimal as no optional output register could be merged into the ram block. Providing additional output register may help in improving timing.
+---------------------------------------------------------------------------------
+Finished Technology Mapping : Time (s): cpu = 00:01:26 ; elapsed = 00:01:33 . Memory (MB): peak = 3403.504 ; gain = 1203.598
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Flattening Before IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Flattening Before IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Final Netlist Cleanup
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Final Netlist Cleanup
+---------------------------------------------------------------------------------
+WARNING: [Synth 8-3295] tying undriven pin dummy_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[36] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[35] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[34] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[33] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[32] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[31] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[30] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[29] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[28] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[27] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[26] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[25] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[24] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[23] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[22] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[21] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[20] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[19] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[18] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[17] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[16] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[15] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[14] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[13] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[12] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[11] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[10] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[9] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[8] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[7] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[6] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[5] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[4] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[3] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[2] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[1] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:sl_iport0[0] to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:trig_in to constant 0
+WARNING: [Synth 8-3295] tying undriven pin inst:trig_out_ack to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe0_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe1_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe2_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe3_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe4_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe5_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe6_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe7_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe8_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe9_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe10_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe11_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe12_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe13_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe14_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe15_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe16_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe17_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe18_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe19_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe20_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe21_inferred:in0 to constant 0
+WARNING: [Synth 8-3295] tying undriven pin u_my_ip/u_axi4_mapping/probe22_inferred:in0 to constant 0
+---------------------------------------------------------------------------------
+Finished IO Insertion : Time (s): cpu = 00:01:29 ; elapsed = 00:01:36 . Memory (MB): peak = 3416.316 ; gain = 1216.410
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Instances
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Instances : Time (s): cpu = 00:01:29 ; elapsed = 00:01:36 . Memory (MB): peak = 3416.316 ; gain = 1216.410
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Rebuilding User Hierarchy
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Rebuilding User Hierarchy : Time (s): cpu = 00:01:30 ; elapsed = 00:01:37 . Memory (MB): peak = 3416.316 ; gain = 1216.410
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Ports
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Ports : Time (s): cpu = 00:01:30 ; elapsed = 00:01:37 . Memory (MB): peak = 3416.316 ; gain = 1216.410
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Handling Custom Attributes
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Handling Custom Attributes : Time (s): cpu = 00:01:31 ; elapsed = 00:01:37 . Memory (MB): peak = 3416.316 ; gain = 1216.410
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Nets
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Nets : Time (s): cpu = 00:01:31 ; elapsed = 00:01:37 . Memory (MB): peak = 3416.316 ; gain = 1216.410
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Writing Synthesis Report
+---------------------------------------------------------------------------------
+
+DSP Final Report (the ' indicates corresponding REG is set)
++------------+-----------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+|Module Name | DSP Mapping     | A Size | B Size | C Size | D Size | P Size | AREG | BREG | CREG | DREG | ADREG | MREG | PREG | 
++------------+-----------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|dsp         | (A'*B')'        | 30     | 18     | -      | -      | 16     | 1    | 1    | -    | -    | -     | 0    | 1    | 
+|PMAU_Full   | A'*B''          | 17     | 16     | -      | -      | 48     | 1    | 2    | -    | -    | -     | 0    | 0    | 
+|PMAU_Full   | PCIN>>17+A''*B' | 16     | 18     | -      | -      | 48     | 2    | 1    | -    | -    | -     | 0    | 0    | 
++------------+-----------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+
+
+Report BlackBoxes: 
++-+--------------+----------+
+| |BlackBox name |Instances |
++-+--------------+----------+
++-+--------------+----------+
+
+Report Cell Usage: 
++------+----------------+------+
+|      |Cell            |Count |
++------+----------------+------+
+|1     |BUFG            |     1|
+|2     |CARRY4          |   102|
+|3     |CARRY8          |    95|
+|4     |CFGLUT5         |   327|
+|5     |DSP_ALU         |    18|
+|6     |DSP_A_B_DATA    |    18|
+|9     |DSP_C_DATA      |    18|
+|11    |DSP_MULTIPLIER  |    18|
+|12    |DSP_M_DATA      |    18|
+|13    |DSP_OUTPUT      |    18|
+|15    |DSP_PREADD      |    18|
+|16    |DSP_PREADD_DATA |    18|
+|17    |LUT1            |   168|
+|18    |LUT2            |  1232|
+|19    |LUT3            |   410|
+|20    |LUT4            |   593|
+|21    |LUT5            |   308|
+|22    |LUT6            |  1296|
+|23    |MUXF7           |    89|
+|24    |MUXF8           |    16|
+|25    |RAMB18E2        |     1|
+|26    |RAMB36E2        |   145|
+|32    |SRL16E          |   467|
+|33    |SRLC16E         |     2|
+|34    |SRLC32E         |    17|
+|35    |FDRE            |  6264|
+|36    |FDSE            |    22|
+|37    |IBUF            |   260|
+|38    |OBUF            |   142|
++------+----------------+------+
+---------------------------------------------------------------------------------
+Finished Writing Synthesis Report : Time (s): cpu = 00:01:31 ; elapsed = 00:01:37 . Memory (MB): peak = 3416.316 ; gain = 1216.410
+---------------------------------------------------------------------------------
+Synthesis finished with 0 errors, 0 critical warnings and 4810 warnings.
+Synthesis Optimization Runtime : Time (s): cpu = 00:00:52 ; elapsed = 00:01:32 . Memory (MB): peak = 3416.316 ; gain = 1178.930
+Synthesis Optimization Complete : Time (s): cpu = 00:01:31 ; elapsed = 00:01:38 . Memory (MB): peak = 3416.316 ; gain = 1216.410
+INFO: [Project 1-571] Translating synthesized netlist
+Netlist sorting complete. Time (s): cpu = 00:00:01 ; elapsed = 00:00:00.144 . Memory (MB): peak = 3425.344 ; gain = 0.000
+INFO: [Netlist 29-17] Analyzing 908 Unisim elements for replacement
+INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
+INFO: [Project 1-570] Preparing netlist for logic optimization
+INFO: [Chipscope 16-324] Core: u_my_ip/u_axi4_mapping/debug UUID: 8a2db382-86d0-586b-bb72-bcaece0c5520 
+Parsing XDC File [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/ila_v6_2/constraints/ila_impl.xdc] for cell 'u_my_ip/u_axi4_mapping/debug/inst'
+Finished Parsing XDC File [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/ila_v6_2/constraints/ila_impl.xdc] for cell 'u_my_ip/u_axi4_mapping/debug/inst'
+Parsing XDC File [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/ila_v6_2/constraints/ila.xdc] for cell 'u_my_ip/u_axi4_mapping/debug/inst'
+Finished Parsing XDC File [d:/doan/datn_rtl/datn_vivado/tmp_edit_project.gen/sources_1/ip/ila_0/ila_v6_2/constraints/ila.xdc] for cell 'u_my_ip/u_axi4_mapping/debug/inst'
+INFO: [Opt 31-138] Pushed 0 inverter(s) to 0 load pin(s).
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.005 . Memory (MB): peak = 3483.535 ; gain = 0.000
+INFO: [Project 1-111] Unisim Transformation Summary:
+  A total of 664 instances were transformed.
+  (CARRY4) => CARRY8: 58 instances
+  BUFG => BUFGCE: 1 instance 
+  CFGLUT5 => CFGLUT5 (SRL16E, SRLC32E): 300 instances
+  CFGLUT5 => SRLC32E: 27 instances
+  DSP48E2 => DSP48E2 (DSP_ALU, DSP_A_B_DATA, DSP_C_DATA, DSP_MULTIPLIER, DSP_M_DATA, DSP_OUTPUT, DSP_PREADD, DSP_PREADD_DATA): 18 instances
+  IBUF => IBUF (IBUFCTRL, INBUF): 260 instances
+
+Synth Design complete, checksum: de2d43c5
+INFO: [Common 17-83] Releasing license: Synthesis
+247 Infos, 212 Warnings, 0 Critical Warnings and 0 Errors encountered.
+synth_design completed successfully
+synth_design: Time (s): cpu = 00:01:42 ; elapsed = 00:01:50 . Memory (MB): peak = 3483.535 ; gain = 2408.566
+# report_utilization -file [file join $script_dir "dsp_vpu_synth_utilization.rpt"]
+# report_timing_summary -file [file join $script_dir "dsp_vpu_synth_timing.rpt"]
+INFO: [Timing 38-35] Done setting XDC timing constraints.
+INFO: [Timing 38-91] UpdateTimingParams: Speed grade: -2, Temperature grade: E, Delay Type: min_max.
+INFO: [Timing 38-191] Multithreading enabled for timing update using a maximum of 2 CPUs
+report_timing_summary: Time (s): cpu = 00:00:23 ; elapsed = 00:00:24 . Memory (MB): peak = 4493.219 ; gain = 1009.684
+# report_utilization -hierarchical -hierarchical_depth 6 \
+#     -file [file join $script_dir "dsp_vpu_synth_hier_utilization.rpt"]
+# set dsp_fh [open [file join $script_dir "dsp_vpu_synth_dsp_utilization.rpt"] "w"]
+# set dsp_cells [get_cells -hierarchical -filter {REF_NAME == DSP48E2}]
+# puts $dsp_fh "DSP48E2 instance count: [llength $dsp_cells]"
+# foreach dsp_cell $dsp_cells {
+#     puts $dsp_fh $dsp_cell
+# }
+# close $dsp_fh
+# write_checkpoint -force [file join $script_dir "dsp_vpu_synth.dcp"]
+INFO: [Timing 38-480] Writing timing data to binary archive.
+INFO: [Common 17-1381] The checkpoint 'D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/dsp_vpu_synth.dcp' has been generated.
+# set util_lines [report_utilization -return_string]
+# set fh [open [file join $script_dir "dsp_vpu_synth_summary.txt"] "w"]
+# puts $fh $util_lines
+# close $fh
+INFO: [Common 17-206] Exiting Vivado at Mon Jun  8 17:25:52 2026...

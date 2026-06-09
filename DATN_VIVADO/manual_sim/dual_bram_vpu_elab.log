@@ -1,0 +1,19 @@
+Vivado Simulator v2022.2
+Copyright 1986-1999, 2001-2022 Xilinx, Inc. All Rights Reserved.
+Running: D:/Xlinx/Vivado/2022.2/bin/unwrapped/win64.o/xelab.exe tb_VPU_Top -debug typical -s tb_VPU_Top_dual_bram -log dual_bram_vpu_elab.log 
+Multi-threading is on. Using 10 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+Starting simulation data flow analysis
+Completed simulation data flow analysis
+Time Resolution for simulation is 1ps
+Compiling module work.PMAU_Full_default
+Compiling module work.Dual_Port_BRAM(AWIDTH=3)
+Compiling module work.Dual_Port_BRAM(AWIDTH=6)
+Compiling module work.Dual_Port_BRAM(AWIDTH=3,DWIDTH=3...
+Compiling module work.Matrix_Vector_Multiplication(MAX...
+Compiling module work.MY_IP(MAX_ROWS=8,MAX_COL_BEATS=8...
+Compiling module work.VPU_Top(MAX_ROWS=8,MAX_COL_BEATS...
+Compiling module work.tb_VPU_Top
+Built simulation snapshot tb_VPU_Top_dual_bram

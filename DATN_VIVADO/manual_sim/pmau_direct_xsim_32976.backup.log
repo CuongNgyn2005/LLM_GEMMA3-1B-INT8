@@ -1,0 +1,32 @@
+#-----------------------------------------------------------
+# xsim v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Mon Jun  8 17:08:54 2026
+# Process ID: 32976
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/xsim_scratch
+# Command line: xsim.exe -log D:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim\pmau_direct_xsim.log -mode tcl -source {xsim.dir/tb_pmau_direct_xsim_behav/xsim_script.tcl}
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/pmau_direct_xsim.log
+# Journal file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/xsim_scratch\xsim.jou
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_pmau_direct_xsim_behav/xsim_script.tcl
+# xsim {tb_pmau_direct_xsim_behav} -autoloadwcfg -tclbatch {D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/vivado_review_run_all.tcl}
+Time resolution is 1 ps
+source D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/vivado_review_run_all.tcl
+## run -all
+[PMAU][PASS] case=1 row=0 result=-74
+[PMAU][PASS] case=1 row=1 result=-331
+[PMAU][PASS] case=1 row=2 result=-183
+[PMAU][PASS] case=1 row=3 result=595
+[PMAU][FAIL] case=2 row=0 got=1325 expected=283
+[PMAU][FAIL] case=2 row=1 got=-202 expected=-285
+[PMAU][FAIL] case=2 row=2 got=-4811 expected=-2394
+[PMAU][FAIL] case=3 row=0 got=-996044 expected=-569168
+[PMAU][FAIL] case=3 row=1 got=996016 expected=569152
+[PMAU][FAIL] case=3 row=2 got=-996044 expected=-569168
+[PMAU][FAIL] case=3 row=3 got=996016 expected=569152
+[PMAU][SUMMARY] pass_cases=1 fail_cases=2
+$finish called at time : 1996 ns : File "D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/tb_pmau_direct_xsim.v" Line 265
+## quit
+INFO: [Common 17-206] Exiting xsim at Mon Jun  8 17:08:56 2026...

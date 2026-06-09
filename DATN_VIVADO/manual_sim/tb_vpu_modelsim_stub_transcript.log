@@ -1,0 +1,2 @@
+# vsim -do {run -all; quit -f} -l {.\tb_vpu_modelsim_stub_transcript.log} -c work_tbvpu.tb_VPU_Top 
+# run -all 

@@ -1,0 +1,18 @@
+#-----------------------------------------------------------
+# xsim v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Mon Jun  8 16:22:35 2026
+# Process ID: 24340
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/project_1/project_1.sim/sim_1/behav/xsim
+# Command line: xsim.exe -log D:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim\vivado_review_xsim.log -mode tcl -source {xsim.dir/tb_VPU_Top_manual_behav/xsim_script.tcl}
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/vivado_review_xsim.log
+# Journal file: D:/DOAN/DATN_RTL/DATN_VIVADO/project_1/project_1.sim/sim_1/behav/xsim\xsim.jou
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_VPU_Top_manual_behav/xsim_script.tcl
+# xsim {tb_VPU_Top_manual_behav} -autoloadwcfg -tclbatch {D:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim\vivado_review_run_all.tcl}
+Time resolution is 1 ps
+source {D:DOANDATN_RTLDATN_VIVADOmanual_simivado_review_run_all.tcl}
+couldn't read file "D:DOANDATN_RTLDATN_VIVADOmanual_simivado_review_run_all.tcl": no such file or directory
+INFO: [Common 17-206] Exiting xsim at Mon Jun  8 16:22:37 2026...

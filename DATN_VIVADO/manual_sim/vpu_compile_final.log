@@ -1,0 +1,6 @@
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/PMAU_Streaming.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module PMAU_Streaming
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/VPU_Top.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module VPU_Top
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/TESTBENCH/tb_VPU_Top.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_VPU_Top

@@ -1,0 +1,30 @@
+#-----------------------------------------------------------
+# xsim v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Tue Jun  2 19:51:49 2026
+# Process ID: 19760
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim
+# Command line: xsim.exe -log axi_full_sim.log -mode tcl -source {xsim.dir/tb_VPU_Top_axi_full/xsim_script.tcl}
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/axi_full_sim.log
+# Journal file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim\xsim.jou
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_VPU_Top_axi_full/xsim_script.tcl
+# xsim {tb_VPU_Top_axi_full} -autoloadwcfg -runall
+Time resolution is 1 ps
+run -all
+[TB] CASE 1: rows=3 cols=64 load_beats=4 cfg_col_beats=4
+[TB][PASS] row=0 result=-613
+[TB][PASS] row=1 result=1039
+[TB][PASS] row=2 result=115
+[TB] CASE 1 compute+poll cycles=57
+[TB] CASE 2: rows=2 cols=17 load_beats=2 cfg_col_beats=0
+[TB][PASS] row=0 result=145
+[TB][PASS] row=1 result=328
+[TB] CASE 2 compute+poll cycles=35
+[TB] pass_count=5 fail_count=0
+[TB] AXI4-Full VPU TEST PASSED
+$finish called at time : 3595 ns : File "D:/DOAN/DATN_RTL/TESTBENCH/tb_VPU_Top.v" Line 448
+exit
+INFO: [Common 17-206] Exiting xsim at Tue Jun  2 19:51:51 2026...

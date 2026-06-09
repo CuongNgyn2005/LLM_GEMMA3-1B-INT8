@@ -1,0 +1,92 @@
+#-----------------------------------------------------------
+# xsim v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Tue Jun  2 11:34:14 2026
+# Process ID: 16716
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim
+# Command line: xsim.exe -log pmau_sim_final.log -mode tcl -source {xsim.dir/tb_PMAU_Streaming_behav/xsim_script.tcl}
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/pmau_sim_final.log
+# Journal file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim\xsim.jou
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_PMAU_Streaming_behav/xsim_script.tcl
+# xsim {tb_PMAU_Streaming_behav} -autoloadwcfg -runall
+Time resolution is 1 ps
+run -all
+[TB] ============================================================
+[TB] PMAU_Streaming Unit Test Started
+[TB] Configuration: NUM_LANES=16, VEC_SIZE=64, NUM_BEATS=4
+[TB] Clock Period: 10 ns (100.0 MHz)
+[TB] ============================================================
+
+[TB] Generating random test vectors...
+[TB] Activation vector: [-92, -119, -115, ..., -7]
+[TB] Weight vector:     [1, -29, 13, ..., -60]
+[TB] Golden DOT Product: 48019 (0x0000bb93)
+
+[TB] TEST 1: Single Vector DOT Product
+[TB] ============================================================
+[TB] Starting single DOT product test...
+
+[TB] Sending beat 0 (elements 0-15)...
+[TB] Sending beat 1 (elements 16-31)...
+[TB] Sending beat 2 (elements 32-47)...
+[TB] Sending beat 3 (elements 48-63)...
+[TB] Waiting for DOT product result...
+[TB] Result received after 7 cycles latency
+[TB] Received: 0x0000bb93, Expected: 0x0000bb93
+[PASS] DOT product correct!
+
+
+[TB] TEST 2: Multiple Back-to-Back DOT Products
+[TB] ============================================================
+[TB] Running 3 back-to-back DOT products...
+
+[TB] Iteration 1:
+[TB] Generating random test vectors...
+[TB] Activation vector: [80, 43, 92, ..., 15]
+[TB] Weight vector:     [-86, -114, 26, ..., -21]
+[TB] Golden DOT Product: -53572 (0xffff2ebc)
+
+[PASS] Iteration 1 correct! (0xffff2ebc)
+
+[TB] Iteration 2:
+[TB] Generating random test vectors...
+[TB] Activation vector: [8, 27, -88, ..., 12]
+[TB] Weight vector:     [46, 18, -83, ..., 16]
+[TB] Golden DOT Product: -55314 (0xffff27ee)
+
+[PASS] Iteration 2 correct! (0xffff27ee)
+
+[TB] Iteration 3:
+[TB] Generating random test vectors...
+[TB] Activation vector: [-105, 4, -4, ..., -37]
+[TB] Weight vector:     [-22, 42, -32, ..., 47]
+[TB] Golden DOT Product: -55630 (0xffff26b2)
+
+[PASS] Iteration 3 correct! (0xffff26b2)
+
+
+[TB] TEST 3: Input Stalling & Flow Control
+[TB] ============================================================
+[TB] Testing input stalling...
+
+[TB] Will stall at beat 2
+
+[TB] Stalling before beat 2...
+[TB] Resuming...
+[TB] Waiting for result after stall...
+[PASS] Result correct even after stall! (0xffff26b2)
+
+
+[TB] ============================================================
+[TB] Final Results:
+[TB]   Total Tests: 5
+[TB]   PASS: 5
+[TB]   FAIL: 0
+[TB] ============================================================
+[TB] [PASS] All tests passed!
+$finish called at time : 1045 ns
+exit
+INFO: [Common 17-206] Exiting xsim at Tue Jun  2 11:34:16 2026...

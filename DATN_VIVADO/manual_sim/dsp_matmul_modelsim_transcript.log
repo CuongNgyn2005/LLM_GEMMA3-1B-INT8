@@ -1,0 +1,2 @@
+# vsim -do {run -all; quit -f} -l {.\dsp_matmul_modelsim_transcript.log} -c work_dsp.tb_matmul_dsp_core 
+# run -all 

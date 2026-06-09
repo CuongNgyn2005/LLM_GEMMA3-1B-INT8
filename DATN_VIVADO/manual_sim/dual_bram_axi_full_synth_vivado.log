@@ -1,0 +1,551 @@
+#-----------------------------------------------------------
+# Vivado v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Fri Jun  5 14:28:39 2026
+# Process ID: 29260
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim
+# Command line: vivado.exe -mode batch -source run_axi_full_synth.tcl -nojournal -log dual_bram_axi_full_synth_vivado.log
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/dual_bram_axi_full_synth_vivado.log
+# Journal file: 
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+CRITICAL WARNING: [Common 17-741] No write access right to the local Tcl store at 'C'. XilinxTclStore is reverted to the installation area. If you want to use local Tcl Store, please change the access right and relaunch Vivado.
+WARNING: [Common 17-1509] Migration of commands.paini file failed with error : boost::filesystem::directory_iterator::construct: Access is denied: "C:\Users\PC\AppData\Roaming/Xilinx/Vivado/2022.2/commands"
+source run_axi_full_synth.tcl
+# read_verilog ../../RTL/Dual_Port_BRAM.v
+read_verilog: Time (s): cpu = 00:00:04 ; elapsed = 00:00:13 . Memory (MB): peak = 1001.977 ; gain = 118.621
+# read_verilog ../../RTL/PMAU_Full.v
+# read_verilog ../../RTL/Matrix_Vector_Multiplication.v
+# read_verilog ../../RTL/MY_IP.v
+# read_verilog ../../RTL/VPU_Top.v
+# synth_design -top VPU_Top -part xczu7ev-ffvc1156-2-e -mode out_of_context
+Command: synth_design -top VPU_Top -part xczu7ev-ffvc1156-2-e -mode out_of_context
+Starting synth_design
+Attempting to get a license for feature 'Synthesis' and/or device 'xczu7ev'
+INFO: [Common 17-349] Got license for feature 'Synthesis' and/or device 'xczu7ev'
+INFO: [Synth 8-7079] Multithreading enabled for synth_design using a maximum of 2 processes.
+INFO: [Synth 8-7078] Launching helper process for spawning children vivado processes
+INFO: [Synth 8-7075] Helper process launched with PID 29152
+INFO: [Synth 8-11241] undeclared symbol 'REGCCE', assumed default net type 'wire' [D:/Xlinx/Vivado/2022.2/data/verilog/src/unimacro/BRAM_SINGLE_MACRO.v:2170]
+---------------------------------------------------------------------------------
+Starting Synthesize : Time (s): cpu = 00:00:03 ; elapsed = 00:00:05 . Memory (MB): peak = 1440.727 ; gain = 413.867
+---------------------------------------------------------------------------------
+INFO: [Synth 8-6157] synthesizing module 'VPU_Top' [D:/DOAN/DATN_RTL/RTL/VPU_Top.v:14]
+INFO: [Synth 8-6157] synthesizing module 'MY_IP' [D:/DOAN/DATN_RTL/RTL/MY_IP.v:3]
+	Parameter C_S00_AXI_ID_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_DATA_WIDTH bound to: 128 - type: integer 
+	Parameter C_S00_AXI_ADDR_WIDTH bound to: 40 - type: integer 
+	Parameter C_S00_AXI_AWUSER_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_ARUSER_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_WUSER_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_RUSER_WIDTH bound to: 1 - type: integer 
+	Parameter C_S00_AXI_BUSER_WIDTH bound to: 1 - type: integer 
+	Parameter NUM_LANES bound to: 16 - type: integer 
+	Parameter ACT_WIDTH bound to: 8 - type: integer 
+	Parameter WEIGHT_WIDTH bound to: 8 - type: integer 
+	Parameter ACC_WIDTH bound to: 32 - type: integer 
+	Parameter SCALE_WIDTH bound to: 16 - type: integer 
+	Parameter SCALE_FRAC_BITS bound to: 15 - type: integer 
+	Parameter RESULT_FIFO_DEPTH bound to: 8 - type: integer 
+	Parameter MAX_ROWS bound to: 128 - type: integer 
+	Parameter MAX_COL_BEATS bound to: 256 - type: integer 
+INFO: [Synth 8-6157] synthesizing module 'Matrix_Vector_Multiplication' [D:/DOAN/DATN_RTL/RTL/Matrix_Vector_Multiplication.v:27]
+	Parameter NUM_LANES bound to: 16 - type: integer 
+	Parameter ACT_WIDTH bound to: 8 - type: integer 
+	Parameter WEIGHT_WIDTH bound to: 8 - type: integer 
+	Parameter ACC_WIDTH bound to: 32 - type: integer 
+	Parameter SCALE_WIDTH bound to: 16 - type: integer 
+	Parameter SCALE_FRAC_BITS bound to: 15 - type: integer 
+	Parameter RESULT_FIFO_DEPTH bound to: 8 - type: integer 
+	Parameter AXI_DATA_WIDTH bound to: 128 - type: integer 
+	Parameter MAX_ROWS bound to: 128 - type: integer 
+	Parameter MAX_COL_BEATS bound to: 256 - type: integer 
+INFO: [Synth 8-6157] synthesizing module 'PMAU_Full' [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:31]
+	Parameter NUM_LANES bound to: 16 - type: integer 
+	Parameter ACT_WIDTH bound to: 8 - type: integer 
+	Parameter WEIGHT_WIDTH bound to: 8 - type: integer 
+	Parameter ACC_WIDTH bound to: 32 - type: integer 
+	Parameter SCALE_WIDTH bound to: 16 - type: integer 
+	Parameter SCALE_FRAC_BITS bound to: 15 - type: integer 
+	Parameter RESULT_FIFO_DEPTH bound to: 8 - type: integer 
+INFO: [Synth 8-6155] done synthesizing module 'PMAU_Full' (0#1) [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:31]
+INFO: [Synth 8-6157] synthesizing module 'Dual_Port_BRAM' [D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v:21]
+	Parameter AWIDTH bound to: 8 - type: integer 
+	Parameter DWIDTH bound to: 128 - type: integer 
+INFO: [Synth 8-6155] done synthesizing module 'Dual_Port_BRAM' (0#1) [D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v:21]
+INFO: [Synth 8-6157] synthesizing module 'Dual_Port_BRAM__parameterized0' [D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v:21]
+	Parameter AWIDTH bound to: 15 - type: integer 
+	Parameter DWIDTH bound to: 128 - type: integer 
+INFO: [Synth 8-6155] done synthesizing module 'Dual_Port_BRAM__parameterized0' (0#1) [D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v:21]
+INFO: [Synth 8-6157] synthesizing module 'Dual_Port_BRAM__parameterized1' [D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v:21]
+	Parameter AWIDTH bound to: 7 - type: integer 
+	Parameter DWIDTH bound to: 32 - type: integer 
+INFO: [Synth 8-6155] done synthesizing module 'Dual_Port_BRAM__parameterized1' (0#1) [D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v:21]
+INFO: [Synth 8-6155] done synthesizing module 'Matrix_Vector_Multiplication' (0#1) [D:/DOAN/DATN_RTL/RTL/Matrix_Vector_Multiplication.v:27]
+INFO: [Synth 8-6155] done synthesizing module 'MY_IP' (0#1) [D:/DOAN/DATN_RTL/RTL/MY_IP.v:3]
+INFO: [Synth 8-6155] done synthesizing module 'VPU_Top' (0#1) [D:/DOAN/DATN_RTL/RTL/VPU_Top.v:14]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[1][4] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[1][5] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[1][6] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[1][7] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][2] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][3] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][4] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][5] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][6] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[2][7] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][1] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][2] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][3] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][4] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][5] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][6] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element sum_pipe_reg[3][7] was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:198]
+WARNING: [Synth 8-6014] Unused sequential element deq_s1_last_reg was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:275]
+WARNING: [Synth 8-6014] Unused sequential element deq_s2_last_reg was removed.  [D:/DOAN/DATN_RTL/RTL/PMAU_Full.v:279]
+WARNING: [Synth 8-6014] Unused sequential element compute_rd_en_reg was removed.  [D:/DOAN/DATN_RTL/RTL/Matrix_Vector_Multiplication.v:237]
+WARNING: [Synth 8-3936] Found unconnected internal register 'issue_addr_r_reg' and it is trimmed from '40' to '32' bits. [D:/DOAN/DATN_RTL/RTL/MY_IP.v:387]
+WARNING: [Synth 8-7129] Port compute_mode[1] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port compute_mode[0] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[15] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[14] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[13] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[12] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[11] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[10] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[9] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[8] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[7] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[6] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[5] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[4] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[3] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[2] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[1] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port scalar_axpy[0] in module PMAU_Full is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[31] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[30] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[29] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[28] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[27] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[26] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[25] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[24] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[23] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[22] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[21] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[20] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[19] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[18] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[17] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[16] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[15] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awlock in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awcache[3] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awcache[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awcache[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awcache[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awprot[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awprot[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awprot[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awqos[3] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awqos[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awqos[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awqos[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awregion[3] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awregion[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awregion[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awregion[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awuser[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_wuser[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arlock in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arcache[3] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arcache[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arcache[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arcache[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arprot[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arprot[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arprot[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arqos[3] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arqos[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arqos[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arqos[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arregion[3] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arregion[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arregion[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_arregion[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_aruser[0] in module MY_IP is either unconnected or has no load
+---------------------------------------------------------------------------------
+Finished Synthesize : Time (s): cpu = 00:00:06 ; elapsed = 00:00:09 . Memory (MB): peak = 1624.246 ; gain = 597.387
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Constraint Validation : Time (s): cpu = 00:00:07 ; elapsed = 00:00:10 . Memory (MB): peak = 1624.246 ; gain = 597.387
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Loading Part and Timing Information
+---------------------------------------------------------------------------------
+Loading part: xczu7ev-ffvc1156-2-e
+INFO: [Synth 8-6742] Reading net delay rules and data
+---------------------------------------------------------------------------------
+INFO: [Device 21-403] Loading part xczu7ev-ffvc1156-2-e
+Finished Loading Part and Timing Information : Time (s): cpu = 00:00:07 ; elapsed = 00:00:10 . Memory (MB): peak = 1624.246 ; gain = 597.387
+---------------------------------------------------------------------------------
+INFO: [Synth 8-802] inferred FSM for state register 'state_r_reg' in module 'Matrix_Vector_Multiplication'
+INFO: [Synth 8-3971] The signal "Dual_Port_BRAM:/mem_reg" was recognized as a true dual port RAM template.
+WARNING: [Synth 8-6841] Block RAM (mem_reg) originally specified as a Byte Wide Write Enable RAM cannot take advantage of ByteWide feature and is implemented with single write enable per RAM due to following reason.
+(address width (15) is more than optimal threshold of 12. Implementing using BWWE will require more logic and timing would be suboptimal. Please use attribute ram_decomp = power if BWWE is desired.)
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "Dual_Port_BRAM__parameterized0:/mem_reg"
+INFO: [Synth 8-3971] The signal "Dual_Port_BRAM__parameterized0:/mem_reg" was recognized as a true dual port RAM template.
+INFO: [Synth 8-3971] The signal "Dual_Port_BRAM__parameterized1:/mem_reg" was recognized as a true dual port RAM template.
+---------------------------------------------------------------------------------------------------
+                   State |                     New Encoding |                Previous Encoding 
+---------------------------------------------------------------------------------------------------
+                  S_IDLE |                              000 |                              000
+                   S_RUN |                              010 |                              001
+           S_WAIT_RESULT |                              100 |                              010
+                  S_DONE |                              011 |                              011
+                 S_ERROR |                              001 |                              100
+---------------------------------------------------------------------------------------------------
+INFO: [Synth 8-3354] encoded FSM with state register 'state_r_reg' using encoding 'sequential' in module 'Matrix_Vector_Multiplication'
+---------------------------------------------------------------------------------
+Finished RTL Optimization Phase 2 : Time (s): cpu = 00:00:09 ; elapsed = 00:00:11 . Memory (MB): peak = 1624.246 ; gain = 597.387
+---------------------------------------------------------------------------------
+No constraint files found.
+---------------------------------------------------------------------------------
+Start RTL Component Statistics 
+---------------------------------------------------------------------------------
+Detailed RTL Component Info : 
++---Adders : 
+	   2 Input   40 Bit       Adders := 1     
+	   2 Input   32 Bit       Adders := 6     
+	   2 Input   16 Bit       Adders := 4     
+	   2 Input   15 Bit       Adders := 2     
+	   2 Input    8 Bit       Adders := 2     
+	   2 Input    4 Bit       Adders := 1     
+	  10 Input    4 Bit       Adders := 1     
+	   2 Input    3 Bit       Adders := 2     
++---Registers : 
+	              128 Bit    Registers := 10    
+	               32 Bit    Registers := 25    
+	               16 Bit    Registers := 11    
+	               15 Bit    Registers := 2     
+	                8 Bit    Registers := 5     
+	                4 Bit    Registers := 1     
+	                3 Bit    Registers := 4     
+	                2 Bit    Registers := 5     
+	                1 Bit    Registers := 47    
++---Multipliers : 
+	              17x32  Multipliers := 1     
++---RAMs : 
+	            4096K Bit	(32768 X 128 bit)          RAMs := 1     
+	              32K Bit	(256 X 128 bit)          RAMs := 1     
+	               4K Bit	(128 X 32 bit)          RAMs := 1     
++---Muxes : 
+	   2 Input  128 Bit        Muxes := 122   
+	   4 Input  128 Bit        Muxes := 1     
+	  10 Input  128 Bit        Muxes := 1     
+	   2 Input   40 Bit        Muxes := 1     
+	   2 Input   32 Bit        Muxes := 34    
+	   6 Input   32 Bit        Muxes := 5     
+	   2 Input   16 Bit        Muxes := 1     
+	   5 Input   16 Bit        Muxes := 2     
+	   5 Input   15 Bit        Muxes := 1     
+	   2 Input    8 Bit        Muxes := 6     
+	   3 Input    8 Bit        Muxes := 1     
+	   5 Input    3 Bit        Muxes := 1     
+	   2 Input    3 Bit        Muxes := 4     
+	   3 Input    2 Bit        Muxes := 1     
+	   2 Input    2 Bit        Muxes := 4     
+	   4 Input    2 Bit        Muxes := 1     
+	   3 Input    1 Bit        Muxes := 4     
+	   2 Input    1 Bit        Muxes := 41    
+	   5 Input    1 Bit        Muxes := 19    
+	   4 Input    1 Bit        Muxes := 1     
+---------------------------------------------------------------------------------
+Finished RTL Component Statistics 
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Part Resource Summary
+---------------------------------------------------------------------------------
+Part Resources:
+DSPs: 1728 (col length:144)
+BRAMs: 624 (col length: RAMB18 144 RAMB36 72)
+---------------------------------------------------------------------------------
+Finished Part Resource Summary
+---------------------------------------------------------------------------------
+No constraint files found.
+---------------------------------------------------------------------------------
+Start Cross Boundary and Area Optimization
+---------------------------------------------------------------------------------
+WARNING: [Synth 8-7080] Parallel synthesis criteria is not met
+DSP Report: Generating DSP u_pmau/dequant_mul, operation Mode is: A2*B''.
+DSP Report: register u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: register u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: register u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: operator u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: operator u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: Generating DSP u_pmau/dequant_mul, operation Mode is: (PCIN>>17)+A''*B2.
+DSP Report: register u_pmau/deq_s1_raw_reg is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: register u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: register u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: operator u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+DSP Report: operator u_pmau/dequant_mul is absorbed into DSP u_pmau/dequant_mul.
+WARNING: [Synth 8-7129] Port compute_mode[1] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port compute_mode[0] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[31] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[30] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[29] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[28] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[27] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[26] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[25] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[24] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[23] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[22] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[21] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[20] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[19] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[18] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[17] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[16] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port mm_wr_index[15] in module Matrix_Vector_Multiplication is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awlock in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awcache[3] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awcache[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awcache[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awcache[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awprot[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awprot[1] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awprot[0] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awqos[3] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awqos[2] in module MY_IP is either unconnected or has no load
+WARNING: [Synth 8-7129] Port s00_axi_awqos[1] in module MY_IP is either unconnected or has no load
+INFO: [Common 17-14] Message 'Synth 8-7129' appears 100 times and further instances of the messages will be disabled. Use the Tcl command set_msg_config to change the current settings.
+INFO: [Synth 8-3971] The signal "\u_my_ip/u_gemv /u_act_bram/mem_reg" was recognized as a true dual port RAM template.
+WARNING: [Synth 8-6841] Block RAM (mem_reg) originally specified as a Byte Wide Write Enable RAM cannot take advantage of ByteWide feature and is implemented with single write enable per RAM due to following reason.
+(address width (15) is more than optimal threshold of 12. Implementing using BWWE will require more logic and timing would be suboptimal. Please use attribute ram_decomp = power if BWWE is desired.)
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-5555] Implemented Block Ram Cascade chain of height 8 and width 8 for RAM "\u_my_ip/u_gemv /u_weight_bram/mem_reg"
+INFO: [Synth 8-3971] The signal "\u_my_ip/u_gemv /u_weight_bram/mem_reg" was recognized as a true dual port RAM template.
+INFO: [Synth 8-3971] The signal "\u_my_ip/u_gemv/u_result_bram/mem_reg " was recognized as a true dual port RAM template.
+---------------------------------------------------------------------------------
+Finished Cross Boundary and Area Optimization : Time (s): cpu = 00:00:20 ; elapsed = 00:00:35 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start ROM, RAM, DSP, Shift Register and Retiming Reporting
+---------------------------------------------------------------------------------
+
+Block RAM: Preliminary Mapping Report (see note below)
++-------------------------------+-----------------------+------------------------+---+---+------------------------+---+---+------------------+--------+--------+---------------------------------+
+|Module Name                    | RTL Object            | PORT A (Depth x Width) | W | R | PORT B (Depth x Width) | W | R | Ports driving FF | RAMB18 | RAMB36 | Cascade Heights                 | 
++-------------------------------+-----------------------+------------------------+---+---+------------------------+---+---+------------------+--------+--------+---------------------------------+
+|\u_my_ip/u_gemv /u_act_bram    | mem_reg               | 256 x 128(READ_FIRST)  | W | R | 256 x 128(READ_FIRST)  | W | R | Port A and B     | 0      | 4      |                                 | 
+|\u_my_ip/u_gemv /u_weight_bram | mem_reg               | 32 K x 128(READ_FIRST) | W | R | 32 K x 128(READ_FIRST) | W | R | Port A and B     | 0      | 128    | 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8 | 
+|\u_my_ip/u_gemv                | u_result_bram/mem_reg | 128 x 32(WRITE_FIRST)  | W |   | 128 x 32(READ_FIRST)   | W | R | Port A and B     | 0      | 1      |                                 | 
++-------------------------------+-----------------------+------------------------+---+---+------------------------+---+---+------------------+--------+--------+---------------------------------+
+
+Note: The table above is a preliminary report that shows the Block RAMs at the current stage of the synthesis flow. Some Block RAMs may be reimplemented as non Block RAM primitives later in the synthesis flow. Multiple instantiated Block RAMs are reported only once. 
+
+DSP: Preliminary Mapping Report (see note below. The ' indicates corresponding REG is set)
++-----------------------------+-------------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+|Module Name                  | DSP Mapping       | A Size | B Size | C Size | D Size | P Size | AREG | BREG | CREG | DREG | ADREG | MREG | PREG | 
++-----------------------------+-------------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+|Matrix_Vector_Multiplication | A2*B''            | 18     | 17     | -      | -      | 48     | 1    | 2    | -    | -    | -     | 0    | 0    | 
+|Matrix_Vector_Multiplication | (PCIN>>17)+A''*B2 | 17     | 15     | -      | -      | 48     | 2    | 1    | -    | -    | -     | 0    | 0    | 
++-----------------------------+-------------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+
+Note: The table above is a preliminary report that shows the DSPs inferred at the current stage of the synthesis flow. Some DSP may be reimplemented as non DSP primitives later in the synthesis flow. Multiple instantiated DSPs are reported only once.
+---------------------------------------------------------------------------------
+Finished ROM, RAM, DSP, Shift Register and Retiming Reporting
+---------------------------------------------------------------------------------
+No constraint files found.
+---------------------------------------------------------------------------------
+Start Timing Optimization
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Timing Optimization : Time (s): cpu = 00:00:21 ; elapsed = 00:00:36 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start ROM, RAM, DSP, Shift Register and Retiming Reporting
+---------------------------------------------------------------------------------
+
+Block RAM: Final Mapping Report
++-------------------------------+-----------------------+------------------------+---+---+------------------------+---+---+------------------+--------+--------+---------------------------------+
+|Module Name                    | RTL Object            | PORT A (Depth x Width) | W | R | PORT B (Depth x Width) | W | R | Ports driving FF | RAMB18 | RAMB36 | Cascade Heights                 | 
++-------------------------------+-----------------------+------------------------+---+---+------------------------+---+---+------------------+--------+--------+---------------------------------+
+|\u_my_ip/u_gemv /u_act_bram    | mem_reg               | 256 x 128(READ_FIRST)  | W | R | 256 x 128(READ_FIRST)  | W | R | Port A and B     | 0      | 4      |                                 | 
+|\u_my_ip/u_gemv /u_weight_bram | mem_reg               | 32 K x 128(READ_FIRST) | W | R | 32 K x 128(READ_FIRST) | W | R | Port A and B     | 0      | 128    | 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8 | 
+|\u_my_ip/u_gemv                | u_result_bram/mem_reg | 128 x 32(WRITE_FIRST)  | W |   | 128 x 32(READ_FIRST)   | W | R | Port A and B     | 0      | 1      |                                 | 
++-------------------------------+-----------------------+------------------------+---+---+------------------------+---+---+------------------+--------+--------+---------------------------------+
+
+---------------------------------------------------------------------------------
+Finished ROM, RAM, DSP, Shift Register and Retiming Reporting
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Technology Mapping
+---------------------------------------------------------------------------------
+INFO: [Synth 8-7052] The timing for the instance u_my_ip/u_gemv/u_result_bram/mem_reg (implemented as a Block RAM) might be sub-optimal as no optional output register could be merged into the ram block. Providing additional output register may help in improving timing.
+---------------------------------------------------------------------------------
+Finished Technology Mapping : Time (s): cpu = 00:00:22 ; elapsed = 00:00:37 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Flattening Before IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Flattening Before IO Insertion
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Final Netlist Cleanup
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Final Netlist Cleanup
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished IO Insertion : Time (s): cpu = 00:00:25 ; elapsed = 00:00:40 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Instances
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Instances : Time (s): cpu = 00:00:25 ; elapsed = 00:00:40 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Rebuilding User Hierarchy
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Rebuilding User Hierarchy : Time (s): cpu = 00:00:25 ; elapsed = 00:00:41 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Ports
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Ports : Time (s): cpu = 00:00:25 ; elapsed = 00:00:41 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Handling Custom Attributes
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Handling Custom Attributes : Time (s): cpu = 00:00:26 ; elapsed = 00:00:41 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Renaming Generated Nets
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Finished Renaming Generated Nets : Time (s): cpu = 00:00:26 ; elapsed = 00:00:41 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+Start Writing Synthesis Report
+---------------------------------------------------------------------------------
+
+DSP Final Report (the ' indicates corresponding REG is set)
++-----------------------------+-----------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+|Module Name                  | DSP Mapping     | A Size | B Size | C Size | D Size | P Size | AREG | BREG | CREG | DREG | ADREG | MREG | PREG | 
++-----------------------------+-----------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+|Matrix_Vector_Multiplication | A'*B''          | 17     | 16     | -      | -      | 48     | 1    | 2    | -    | -    | -     | 0    | 0    | 
+|Matrix_Vector_Multiplication | PCIN>>17+A''*B' | 16     | 18     | -      | -      | 48     | 2    | 1    | -    | -    | -     | 0    | 0    | 
++-----------------------------+-----------------+--------+--------+--------+--------+--------+------+------+------+------+-------+------+------+
+
+
+Report BlackBoxes: 
++-+--------------+----------+
+| |BlackBox name |Instances |
++-+--------------+----------+
++-+--------------+----------+
+
+Report Cell Usage: 
++------+---------+------+
+|      |Cell     |Count |
++------+---------+------+
+|1     |CARRY8   |   218|
+|2     |DSP48E2  |     2|
+|3     |LUT1     |    53|
+|4     |LUT2     |   849|
+|5     |LUT3     |   377|
+|6     |LUT4     |   744|
+|7     |LUT5     |   216|
+|8     |LUT6     |   706|
+|9     |RAMB36E2 |   133|
+|10    |FDRE     |  1878|
+|11    |FDSE     |     8|
++------+---------+------+
+
+Report Instance Areas: 
++------+--------------------+-------------------------------+------+
+|      |Instance            |Module                         |Cells |
++------+--------------------+-------------------------------+------+
+|1     |top                 |                               |  5184|
+|2     |  u_my_ip           |MY_IP                          |  5184|
+|3     |    u_gemv          |Matrix_Vector_Multiplication   |  4227|
+|4     |      u_act_bram    |Dual_Port_BRAM                 |   181|
+|5     |      u_pmau        |PMAU_Full                      |  2798|
+|6     |      u_result_bram |Dual_Port_BRAM__parameterized1 |   172|
+|7     |      u_weight_bram |Dual_Port_BRAM__parameterized0 |   602|
++------+--------------------+-------------------------------+------+
+---------------------------------------------------------------------------------
+Finished Writing Synthesis Report : Time (s): cpu = 00:00:26 ; elapsed = 00:00:41 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+---------------------------------------------------------------------------------
+Synthesis finished with 0 errors, 0 critical warnings and 148 warnings.
+Synthesis Optimization Runtime : Time (s): cpu = 00:00:26 ; elapsed = 00:00:41 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+Synthesis Optimization Complete : Time (s): cpu = 00:00:26 ; elapsed = 00:00:41 . Memory (MB): peak = 2499.301 ; gain = 1472.441
+INFO: [Project 1-571] Translating synthesized netlist
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.070 . Memory (MB): peak = 2504.867 ; gain = 0.000
+INFO: [Netlist 29-17] Analyzing 220 Unisim elements for replacement
+INFO: [Netlist 29-28] Unisim Transformation completed in 0 CPU seconds
+INFO: [Project 1-570] Preparing netlist for logic optimization
+INFO: [Opt 31-138] Pushed 0 inverter(s) to 0 load pin(s).
+Netlist sorting complete. Time (s): cpu = 00:00:00 ; elapsed = 00:00:00.001 . Memory (MB): peak = 2571.531 ; gain = 0.000
+INFO: [Project 1-111] Unisim Transformation Summary:
+  A total of 2 instances were transformed.
+  DSP48E2 => DSP48E2 (DSP_ALU, DSP_A_B_DATA, DSP_C_DATA, DSP_MULTIPLIER, DSP_M_DATA, DSP_OUTPUT, DSP_PREADD, DSP_PREADD_DATA): 2 instances
+
+Synth Design complete, checksum: d0d2e4ba
+INFO: [Common 17-83] Releasing license: Synthesis
+70 Infos, 124 Warnings, 0 Critical Warnings and 0 Errors encountered.
+synth_design completed successfully
+synth_design: Time (s): cpu = 00:00:28 ; elapsed = 00:00:47 . Memory (MB): peak = 2571.531 ; gain = 1569.555
+# create_clock -period 3.333 -name s00_axi_aclk [get_ports s00_axi_aclk]
+# report_utilization -file axi_full_synth_utilization.rpt
+# report_timing_summary -file axi_full_synth_timing_300mhz.rpt
+INFO: [Timing 38-35] Done setting XDC timing constraints.
+INFO: [Timing 38-91] UpdateTimingParams: Speed grade: -2, Temperature grade: E, Delay Type: min_max.
+INFO: [Timing 38-191] Multithreading enabled for timing update using a maximum of 2 CPUs
+WARNING: [Timing 38-242] The property HD.CLK_SRC of clock port "s00_axi_aclk" is not set. In out-of-context mode, this prevents timing estimation for clock delay/skew
+Resolution: Set the HD.CLK_SRC property of the out-of-context port to the location of the clock buffer instance in the top-level design
+report_timing_summary: Time (s): cpu = 00:00:29 ; elapsed = 00:00:38 . Memory (MB): peak = 4426.578 ; gain = 1855.047
+# write_checkpoint -force axi_full_synth.dcp
+INFO: [Timing 38-480] Writing timing data to binary archive.
+INFO: [Common 17-1381] The checkpoint 'D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/axi_full_synth.dcp' has been generated.
+INFO: [Common 17-206] Exiting Vivado at Fri Jun  5 14:30:46 2026...

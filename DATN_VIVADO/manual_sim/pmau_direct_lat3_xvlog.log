@@ -1,0 +1,4 @@
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/tb_pmau_direct_xsim.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_pmau_direct_xsim
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/PMAU_Full.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module PMAU_Full

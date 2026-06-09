@@ -1,0 +1,210 @@
+#-----------------------------------------------------------
+# xsim v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Mon Jun  8 17:12:10 2026
+# Process ID: 28376
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/xsim_scratch
+# Command line: xsim.exe -log D:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim\pmau_trace2_xsim.log -mode tcl -source {xsim.dir/tb_pmau_trace2_behav/xsim_script.tcl}
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/pmau_trace2_xsim.log
+# Journal file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/xsim_scratch\xsim.jou
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_pmau_trace2_behav/xsim_script.tcl
+# xsim {tb_pmau_trace2_behav} -autoloadwcfg -tclbatch {D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/vivado_review_run_all.tcl}
+Time resolution is 1 ps
+source D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/vivado_review_run_all.tcl
+## run -all
+[PMAU_TRACE][IN]  t=135000 last=1 act0=-3 act1=6 w0=1 w1=12
+[PMAU_TRACE][IN]  t=145000 last=1 act0=-3 act1=6 w0=1 w1=12
+[PMAU_TRACE][MUL] t=165000 last=1 p0=-3 p1=72 p2=-330 p15=0
+[PMAU_TRACE][MUL] t=175000 last=1 p0=-3 p1=72 p2=-330 p15=0
+[PMAU_TRACE][SUM] t=215000 last=1 sum=-74 acc=0 commit=-74
+[PMAU_TRACE][SUM] t=225000 last=1 sum=-74 acc=0 commit=-74
+[PMAU_TRACE][FIFO] t=235000 value=-74 last=1
+[PMAU_TRACE][FIFO] t=245000 value=-74 last=1
+[PMAU][PASS] case=1 row=0 result=-74
+[PMAU_TRACE][IN]  t=265000 last=1 act0=-3 act1=6 w0=14 w1=-20
+[PMAU_TRACE][IN]  t=275000 last=1 act0=-3 act1=6 w0=14 w1=-20
+[PMAU_TRACE][MUL] t=295000 last=1 p0=-42 p1=-120 p2=-135 p15=0
+[PMAU_TRACE][MUL] t=305000 last=1 p0=-42 p1=-120 p2=-135 p15=0
+[PMAU_TRACE][SUM] t=345000 last=1 sum=-331 acc=0 commit=-331
+[PMAU_TRACE][SUM] t=355000 last=1 sum=-331 acc=0 commit=-331
+[PMAU_TRACE][FIFO] t=365000 value=-331 last=1
+[PMAU_TRACE][FIFO] t=375000 value=-331 last=1
+[PMAU][PASS] case=1 row=1 result=-331
+[PMAU_TRACE][IN]  t=395000 last=1 act0=-3 act1=6 w0=-18 w1=-7
+[PMAU_TRACE][IN]  t=405000 last=1 act0=-3 act1=6 w0=-18 w1=-7
+[PMAU_TRACE][MUL] t=425000 last=1 p0=54 p1=-42 p2=60 p15=0
+[PMAU_TRACE][MUL] t=435000 last=1 p0=54 p1=-42 p2=60 p15=0
+[PMAU_TRACE][SUM] t=475000 last=1 sum=-183 acc=0 commit=-183
+[PMAU_TRACE][SUM] t=485000 last=1 sum=-183 acc=0 commit=-183
+[PMAU_TRACE][FIFO] t=495000 value=-183 last=1
+[PMAU_TRACE][FIFO] t=505000 value=-183 last=1
+[PMAU][PASS] case=1 row=2 result=-183
+[PMAU_TRACE][IN]  t=525000 last=1 act0=-3 act1=6 w0=-5 w1=6
+[PMAU_TRACE][IN]  t=535000 last=1 act0=-3 act1=6 w0=-5 w1=6
+[PMAU_TRACE][MUL] t=555000 last=1 p0=15 p1=36 p2=255 p15=0
+[PMAU_TRACE][MUL] t=565000 last=1 p0=15 p1=36 p2=255 p15=0
+[PMAU_TRACE][SUM] t=605000 last=1 sum=595 acc=0 commit=595
+[PMAU_TRACE][SUM] t=615000 last=1 sum=595 acc=0 commit=595
+[PMAU_TRACE][FIFO] t=625000 value=595 last=1
+[PMAU_TRACE][FIFO] t=635000 value=595 last=1
+[PMAU][PASS] case=1 row=3 result=595
+[PMAU_TRACE][IN]  t=655000 last=0 act0=-26 act1=-19 w0=-14 w1=-11
+[PMAU_TRACE][IN]  t=665000 last=0 act0=-26 act1=-19 w0=-14 w1=-11
+[PMAU_TRACE][IN]  t=685000 last=1 act0=23 act1=0 w0=-33 w1=0
+[PMAU_TRACE][MUL] t=685000 last=0 p0=364 p1=209 p2=96 p15=496
+[PMAU_TRACE][IN]  t=695000 last=1 act0=23 act1=0 w0=-33 w1=0
+[PMAU_TRACE][MUL] t=695000 last=0 p0=364 p1=209 p2=96 p15=496
+[PMAU_TRACE][MUL] t=715000 last=1 p0=-759 p1=0 p2=0 p15=0
+[PMAU_TRACE][MUL] t=725000 last=1 p0=-759 p1=0 p2=0 p15=0
+[PMAU_TRACE][SUM] t=735000 last=0 sum=1042 acc=0 commit=1042
+[PMAU_TRACE][SUM] t=745000 last=0 sum=1042 acc=1042 commit=2084
+[PMAU_TRACE][SUM] t=765000 last=1 sum=-759 acc=2084 commit=1325
+[PMAU_TRACE][SUM] t=775000 last=1 sum=-759 acc=0 commit=-759
+[PMAU_TRACE][FIFO] t=785000 value=1325 last=1
+[PMAU_TRACE][FIFO] t=795000 value=-759 last=1
+[PMAU][FAIL] case=2 row=0 got=1325 expected=283
+[PMAU_TRACE][IN]  t=815000 last=0 act0=-26 act1=-19 w0=3 w1=6
+[PMAU_TRACE][IN]  t=825000 last=0 act0=-26 act1=-19 w0=3 w1=6
+[PMAU_TRACE][IN]  t=845000 last=1 act0=23 act1=0 w0=-16 w1=0
+[PMAU_TRACE][MUL] t=845000 last=0 p0=-78 p1=-114 p2=-108 p15=-304
+[PMAU_TRACE][IN]  t=855000 last=1 act0=23 act1=0 w0=-16 w1=0
+[PMAU_TRACE][MUL] t=855000 last=0 p0=-78 p1=-114 p2=-108 p15=-304
+[PMAU_TRACE][MUL] t=875000 last=1 p0=-368 p1=0 p2=0 p15=0
+[PMAU_TRACE][MUL] t=885000 last=1 p0=-368 p1=0 p2=0 p15=0
+[PMAU_TRACE][SUM] t=895000 last=0 sum=83 acc=0 commit=83
+[PMAU_TRACE][SUM] t=905000 last=0 sum=83 acc=83 commit=166
+[PMAU_TRACE][SUM] t=925000 last=1 sum=-368 acc=166 commit=-202
+[PMAU_TRACE][SUM] t=935000 last=1 sum=-368 acc=0 commit=-368
+[PMAU_TRACE][FIFO] t=945000 value=-202 last=1
+[PMAU_TRACE][FIFO] t=955000 value=-368 last=1
+[PMAU][FAIL] case=2 row=1 got=-202 expected=-285
+[PMAU_TRACE][IN]  t=975000 last=0 act0=-26 act1=-19 w0=20 w1=23
+[PMAU_TRACE][IN]  t=985000 last=0 act0=-26 act1=-19 w0=20 w1=23
+[PMAU_TRACE][IN]  t=1005000 last=1 act0=23 act1=0 w0=1 w1=0
+[PMAU_TRACE][MUL] t=1005000 last=0 p0=-520 p1=-437 p2=-312 p15=-32
+[PMAU_TRACE][IN]  t=1015000 last=1 act0=23 act1=0 w0=1 w1=0
+[PMAU_TRACE][MUL] t=1015000 last=0 p0=-520 p1=-437 p2=-312 p15=-32
+[PMAU_TRACE][MUL] t=1035000 last=1 p0=23 p1=0 p2=0 p15=0
+[PMAU_TRACE][MUL] t=1045000 last=1 p0=23 p1=0 p2=0 p15=0
+[PMAU_TRACE][SUM] t=1055000 last=0 sum=-2417 acc=0 commit=-2417
+[PMAU_TRACE][SUM] t=1065000 last=0 sum=-2417 acc=-2417 commit=-4834
+[PMAU_TRACE][SUM] t=1085000 last=1 sum=23 acc=-4834 commit=-4811
+[PMAU_TRACE][SUM] t=1095000 last=1 sum=23 acc=0 commit=23
+[PMAU_TRACE][FIFO] t=1105000 value=-4811 last=1
+[PMAU_TRACE][FIFO] t=1115000 value=23 last=1
+[PMAU][FAIL] case=2 row=2 got=-4811 expected=-2394
+[PMAU_TRACE][IN]  t=1135000 last=0 act0=-128 act1=127 w0=127 w1=-128
+[PMAU_TRACE][IN]  t=1145000 last=0 act0=-128 act1=127 w0=127 w1=-128
+[PMAU_TRACE][IN]  t=1165000 last=0 act0=-128 act1=127 w0=127 w1=-128
+[PMAU_TRACE][MUL] t=1165000 last=0 p0=-16256 p1=-16256 p2=-1664 p15=-1397
+[PMAU_TRACE][IN]  t=1175000 last=0 act0=-128 act1=127 w0=127 w1=-128
+[PMAU_TRACE][MUL] t=1175000 last=0 p0=-16256 p1=-16256 p2=-1664 p15=-1397
+[PMAU_TRACE][IN]  t=1195000 last=0 act0=-128 act1=127 w0=127 w1=-128
+[PMAU_TRACE][MUL] t=1195000 last=0 p0=-16256 p1=-16256 p2=-1664 p15=-1397
+[PMAU_TRACE][IN]  t=1205000 last=0 act0=-128 act1=127 w0=127 w1=-128
+[PMAU_TRACE][MUL] t=1205000 last=0 p0=-16256 p1=-16256 p2=-1664 p15=-1397
+[PMAU_TRACE][SUM] t=1215000 last=0 sum=-142292 acc=0 commit=-142292
+[PMAU_TRACE][IN]  t=1225000 last=1 act0=-128 act1=127 w0=127 w1=-128
+[PMAU_TRACE][MUL] t=1225000 last=0 p0=-16256 p1=-16256 p2=-1664 p15=-1397
+[PMAU_TRACE][SUM] t=1225000 last=0 sum=-142292 acc=-142292 commit=-284584
+[PMAU_TRACE][IN]  t=1235000 last=1 act0=-128 act1=127 w0=127 w1=-128
+[PMAU_TRACE][MUL] t=1235000 last=0 p0=-16256 p1=-16256 p2=-1664 p15=-1397
+[PMAU_TRACE][SUM] t=1245000 last=0 sum=-142292 acc=-284584 commit=-426876
+[PMAU_TRACE][MUL] t=1255000 last=1 p0=-16256 p1=-16256 p2=-1664 p15=-1397
+[PMAU_TRACE][SUM] t=1255000 last=0 sum=-142292 acc=-426876 commit=-569168
+[PMAU_TRACE][MUL] t=1265000 last=1 p0=-16256 p1=-16256 p2=-1664 p15=-1397
+[PMAU_TRACE][SUM] t=1275000 last=0 sum=-142292 acc=-569168 commit=-711460
+[PMAU_TRACE][SUM] t=1285000 last=0 sum=-142292 acc=-711460 commit=-853752
+[PMAU_TRACE][SUM] t=1305000 last=1 sum=-142292 acc=-853752 commit=-996044
+[PMAU_TRACE][SUM] t=1315000 last=1 sum=-142292 acc=0 commit=-142292
+[PMAU_TRACE][FIFO] t=1325000 value=-996044 last=1
+[PMAU_TRACE][FIFO] t=1335000 value=-142292 last=1
+[PMAU][FAIL] case=3 row=0 got=-996044 expected=-569168
+[PMAU_TRACE][IN]  t=1355000 last=0 act0=-128 act1=127 w0=-128 w1=13
+[PMAU_TRACE][IN]  t=1365000 last=0 act0=-128 act1=127 w0=-128 w1=13
+[PMAU_TRACE][IN]  t=1385000 last=0 act0=-128 act1=127 w0=-128 w1=13
+[PMAU_TRACE][MUL] t=1385000 last=0 p0=16384 p1=1651 p2=1408 p15=16129
+[PMAU_TRACE][IN]  t=1395000 last=0 act0=-128 act1=127 w0=-128 w1=13
+[PMAU_TRACE][MUL] t=1395000 last=0 p0=16384 p1=1651 p2=1408 p15=16129
+[PMAU_TRACE][IN]  t=1415000 last=0 act0=-128 act1=127 w0=-128 w1=13
+[PMAU_TRACE][MUL] t=1415000 last=0 p0=16384 p1=1651 p2=1408 p15=16129
+[PMAU_TRACE][IN]  t=1425000 last=0 act0=-128 act1=127 w0=-128 w1=13
+[PMAU_TRACE][MUL] t=1425000 last=0 p0=16384 p1=1651 p2=1408 p15=16129
+[PMAU_TRACE][SUM] t=1435000 last=0 sum=142288 acc=0 commit=142288
+[PMAU_TRACE][IN]  t=1445000 last=1 act0=-128 act1=127 w0=-128 w1=13
+[PMAU_TRACE][MUL] t=1445000 last=0 p0=16384 p1=1651 p2=1408 p15=16129
+[PMAU_TRACE][SUM] t=1445000 last=0 sum=142288 acc=142288 commit=284576
+[PMAU_TRACE][IN]  t=1455000 last=1 act0=-128 act1=127 w0=-128 w1=13
+[PMAU_TRACE][MUL] t=1455000 last=0 p0=16384 p1=1651 p2=1408 p15=16129
+[PMAU_TRACE][SUM] t=1465000 last=0 sum=142288 acc=284576 commit=426864
+[PMAU_TRACE][MUL] t=1475000 last=1 p0=16384 p1=1651 p2=1408 p15=16129
+[PMAU_TRACE][SUM] t=1475000 last=0 sum=142288 acc=426864 commit=569152
+[PMAU_TRACE][MUL] t=1485000 last=1 p0=16384 p1=1651 p2=1408 p15=16129
+[PMAU_TRACE][SUM] t=1495000 last=0 sum=142288 acc=569152 commit=711440
+[PMAU_TRACE][SUM] t=1505000 last=0 sum=142288 acc=711440 commit=853728
+[PMAU_TRACE][SUM] t=1525000 last=1 sum=142288 acc=853728 commit=996016
+[PMAU_TRACE][SUM] t=1535000 last=1 sum=142288 acc=0 commit=142288
+[PMAU_TRACE][FIFO] t=1545000 value=996016 last=1
+[PMAU_TRACE][FIFO] t=1555000 value=142288 last=1
+[PMAU][FAIL] case=3 row=1 got=996016 expected=569152
+[PMAU_TRACE][IN]  t=1575000 last=0 act0=-128 act1=127 w0=13 w1=-11
+[PMAU_TRACE][IN]  t=1585000 last=0 act0=-128 act1=127 w0=13 w1=-11
+[PMAU_TRACE][IN]  t=1605000 last=0 act0=-128 act1=127 w0=13 w1=-11
+[PMAU_TRACE][MUL] t=1605000 last=0 p0=-1664 p1=-1397 p2=-16256 p15=-16256
+[PMAU_TRACE][IN]  t=1615000 last=0 act0=-128 act1=127 w0=13 w1=-11
+[PMAU_TRACE][MUL] t=1615000 last=0 p0=-1664 p1=-1397 p2=-16256 p15=-16256
+[PMAU_TRACE][IN]  t=1635000 last=0 act0=-128 act1=127 w0=13 w1=-11
+[PMAU_TRACE][MUL] t=1635000 last=0 p0=-1664 p1=-1397 p2=-16256 p15=-16256
+[PMAU_TRACE][IN]  t=1645000 last=0 act0=-128 act1=127 w0=13 w1=-11
+[PMAU_TRACE][MUL] t=1645000 last=0 p0=-1664 p1=-1397 p2=-16256 p15=-16256
+[PMAU_TRACE][SUM] t=1655000 last=0 sum=-142292 acc=0 commit=-142292
+[PMAU_TRACE][IN]  t=1665000 last=1 act0=-128 act1=127 w0=13 w1=-11
+[PMAU_TRACE][MUL] t=1665000 last=0 p0=-1664 p1=-1397 p2=-16256 p15=-16256
+[PMAU_TRACE][SUM] t=1665000 last=0 sum=-142292 acc=-142292 commit=-284584
+[PMAU_TRACE][IN]  t=1675000 last=1 act0=-128 act1=127 w0=13 w1=-11
+[PMAU_TRACE][MUL] t=1675000 last=0 p0=-1664 p1=-1397 p2=-16256 p15=-16256
+[PMAU_TRACE][SUM] t=1685000 last=0 sum=-142292 acc=-284584 commit=-426876
+[PMAU_TRACE][MUL] t=1695000 last=1 p0=-1664 p1=-1397 p2=-16256 p15=-16256
+[PMAU_TRACE][SUM] t=1695000 last=0 sum=-142292 acc=-426876 commit=-569168
+[PMAU_TRACE][MUL] t=1705000 last=1 p0=-1664 p1=-1397 p2=-16256 p15=-16256
+[PMAU_TRACE][SUM] t=1715000 last=0 sum=-142292 acc=-569168 commit=-711460
+[PMAU_TRACE][SUM] t=1725000 last=0 sum=-142292 acc=-711460 commit=-853752
+[PMAU_TRACE][SUM] t=1745000 last=1 sum=-142292 acc=-853752 commit=-996044
+[PMAU_TRACE][SUM] t=1755000 last=1 sum=-142292 acc=0 commit=-142292
+[PMAU_TRACE][FIFO] t=1765000 value=-996044 last=1
+[PMAU_TRACE][FIFO] t=1775000 value=-142292 last=1
+[PMAU][FAIL] case=3 row=2 got=-996044 expected=-569168
+[PMAU_TRACE][IN]  t=1795000 last=0 act0=-128 act1=127 w0=-11 w1=127
+[PMAU_TRACE][IN]  t=1805000 last=0 act0=-128 act1=127 w0=-11 w1=127
+[PMAU_TRACE][IN]  t=1825000 last=0 act0=-128 act1=127 w0=-11 w1=127
+[PMAU_TRACE][MUL] t=1825000 last=0 p0=1408 p1=16129 p2=16384 p15=1651
+[PMAU_TRACE][IN]  t=1835000 last=0 act0=-128 act1=127 w0=-11 w1=127
+[PMAU_TRACE][MUL] t=1835000 last=0 p0=1408 p1=16129 p2=16384 p15=1651
+[PMAU_TRACE][IN]  t=1855000 last=0 act0=-128 act1=127 w0=-11 w1=127
+[PMAU_TRACE][MUL] t=1855000 last=0 p0=1408 p1=16129 p2=16384 p15=1651
+[PMAU_TRACE][IN]  t=1865000 last=0 act0=-128 act1=127 w0=-11 w1=127
+[PMAU_TRACE][MUL] t=1865000 last=0 p0=1408 p1=16129 p2=16384 p15=1651
+[PMAU_TRACE][SUM] t=1875000 last=0 sum=142288 acc=0 commit=142288
+[PMAU_TRACE][IN]  t=1885000 last=1 act0=-128 act1=127 w0=-11 w1=127
+[PMAU_TRACE][MUL] t=1885000 last=0 p0=1408 p1=16129 p2=16384 p15=1651
+[PMAU_TRACE][SUM] t=1885000 last=0 sum=142288 acc=142288 commit=284576
+[PMAU_TRACE][IN]  t=1895000 last=1 act0=-128 act1=127 w0=-11 w1=127
+[PMAU_TRACE][MUL] t=1895000 last=0 p0=1408 p1=16129 p2=16384 p15=1651
+[PMAU_TRACE][SUM] t=1905000 last=0 sum=142288 acc=284576 commit=426864
+[PMAU_TRACE][MUL] t=1915000 last=1 p0=1408 p1=16129 p2=16384 p15=1651
+[PMAU_TRACE][SUM] t=1915000 last=0 sum=142288 acc=426864 commit=569152
+[PMAU_TRACE][MUL] t=1925000 last=1 p0=1408 p1=16129 p2=16384 p15=1651
+[PMAU_TRACE][SUM] t=1935000 last=0 sum=142288 acc=569152 commit=711440
+[PMAU_TRACE][SUM] t=1945000 last=0 sum=142288 acc=711440 commit=853728
+[PMAU_TRACE][SUM] t=1965000 last=1 sum=142288 acc=853728 commit=996016
+[PMAU_TRACE][SUM] t=1975000 last=1 sum=142288 acc=0 commit=142288
+[PMAU_TRACE][FIFO] t=1985000 value=996016 last=1
+[PMAU_TRACE][FIFO] t=1995000 value=142288 last=1
+[PMAU][FAIL] case=3 row=3 got=996016 expected=569152
+[PMAU][SUMMARY] pass_cases=1 fail_cases=2
+$finish called at time : 1996 ns : File "D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/tb_pmau_direct_xsim.v" Line 265
+## quit
+INFO: [Common 17-206] Exiting xsim at Mon Jun  8 17:12:11 2026...

@@ -1,0 +1,14 @@
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v" into library work
+INFO: [VRFC 10-311] analyzing module Dual_Port_BRAM
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/PMAU_Full.v" into library work
+INFO: [VRFC 10-311] analyzing module PMAU_Full
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/Matrix_Vector_Multiplication.v" into library work
+INFO: [VRFC 10-311] analyzing module Matrix_Vector_Multiplication
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/AXI4_Mapping.v" into library work
+INFO: [VRFC 10-311] analyzing module AXI4_Mapping
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/MY_IP.v" into library work
+INFO: [VRFC 10-311] analyzing module MY_IP
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/VPU_Top.v" into library work
+INFO: [VRFC 10-311] analyzing module VPU_Top
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/DATN_VIVADO/project_1/project_1.srcs/sim_1/imports/TESTBENCH/tb_VPU_Top.v" into library work
+INFO: [VRFC 10-311] analyzing module tb_VPU_Top

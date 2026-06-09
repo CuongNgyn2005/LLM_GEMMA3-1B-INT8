@@ -1,0 +1,8 @@
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/tb_matmul_dsp_core.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_matmul_dsp_core
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module Dual_Port_BRAM
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/PMAU_Full.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module PMAU_Full
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/Matrix_Vector_Multiplication.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module Matrix_Vector_Multiplication

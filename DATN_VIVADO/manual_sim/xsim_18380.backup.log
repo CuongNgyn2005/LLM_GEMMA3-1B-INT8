@@ -1,0 +1,33 @@
+#-----------------------------------------------------------
+# xsim v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Tue Jun  2 11:24:43 2026
+# Process ID: 18380
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim
+# Command line: xsim.exe -mode tcl -source {xsim.dir/tb_VPU_Top_behav/xsim_script.tcl}
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/xsim.log
+# Journal file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim\xsim.jou
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_VPU_Top_behav/xsim_script.tcl
+# xsim {tb_VPU_Top_behav} -autoloadwcfg -runall
+Time resolution is 1 ps
+run -all
+============================================================
+[TB] STARTING VPU AXI-STREAM TEST (Verilog-2001 Strict)
+============================================================
+[TB] Processing Row 0...
+   --> [FAIL] Got 0x00000023, Expected 0xffffffd8
+[TB] Processing Row 1...
+   --> [FAIL] Got 0xffffffaa, Expected 0xffffffb5
+[TB] Processing Row 2...
+   --> [FAIL] Got 0xffffff4a, Expected 0xffffff81
+[TB] Processing Row 3...
+   --> [FAIL] Got 0x0000019c, Expected 0x00000133
+============================================================
+[TB] TEST FINISHED! Passed: 0, Failed: 4
+============================================================
+$finish called at time : 586 ns : File "D:/DOAN/DATN_RTL/TESTBENCH/tb_VPU_Top.v" Line 232
+exit
+INFO: [Common 17-206] Exiting xsim at Tue Jun  2 11:24:44 2026...

@@ -1,0 +1,69 @@
+#-----------------------------------------------------------
+# xsim v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Tue Jun  2 11:29:05 2026
+# Process ID: 25124
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim
+# Command line: xsim.exe -mode tcl -source {xsim.dir/tb_VPU_Top_behav/xsim_script.tcl}
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/xsim.log
+# Journal file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim\xsim.jou
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_VPU_Top_behav/xsim_script.tcl
+# xsim {tb_VPU_Top_behav} -autoloadwcfg -runall
+Time resolution is 1 ps
+run -all
+[TB][GOLDEN] Row 0 raw=-10121 scaled=-40 (0xffffffd8)
+[TB][GOLDEN] Row 1 raw=-18985 scaled=-75 (0xffffffb5)
+[TB][GOLDEN] Row 2 raw=-32305 scaled=-127 (0xffffff81)
+[TB][GOLDEN] Row 3 raw=78752 scaled=307 (0x00000133)
+============================================================
+[TB] STARTING VPU AXI-STREAM TEST (Verilog-2001 Strict)
+============================================================
+[TB] Processing Row 0...
+[TB][SEND] Row 0 beat 0 beat_sum=19176
+[TB][SEND] Row 0 beat 1 beat_sum=917
+[TB][SEND] Row 0 beat 2 beat_sum=-12699
+[TB][SEND] Row 0 beat 3 beat_sum=-17515
+[TB][TRACE] t=125000 sum_final=19176 acc=0 last=0 commit=19176 final=74
+[TB][TRACE] t=135000 sum_final=917 acc=19176 last=0 commit=20093 final=78
+[TB][TRACE] t=145000 sum_final=-12699 acc=20093 last=0 commit=7394 final=28
+[TB][TRACE] t=155000 sum_final=-17515 acc=7394 last=1 commit=-10121 final=-40
+   --> [PASS] Got 0xffffffd8
+[TB] Processing Row 1...
+[TB][SEND] Row 1 beat 0 beat_sum=-2909
+[TB][SEND] Row 1 beat 1 beat_sum=-1278
+[TB][SEND] Row 1 beat 2 beat_sum=14888
+[TB][SEND] Row 1 beat 3 beat_sum=-29686
+[TB][TRACE] t=245000 sum_final=-2909 acc=0 last=0 commit=-2909 final=-12
+[TB][TRACE] t=255000 sum_final=-1278 acc=-2909 last=0 commit=-4187 final=-17
+[TB][TRACE] t=265000 sum_final=14888 acc=-4187 last=0 commit=10701 final=41
+[TB][TRACE] t=275000 sum_final=-29686 acc=10701 last=1 commit=-18985 final=-75
+   --> [PASS] Got 0xffffffb5
+[TB] Processing Row 2...
+[TB][SEND] Row 2 beat 0 beat_sum=-14212
+[TB][SEND] Row 2 beat 1 beat_sum=23196
+[TB][SEND] Row 2 beat 2 beat_sum=-44670
+[TB][SEND] Row 2 beat 3 beat_sum=3381
+[TB][TRACE] t=365000 sum_final=-14212 acc=0 last=0 commit=-14212 final=-56
+[TB][TRACE] t=375000 sum_final=23196 acc=-14212 last=0 commit=8984 final=35
+[TB][TRACE] t=385000 sum_final=-44670 acc=8984 last=0 commit=-35686 final=-140
+[TB][TRACE] t=395000 sum_final=3381 acc=-35686 last=1 commit=-32305 final=-127
+   --> [PASS] Got 0xffffff81
+[TB] Processing Row 3...
+[TB][SEND] Row 3 beat 0 beat_sum=26794
+[TB][SEND] Row 3 beat 1 beat_sum=-14813
+[TB][SEND] Row 3 beat 2 beat_sum=41364
+[TB][SEND] Row 3 beat 3 beat_sum=25407
+[TB][TRACE] t=485000 sum_final=26794 acc=0 last=0 commit=26794 final=104
+[TB][TRACE] t=495000 sum_final=-14813 acc=26794 last=0 commit=11981 final=46
+[TB][TRACE] t=505000 sum_final=41364 acc=11981 last=0 commit=53345 final=208
+[TB][TRACE] t=515000 sum_final=25407 acc=53345 last=1 commit=78752 final=307
+   --> [PASS] Got 0x00000133
+============================================================
+[TB] TEST FINISHED! Passed: 4, Failed: 0
+============================================================
+$finish called at time : 546 ns : File "D:/DOAN/DATN_RTL/TESTBENCH/tb_VPU_Top.v" Line 259
+exit
+INFO: [Common 17-206] Exiting xsim at Tue Jun  2 11:29:07 2026...

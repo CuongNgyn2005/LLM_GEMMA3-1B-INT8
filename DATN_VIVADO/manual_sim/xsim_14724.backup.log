@@ -1,0 +1,73 @@
+#-----------------------------------------------------------
+# xsim v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Tue Jun  2 11:27:32 2026
+# Process ID: 14724
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim
+# Command line: xsim.exe -mode tcl -source {xsim.dir/tb_VPU_Top_behav/xsim_script.tcl}
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/xsim.log
+# Journal file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim\xsim.jou
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+source xsim.dir/tb_VPU_Top_behav/xsim_script.tcl
+# xsim {tb_VPU_Top_behav} -autoloadwcfg -runall
+Time resolution is 1 ps
+run -all
+[TB][GOLDEN] Row 0 raw=-10121 scaled=-40 (0xffffffd8)
+[TB][GOLDEN] Row 1 raw=-18985 scaled=-75 (0xffffffb5)
+[TB][GOLDEN] Row 2 raw=-32305 scaled=-127 (0xffffff81)
+[TB][GOLDEN] Row 3 raw=78752 scaled=307 (0x00000133)
+============================================================
+[TB] STARTING VPU AXI-STREAM TEST (Verilog-2001 Strict)
+============================================================
+[TB] Processing Row 0...
+[TB][SEND] Row 0 beat 0 beat_sum=19176
+[TB][SEND] Row 0 beat 1 beat_sum=917
+[TB][SEND] Row 0 beat 2 beat_sum=-12699
+[TB][SEND] Row 0 beat 3 beat_sum=-17515
+[TB][TRACE] t=125000 sum_final=19176 acc=0 last=0 commit=19176 final=74
+[TB][TRACE] t=135000 sum_final=19176 acc=19176 last=0 commit=38352 final=149
+[TB][TRACE] t=145000 sum_final=917 acc=38352 last=0 commit=39269 final=153
+[TB][TRACE] t=155000 sum_final=-12699 acc=39269 last=0 commit=26570 final=103
+[TB][TRACE] t=165000 sum_final=-17515 acc=26570 last=1 commit=9055 final=35
+   --> [FAIL] Got 0x00000023, Expected 0xffffffd8
+[TB] Processing Row 1...
+[TB][SEND] Row 1 beat 0 beat_sum=-2909
+[TB][SEND] Row 1 beat 1 beat_sum=-1278
+[TB][SEND] Row 1 beat 2 beat_sum=14888
+[TB][SEND] Row 1 beat 3 beat_sum=-29686
+[TB][TRACE] t=255000 sum_final=-2909 acc=0 last=0 commit=-2909 final=-12
+[TB][TRACE] t=265000 sum_final=-2909 acc=-2909 last=0 commit=-5818 final=-23
+[TB][TRACE] t=275000 sum_final=-1278 acc=-5818 last=0 commit=-7096 final=-28
+[TB][TRACE] t=285000 sum_final=14888 acc=-7096 last=0 commit=7792 final=30
+[TB][TRACE] t=295000 sum_final=-29686 acc=7792 last=1 commit=-21894 final=-86
+   --> [FAIL] Got 0xffffffaa, Expected 0xffffffb5
+[TB] Processing Row 2...
+[TB][SEND] Row 2 beat 0 beat_sum=-14212
+[TB][SEND] Row 2 beat 1 beat_sum=23196
+[TB][SEND] Row 2 beat 2 beat_sum=-44670
+[TB][SEND] Row 2 beat 3 beat_sum=3381
+[TB][TRACE] t=385000 sum_final=-14212 acc=0 last=0 commit=-14212 final=-56
+[TB][TRACE] t=395000 sum_final=-14212 acc=-14212 last=0 commit=-28424 final=-112
+[TB][TRACE] t=405000 sum_final=23196 acc=-28424 last=0 commit=-5228 final=-21
+[TB][TRACE] t=415000 sum_final=-44670 acc=-5228 last=0 commit=-49898 final=-195
+[TB][TRACE] t=425000 sum_final=3381 acc=-49898 last=1 commit=-46517 final=-182
+   --> [FAIL] Got 0xffffff4a, Expected 0xffffff81
+[TB] Processing Row 3...
+[TB][SEND] Row 3 beat 0 beat_sum=26794
+[TB][SEND] Row 3 beat 1 beat_sum=-14813
+[TB][SEND] Row 3 beat 2 beat_sum=41364
+[TB][SEND] Row 3 beat 3 beat_sum=25407
+[TB][TRACE] t=515000 sum_final=26794 acc=0 last=0 commit=26794 final=104
+[TB][TRACE] t=525000 sum_final=26794 acc=26794 last=0 commit=53588 final=209
+[TB][TRACE] t=535000 sum_final=-14813 acc=53588 last=0 commit=38775 final=151
+[TB][TRACE] t=545000 sum_final=41364 acc=38775 last=0 commit=80139 final=313
+[TB][TRACE] t=555000 sum_final=25407 acc=80139 last=1 commit=105546 final=412
+   --> [FAIL] Got 0x0000019c, Expected 0x00000133
+============================================================
+[TB] TEST FINISHED! Passed: 0, Failed: 4
+============================================================
+$finish called at time : 586 ns : File "D:/DOAN/DATN_RTL/TESTBENCH/tb_VPU_Top.v" Line 258
+exit
+INFO: [Common 17-206] Exiting xsim at Tue Jun  2 11:27:33 2026...
