@@ -14,10 +14,12 @@
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 
-#define FPGA_LOG_FILE "/tmp/fpga_debug.log"
+#define FPGA_LOG_FILE_DEFAULT  "log_files/fpga_debug.log"
+#define FPGA_LOG_FILE_FALLBACK "/tmp/fpga_debug.log"
 #define FPGA_HOST_TRACE_VERSION "2026-06-09-zcu104-inline-trace-v2"
 
 #define FPGA_LOG_LEVEL_INFO   1
@@ -29,14 +31,27 @@
 static FILE * fpga_log_fp(void) {
     static FILE * fp = nullptr;
     if (!fp) {
-        fp = fopen(FPGA_LOG_FILE, "a");
+        const char * requested_path = getenv("FPGA_LOG_FILE");
+        if (!requested_path || requested_path[0] == '\0') {
+            requested_path = FPGA_LOG_FILE_DEFAULT;
+            mkdir("log_files", 0775);
+        }
+
+        const char * active_path = requested_path;
+        fp = fopen(active_path, "a");
+        if (!fp && strcmp(requested_path, FPGA_LOG_FILE_FALLBACK) != 0) {
+            active_path = FPGA_LOG_FILE_FALLBACK;
+            fp = fopen(active_path, "a");
+        }
         if (!fp) {
+            active_path = "stderr";
             fp = stderr;
         }
 
         const time_t now = time(nullptr);
         fprintf(fp, "\n============================================================\n");
         fprintf(fp, "[FPGA] Log started at %ld\n", (long) now);
+        fprintf(fp, "[FPGA] Log file: %s\n", active_path);
         fprintf(fp, "============================================================\n");
         fflush(fp);
     }
