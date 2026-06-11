@@ -20,10 +20,10 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "2026-06-11-zcu104-packed-q8-v7-profile"
+#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v9-profile"
 
 #define FPGA_LOG_LEVEL_INFO   1
-#define FPGA_LOG_LEVEL_MATMUL 1
+#define FPGA_LOG_LEVEL_MATMUL 0
 #define FPGA_LOG_LEVEL_REG    0
 #define FPGA_LOG_LEVEL_TIMING 1
 #define FPGA_LOG_LEVEL_DATA   1
@@ -111,7 +111,8 @@ static constexpr int      TRACE_ROWS          = 4;
 static constexpr int      FPGA_DEFAULT_MIN_N  = 0;
 static constexpr int      FPGA_DEFAULT_MAX_N  = 65536;
 static constexpr int      FPGA_DEFAULT_DECODE_MAX_N = 0;
-static constexpr double   FPGA_DEFAULT_SLOW_MS = 25.0;
+static constexpr int      FPGA_DEFAULT_LEGACY_MAX_N = 4096;
+static constexpr double   FPGA_DEFAULT_SLOW_MS = 100.0;
 static constexpr int      FPGA_DEFAULT_PROFILE_EVERY = 128;
 static constexpr int      FPGA_DEFAULT_PROFILE_TOP_N = 8;
 
@@ -144,11 +145,13 @@ static int                 g_cfg_scale     = -1;
 static int                 g_offload_min_n = FPGA_DEFAULT_MIN_N;
 static int                 g_offload_max_n = FPGA_DEFAULT_MAX_N;
 static int                 g_offload_decode_max_n = FPGA_DEFAULT_DECODE_MAX_N;
+static int                 g_legacy_max_n = FPGA_DEFAULT_LEGACY_MAX_N;
 static int                 g_packed_q8_supported = 0;
 static int                 g_packed_q8_max_blocks = 1;
 static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
 static int                 g_require_packed_q8 = 0;
 static int                 g_probe_packed_q8 = 1;
+static int                 g_abort_on_cpu_fallback = 0;
 static int                 g_cleanup_done = 0;
 static int                 g_atexit_registered = 0;
 static double              g_profile_slow_ms = FPGA_DEFAULT_SLOW_MS;
@@ -186,6 +189,22 @@ typedef struct {
 } fpga_profile_entry_t;
 
 static std::vector<fpga_profile_entry_t> g_profile_entries;
+
+typedef struct {
+    std::string reason;
+    std::string tensor;
+    int64_t     k;
+    int64_t     n;
+    int64_t     m;
+    long long   calls;
+    int         first_layer;
+    int         last_layer;
+} fpga_reject_entry_t;
+
+static std::vector<fpga_reject_entry_t> g_reject_entries;
+static long long g_reject_total = 0;
+static long long g_attention_fallback_total = 0;
+static long long g_runtime_fallback_total = 0;
 
 static bool env_flag_enabled(const char * name) {
     const char * value = getenv(name);
@@ -415,6 +434,110 @@ static void fpga_profile_record_matmul(
         g_profile_last_summary_call = g_fpga_count;
         fpga_profile_report_top("periodic", g_profile_top_n);
     }
+}
+
+static fpga_reject_entry_t * reject_entry_for(
+        const char * reason,
+        const char * tensor,
+        int64_t k,
+        int64_t n,
+        int64_t m) {
+    const char * safe_reason = reason ? reason : "?";
+    const char * safe_tensor = tensor ? tensor : "?";
+    for (fpga_reject_entry_t & entry : g_reject_entries) {
+        if (entry.k == k && entry.n == n && entry.m == m &&
+            entry.reason == safe_reason && entry.tensor == safe_tensor) {
+            return &entry;
+        }
+    }
+
+    fpga_reject_entry_t entry;
+    entry.reason = safe_reason;
+    entry.tensor = safe_tensor;
+    entry.k = k;
+    entry.n = n;
+    entry.m = m;
+    entry.calls = 0;
+    entry.first_layer = -1;
+    entry.last_layer = -1;
+    g_reject_entries.push_back(entry);
+    return &g_reject_entries.back();
+}
+
+static void fpga_reject_report_top(const char * reason, int top_n) {
+    LOGP("fallback summary reason=%s rejected_matmuls=%lld attention_fallbacks=%lld runtime_fallbacks=%lld reject_entries=%d abort_on_cpu_fallback=%d",
+         reason ? reason : "?",
+         g_reject_total,
+         g_attention_fallback_total,
+         g_runtime_fallback_total,
+         (int) g_reject_entries.size(),
+         g_abort_on_cpu_fallback);
+
+    if (g_reject_entries.empty()) {
+        return;
+    }
+
+    std::vector<fpga_reject_entry_t> sorted = g_reject_entries;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const fpga_reject_entry_t & a, const fpga_reject_entry_t & b) {
+                  return a.calls > b.calls;
+              });
+
+    const int count = std::min<int>(top_n, (int) sorted.size());
+    for (int i = 0; i < count; ++i) {
+        const fpga_reject_entry_t & e = sorted[(size_t) i];
+        LOGP("fallback_top[%d] tensor=%s shape=K%lld_N%lld_M%lld calls=%lld first_layer=%d last_layer=%d reason=%s action=CPU_fallback_outside_fpga_host",
+             i + 1,
+             e.tensor.c_str(),
+             (long long) e.k,
+             (long long) e.n,
+             (long long) e.m,
+             e.calls,
+             e.first_layer,
+             e.last_layer,
+             e.reason.c_str());
+    }
+}
+
+static void fpga_profile_record_reject(
+        const char * reason,
+        const char * tensor,
+        int layer,
+        int64_t k,
+        int64_t n,
+        int64_t m) {
+    fpga_reject_entry_t * entry = reject_entry_for(reason, tensor, k, n, m);
+    entry->calls++;
+    if (entry->first_layer < 0) {
+        entry->first_layer = layer;
+    }
+    entry->last_layer = layer;
+    g_reject_total++;
+
+    if (g_profile_every > 0 && (g_reject_total % g_profile_every) == 0) {
+        fpga_reject_report_top("periodic", g_profile_top_n);
+    }
+}
+
+static void fpga_abort_cpu_fallback_if_requested(
+        const char * reason,
+        const char * tensor,
+        int layer,
+        int64_t k,
+        int64_t n,
+        int64_t m) {
+    if (!g_abort_on_cpu_fallback) {
+        return;
+    }
+
+    LOGE("FPGA-only violation: CPU fallback would run tensor=%s layer=%d shape=K%lld_N%lld_M%lld reason=%s",
+         tensor ? tensor : "?",
+         layer,
+         (long long) k,
+         (long long) n,
+         (long long) m,
+         reason ? reason : "?");
+    abort();
 }
 
 static long long now_us(void) {
@@ -809,6 +932,10 @@ static bool fpga_validate_tensors(
     }
     if (g_offload_max_n > 0 && n > g_offload_max_n) {
         *reason = "N above FPGA offload policy";
+        return false;
+    }
+    if (!g_packed_q8_supported && g_legacy_max_n > 0 && n > g_legacy_max_n) {
+        *reason = "N above legacy FPGA offload policy";
         return false;
     }
     if (g_require_packed_q8 && !g_packed_q8_supported) {
@@ -1516,9 +1643,12 @@ int fpga_init(void) {
     g_use_write64 = !env_flag_disabled("FPGA_WRITE64");
     g_require_packed_q8 = env_flag_enabled("FPGA_REQUIRE_PACKED");
     g_probe_packed_q8 = !env_flag_disabled("FPGA_PROBE_PACKED_Q8");
+    g_abort_on_cpu_fallback = env_flag_enabled("FPGA_ABORT_ON_CPU_FALLBACK") ||
+                              env_flag_enabled("FPGA_REQUIRE_FPGA_ONLY");
     g_offload_min_n = env_int_value("FPGA_MIN_N", FPGA_DEFAULT_MIN_N, 0, 1073741824);
     g_offload_max_n = env_int_value("FPGA_MAX_N", FPGA_DEFAULT_MAX_N, 0, 1073741824);
     g_offload_decode_max_n = env_int_value("FPGA_DECODE_MAX_N", FPGA_DEFAULT_DECODE_MAX_N, 0, 1073741824);
+    g_legacy_max_n = env_int_value("FPGA_LEGACY_MAX_N", FPGA_DEFAULT_LEGACY_MAX_N, 0, 1073741824);
     g_profile_slow_ms = env_double_value("FPGA_SLOW_MS", FPGA_DEFAULT_SLOW_MS, 0.0, 1000000.0);
     g_profile_every = env_int_value("FPGA_PROFILE_EVERY", FPGA_DEFAULT_PROFILE_EVERY, 0, 1000000);
     g_profile_top_n = env_int_value("FPGA_PROFILE_TOP", FPGA_DEFAULT_PROFILE_TOP_N, 1, 64);
@@ -1597,8 +1727,15 @@ int fpga_init(void) {
     LOGI("No ZDMA programming is used: current bitstream exposes an AXI4-Full slave with local BRAM windows");
     LOGI("MMIO data write mode: %s (set FPGA_WRITE64=0 to force 32-bit writes)",
          g_use_write64 ? "64-bit" : "32-bit");
-    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d require_packed_q8=%d probe_packed_q8=%d",
-         g_offload_min_n, g_offload_max_n, g_offload_decode_max_n, g_require_packed_q8, g_probe_packed_q8);
+    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d legacy_max_N=%d require_packed_q8=%d probe_packed_q8=%d",
+         g_offload_min_n,
+         g_offload_max_n,
+         g_offload_decode_max_n,
+         g_legacy_max_n,
+         g_require_packed_q8,
+         g_probe_packed_q8);
+    LOGI("fallback policy: abort_on_cpu_fallback=%d (set FPGA_ABORT_ON_CPU_FALLBACK=1 to verify FPGA-only execution)",
+         g_abort_on_cpu_fallback);
     LOGI("profile controls: slow_ms=%.3f profile_every=%d profile_top=%d (tail -f %s for realtime SLOW/PROFILE lines)",
          g_profile_slow_ms,
          g_profile_every,
@@ -1651,6 +1788,8 @@ int fpga_init(void) {
             if (!getenv("FPGA_DECODE_MAX_N")) {
                 g_offload_decode_max_n = FPGA_DEFAULT_DECODE_MAX_N;
             }
+            LOGI("legacy FPGA policy active: legacy_max_N=%d (set FPGA_LEGACY_MAX_N=0 to force wide legacy offload)",
+                 g_legacy_max_n);
             invalidate_vpu_config();
             if (require_self_test && g_require_packed_q8) {
                 LOGE("FPGA_SELF_TEST requires packed_q8, refusing to enable FPGA acceleration for this process");
@@ -1676,6 +1815,7 @@ void fpga_cleanup(void) {
     g_cleanup_done = 1;
 
     fpga_profile_report_top("cleanup", g_profile_top_n);
+    fpga_reject_report_top("cleanup", g_profile_top_n);
 
     if (vpu_is_mapped()) {
         munmap(mapped_vpu_ptr(), VPU_MMAP_SIZE);
@@ -1690,8 +1830,15 @@ void fpga_cleanup(void) {
     const long long elapsed_us = g_fpga_start_us > 0 ? now_us() - g_fpga_start_us : 0;
     const double elapsed_s = elapsed_us > 0 ? (double) elapsed_us / 1000000.0 : 0.0;
     const double run_rate = elapsed_s > 0.0 ? (double) g_fpga_vpu_runs / elapsed_s : 0.0;
-    LOGI("cleanup complete fpga_calls=%lld vpu_runs=%lld software_fallbacks=%lld elapsed_s=%.3f avg_vpu_runs_per_s=%.1f",
-         g_fpga_count, g_fpga_vpu_runs, g_cpu_count, elapsed_s, run_rate);
+    LOGI("cleanup complete fpga_calls=%lld vpu_runs=%lld cpu_fallbacks=%lld rejected_matmuls=%lld attention_fallbacks=%lld runtime_fallbacks=%lld elapsed_s=%.3f avg_vpu_runs_per_s=%.1f",
+         g_fpga_count,
+         g_fpga_vpu_runs,
+         g_cpu_count,
+         g_reject_total,
+         g_attention_fallback_total,
+         g_runtime_fallback_total,
+         elapsed_s,
+         run_rate);
     invalidate_vpu_config();
     pthread_mutex_unlock(&g_mutex);
 }
@@ -1743,33 +1890,102 @@ extern "C" int fpga_try_matmul_extended(
     const int effective_layer_id = infer_layer_id_from_name(tensor_name_or_unknown(src0), layer_id);
 
     if (is_attention) {
-        static int logged_attention_fallback = 0;
-        if (!logged_attention_fallback) {
-            LOGI("attention path requested but current SoC/VPU bitstream exposes only INT8 GEMV; using CPU fallback");
-            logged_attention_fallback = 1;
+        if (ith == 0) {
+            const char * tensor_name = tensor_name_or_unknown(src0);
+            const int64_t k = src0 ? src0->ne[0] : 0;
+            const int64_t n = src0 ? src0->ne[1] : 0;
+            const int64_t m = src1 ? src1->ne[1] : 0;
+            pthread_mutex_lock(&g_mutex);
+            g_cpu_count++;
+            g_attention_fallback_total++;
+            fpga_profile_record_reject("attention op unsupported by current INT8 GEMV bitstream",
+                                       tensor_name,
+                                       effective_layer_id,
+                                       k,
+                                       n,
+                                       m);
+            LOGI("attention path requested but current SoC/VPU bitstream exposes only INT8 GEMV; using CPU fallback tensor=%s layer=%d shape=K%lld_N%lld_M%lld",
+                 tensor_name,
+                 effective_layer_id,
+                 (long long) k,
+                 (long long) n,
+                 (long long) m);
+            pthread_mutex_unlock(&g_mutex);
+            fpga_abort_cpu_fallback_if_requested("attention op unsupported by current INT8 GEMV bitstream",
+                                                 tensor_name,
+                                                 effective_layer_id,
+                                                 k,
+                                                 n,
+                                                 m);
         }
         return 0;
     }
 
     const char * reason = nullptr;
     if (!fpga_validate_tensors(src0, src1, dst, &reason)) {
-        g_cpu_count++;
-        static int logged_rejects = 0;
-        if (logged_rejects < 16) {
-            LOGI("reject matmul: %s tensor=%s K=%lld N=%lld M=%lld layer=%d",
-                 reason ? reason : "unknown",
-                 tensor_name_or_unknown(src0),
-                 src0 ? (long long) src0->ne[0] : 0LL,
-                 src0 ? (long long) src0->ne[1] : 0LL,
-                 src1 ? (long long) src1->ne[1] : 0LL,
-                 effective_layer_id);
-            logged_rejects++;
+        if (ith == 0) {
+            const char * tensor_name = tensor_name_or_unknown(src0);
+            const int64_t k = src0 ? src0->ne[0] : 0;
+            const int64_t n = src0 ? src0->ne[1] : 0;
+            const int64_t m = src1 ? src1->ne[1] : 0;
+            pthread_mutex_lock(&g_mutex);
+            g_cpu_count++;
+            fpga_profile_record_reject(reason,
+                                       tensor_name,
+                                       effective_layer_id,
+                                       k,
+                                       n,
+                                       m);
+            static int logged_rejects = 0;
+            if (logged_rejects < 32 || g_abort_on_cpu_fallback) {
+                LOGI("reject matmul: %s tensor=%s K=%lld N=%lld M=%lld layer=%d action=CPU_fallback_outside_fpga_host",
+                     reason ? reason : "unknown",
+                     tensor_name,
+                     (long long) k,
+                     (long long) n,
+                     (long long) m,
+                     effective_layer_id);
+                logged_rejects++;
+            }
+            pthread_mutex_unlock(&g_mutex);
+            fpga_abort_cpu_fallback_if_requested(reason,
+                                                 tensor_name,
+                                                 effective_layer_id,
+                                                 k,
+                                                 n,
+                                                 m);
         }
         return 0;
     }
 
     if (!vpu_is_mapped()) {
-        LOGE("reject matmul: fpga_init has not mapped the VPU");
+        if (ith == 0) {
+            const char * tensor_name = tensor_name_or_unknown(src0);
+            const int64_t k = src0 ? src0->ne[0] : 0;
+            const int64_t n = src0 ? src0->ne[1] : 0;
+            const int64_t m = src1 ? src1->ne[1] : 0;
+            pthread_mutex_lock(&g_mutex);
+            g_cpu_count++;
+            fpga_profile_record_reject("fpga_init has not mapped the VPU",
+                                       tensor_name,
+                                       effective_layer_id,
+                                       k,
+                                       n,
+                                       m);
+            LOGE("reject matmul: fpga_init has not mapped the VPU tensor=%s layer=%d shape=K%lld_N%lld_M%lld action=CPU_fallback_outside_fpga_host",
+                 tensor_name,
+                 effective_layer_id,
+                 (long long) k,
+                 (long long) n,
+                 (long long) m);
+            pthread_mutex_unlock(&g_mutex);
+            fpga_abort_cpu_fallback_if_requested("fpga_init has not mapped the VPU",
+                                                 tensor_name,
+                                                 effective_layer_id,
+                                                 k,
+                                                 n,
+                                                 m);
+        }
         return 0;
     }
 
@@ -1821,6 +2037,7 @@ extern "C" int fpga_try_matmul_extended(
         log_dst_sample(dst, effective_layer_id, seq_pos);
     } else {
         g_cpu_count++;
+        g_runtime_fallback_total++;
         LOGE("FPGA runtime failed after %.3f ms layer=%d tensor=%s shape=K%lld_N%lld_M%lld; computing this accepted matmul with local q8_0 software fallback",
              elapsed_ms,
              effective_layer_id,
@@ -1828,6 +2045,18 @@ extern "C" int fpga_try_matmul_extended(
              (long long) src0->ne[0],
              (long long) src0->ne[1],
              (long long) src1->ne[1]);
+        fpga_profile_record_reject("FPGA runtime failed after accepted offload",
+                                   tensor_name,
+                                   effective_layer_id,
+                                   src0->ne[0],
+                                   src0->ne[1],
+                                   src1->ne[1]);
+        fpga_abort_cpu_fallback_if_requested("FPGA runtime failed after accepted offload",
+                                             tensor_name,
+                                             effective_layer_id,
+                                             src0->ne[0],
+                                             src0->ne[1],
+                                             src1->ne[1]);
         cpu_reference_q8_0_matmul(src0, src1, dst);
     }
 
