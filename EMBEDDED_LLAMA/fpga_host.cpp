@@ -16,10 +16,11 @@
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <string>
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "2026-06-11-zcu104-packed-q8-v5"
+#define FPGA_HOST_TRACE_VERSION "2026-06-11-zcu104-packed-q8-v7-profile"
 
 #define FPGA_LOG_LEVEL_INFO   1
 #define FPGA_LOG_LEVEL_MATMUL 1
@@ -59,6 +60,8 @@ static FILE * fpga_log_fp(void) {
 #define LOGT(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_TIMING, "TIMING", fmt, ##__VA_ARGS__)
 #define LOGD(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_DATA,   "DATA",   fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) FPGA_LOG(1,                     "ERROR",  fmt, ##__VA_ARGS__)
+#define LOGS(fmt, ...) FPGA_LOG(1,                     "SLOW",   fmt, ##__VA_ARGS__)
+#define LOGP(fmt, ...) FPGA_LOG(1,                     "PROFILE",fmt, ##__VA_ARGS__)
 
 // Address map from DATN_RTL/RTL/AXI4_Mapping.v and Vivado design_1.bd.
 static constexpr uint64_t VPU_BASE_PHYS      = 0x00000000A0000000ULL;
@@ -97,6 +100,7 @@ static constexpr int      VPU_QK8_0          = 32;
 static constexpr int      VPU_BLOCK_BEATS    = VPU_QK8_0 / VPU_NUM_LANES;
 static constexpr int      VPU_RESULT_PACK_LANES = 4;
 static constexpr uint32_t VPU_MODE_PACKED_Q8 = 0x00000001;
+static constexpr int      VPU_PACKED_Q8_MAX_BLOCKS = 16;
 static constexpr int      VPU_DEFAULT_ROWS   = 256;
 static constexpr int      VPU_DEFAULT_BEATS  = 256;
 static constexpr int      VPU_DEFAULT_COLS   = VPU_DEFAULT_BEATS * VPU_NUM_LANES;
@@ -106,7 +110,10 @@ static constexpr int      TRACE_DEFAULT_CALLS = 8;
 static constexpr int      TRACE_ROWS          = 4;
 static constexpr int      FPGA_DEFAULT_MIN_N  = 0;
 static constexpr int      FPGA_DEFAULT_MAX_N  = 65536;
-static constexpr int      FPGA_DEFAULT_DECODE_MAX_N = 4096;
+static constexpr int      FPGA_DEFAULT_DECODE_MAX_N = 0;
+static constexpr double   FPGA_DEFAULT_SLOW_MS = 25.0;
+static constexpr int      FPGA_DEFAULT_PROFILE_EVERY = 128;
+static constexpr int      FPGA_DEFAULT_PROFILE_TOP_N = 8;
 
 typedef struct {
     uint16_t d;
@@ -140,6 +147,15 @@ static int                 g_offload_decode_max_n = FPGA_DEFAULT_DECODE_MAX_N;
 static int                 g_packed_q8_supported = 0;
 static int                 g_packed_q8_max_blocks = 1;
 static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
+static int                 g_require_packed_q8 = 0;
+static int                 g_probe_packed_q8 = 1;
+static int                 g_cleanup_done = 0;
+static int                 g_atexit_registered = 0;
+static double              g_profile_slow_ms = FPGA_DEFAULT_SLOW_MS;
+static int                 g_profile_every = FPGA_DEFAULT_PROFILE_EVERY;
+static int                 g_profile_top_n = FPGA_DEFAULT_PROFILE_TOP_N;
+static long long           g_profile_last_summary_call = 0;
+static long long           g_profile_slow_calls = 0;
 
 static int g_current_layer_id = 0;
 int        g_current_seq_pos  = 0;
@@ -155,6 +171,21 @@ typedef struct {
 } fpga_scratch_t;
 
 static fpga_scratch_t g_scratch;
+
+typedef struct {
+    std::string tensor;
+    int64_t     k;
+    int64_t     n;
+    int64_t     m;
+    int         packed;
+    long long   calls;
+    long long   vpu_runs;
+    double      total_ms;
+    double      max_ms;
+    int         max_layer;
+} fpga_profile_entry_t;
+
+static std::vector<fpga_profile_entry_t> g_profile_entries;
 
 static bool env_flag_enabled(const char * name) {
     const char * value = getenv(name);
@@ -208,6 +239,28 @@ static int env_int_value(const char * name, int fallback, int min_value, int max
     return (int) parsed;
 }
 
+static double env_double_value(const char * name, double fallback, double min_value, double max_value) {
+    const char * value = getenv(name);
+    if (!value || value[0] == '\0') {
+        return fallback;
+    }
+
+    char * end = nullptr;
+    errno = 0;
+    const double parsed = strtod(value, &end);
+    if (errno != 0 || end == value) {
+        return fallback;
+    }
+
+    if (parsed < min_value) {
+        return min_value;
+    }
+    if (parsed > max_value) {
+        return max_value;
+    }
+    return parsed;
+}
+
 static int trace_call_limit(void) {
     return env_int_value("FPGA_TRACE_CALLS", TRACE_DEFAULT_CALLS, 0, 1000000);
 }
@@ -233,6 +286,135 @@ static int infer_layer_id_from_name(const char * name, int fallback) {
 
 static const char * tensor_name_or_unknown(const struct ggml_tensor * tensor) {
     return (tensor && tensor->name[0] != '\0') ? tensor->name : "?";
+}
+
+static const char * fpga_mode_name(void) {
+    return g_packed_q8_supported ? "packed-q8" : "legacy-q8-block";
+}
+
+static const char * bottleneck_hint(const char * tensor, int64_t n, int64_t m, int packed) {
+    if (tensor && strstr(tensor, ".ffn_")) {
+        return packed ? "ffn-wide-packed" : "ffn-wide-legacy-mmio";
+    }
+    if (tensor && strstr(tensor, ".attn_")) {
+        return packed ? "attention-proj-packed" : "attention-proj-legacy-mmio";
+    }
+    if (m == 1 && n >= 4096) {
+        return packed ? "wide-decode-packed" : "wide-decode-legacy-mmio";
+    }
+    return packed ? "packed-q8" : "legacy-mmio";
+}
+
+static fpga_profile_entry_t * profile_entry_for(
+        const char * tensor,
+        int64_t k,
+        int64_t n,
+        int64_t m,
+        int packed) {
+    const char * name = tensor ? tensor : "?";
+    for (fpga_profile_entry_t & entry : g_profile_entries) {
+        if (entry.k == k && entry.n == n && entry.m == m && entry.packed == packed &&
+            entry.tensor == name) {
+            return &entry;
+        }
+    }
+
+    fpga_profile_entry_t entry;
+    entry.tensor = name;
+    entry.k = k;
+    entry.n = n;
+    entry.m = m;
+    entry.packed = packed;
+    entry.calls = 0;
+    entry.vpu_runs = 0;
+    entry.total_ms = 0.0;
+    entry.max_ms = 0.0;
+    entry.max_layer = -1;
+    g_profile_entries.push_back(entry);
+    return &g_profile_entries.back();
+}
+
+static void fpga_profile_report_top(const char * reason, int top_n) {
+    if (g_profile_entries.empty()) {
+        LOGP("summary reason=%s no accepted FPGA matmul calls yet", reason ? reason : "?");
+        return;
+    }
+
+    std::vector<fpga_profile_entry_t> sorted = g_profile_entries;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const fpga_profile_entry_t & a, const fpga_profile_entry_t & b) {
+                  return a.total_ms > b.total_ms;
+              });
+
+    const int count = std::min<int>(top_n, (int) sorted.size());
+    LOGP("summary reason=%s entries=%d fpga_calls=%lld slow_calls=%lld mode=%s",
+         reason ? reason : "?",
+         (int) g_profile_entries.size(),
+         g_fpga_count,
+         g_profile_slow_calls,
+         fpga_mode_name());
+    for (int i = 0; i < count; ++i) {
+        const fpga_profile_entry_t & e = sorted[(size_t) i];
+        const double avg_ms = e.calls > 0 ? e.total_ms / (double) e.calls : 0.0;
+        const double avg_runs = e.calls > 0 ? (double) e.vpu_runs / (double) e.calls : 0.0;
+        LOGP("top[%d] tensor=%s shape=K%lld_N%lld_M%lld packed=%d calls=%lld total_ms=%.3f avg_ms=%.3f max_ms=%.3f max_layer=%d avg_vpu_runs=%.1f hint=%s",
+             i + 1,
+             e.tensor.c_str(),
+             (long long) e.k,
+             (long long) e.n,
+             (long long) e.m,
+             e.packed,
+             e.calls,
+             e.total_ms,
+             avg_ms,
+             e.max_ms,
+             e.max_layer,
+             avg_runs,
+             bottleneck_hint(e.tensor.c_str(), e.n, e.m, e.packed));
+    }
+}
+
+static void fpga_profile_record_matmul(
+        const char * tensor,
+        int layer,
+        int64_t k,
+        int64_t n,
+        int64_t m,
+        int packed,
+        long long vpu_runs,
+        double elapsed_ms) {
+    fpga_profile_entry_t * entry = profile_entry_for(tensor, k, n, m, packed);
+    entry->calls++;
+    entry->vpu_runs += vpu_runs;
+    entry->total_ms += elapsed_ms;
+    if (elapsed_ms > entry->max_ms) {
+        entry->max_ms = elapsed_ms;
+        entry->max_layer = layer;
+    }
+
+    if (elapsed_ms >= g_profile_slow_ms) {
+        g_profile_slow_calls++;
+        const double ms_per_run = vpu_runs > 0 ? elapsed_ms / (double) vpu_runs : 0.0;
+        LOGS("layer=%d tensor=%s shape=K%lld_N%lld_M%lld mode=%s packed=%d elapsed_ms=%.3f vpu_runs=%lld ms_per_run=%.4f hint=%s",
+             layer,
+             tensor ? tensor : "?",
+             (long long) k,
+             (long long) n,
+             (long long) m,
+             fpga_mode_name(),
+             packed,
+             elapsed_ms,
+             vpu_runs,
+             ms_per_run,
+             bottleneck_hint(tensor, n, m, packed));
+    }
+
+    if (g_profile_every > 0 &&
+        g_fpga_count > 0 &&
+        (g_fpga_count - g_profile_last_summary_call) >= g_profile_every) {
+        g_profile_last_summary_call = g_fpga_count;
+        fpga_profile_report_top("periodic", g_profile_top_n);
+    }
 }
 
 static long long now_us(void) {
@@ -629,6 +811,10 @@ static bool fpga_validate_tensors(
         *reason = "N above FPGA offload policy";
         return false;
     }
+    if (g_require_packed_q8 && !g_packed_q8_supported) {
+        *reason = "packed q8 is required by FPGA offload policy";
+        return false;
+    }
     if (m == 1 && g_offload_decode_max_n > 0 && n > g_offload_decode_max_n) {
         *reason = "N above decode offload policy";
         return false;
@@ -703,6 +889,8 @@ static int wait_done(uint32_t * final_status) {
     return -2;
 }
 
+static void read_result_i32x4(uint32_t result_word, int32_t out[4]);
+
 static bool fpga_smoke_test(void) {
     int8_t ones[VPU_QK8_0];
     for (int i = 0; i < VPU_QK8_0; ++i) {
@@ -729,6 +917,55 @@ static bool fpga_smoke_test(void) {
 
     wr32(REG_CTRL, CTRL_CLEAR_DONE);
     return wait_rc == 0 && result == 32;
+}
+
+static bool fpga_packed_q8_smoke_test(void) {
+    int8_t act0[VPU_QK8_0];
+    int8_t act1[VPU_QK8_0];
+    int8_t w_row0_block0[VPU_QK8_0];
+    int8_t w_row0_block1[VPU_QK8_0];
+    int8_t w_row1_block0[VPU_QK8_0];
+    int8_t w_row1_block1[VPU_QK8_0];
+
+    for (int i = 0; i < VPU_QK8_0; ++i) {
+        act0[i] = 1;
+        act1[i] = 2;
+        w_row0_block0[i] = 1;
+        w_row0_block1[i] = 1;
+        w_row1_block0[i] = -1;
+        w_row1_block1[i] = 3;
+    }
+
+    wr32(REG_CTRL, CTRL_CLEAR_DONE);
+    configure_vpu(2, VPU_BLOCK_BEATS * 2, VPU_MODE_PACKED_Q8);
+
+    for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
+        write_i8x16(ACT_BASE + (uint32_t) beat * 16U, act0 + beat * VPU_NUM_LANES);
+        write_i8x16(ACT_BASE + (uint32_t) (VPU_BLOCK_BEATS + beat) * 16U, act1 + beat * VPU_NUM_LANES);
+
+        write_i8x16(WEIGHT_BASE + (uint32_t) beat * 16U, w_row0_block0 + beat * VPU_NUM_LANES);
+        write_i8x16(WEIGHT_BASE + (uint32_t) (VPU_BLOCK_BEATS + beat) * 16U, w_row0_block1 + beat * VPU_NUM_LANES);
+
+        const uint32_t row1_base = (uint32_t) g_vpu_max_beats * 16U;
+        write_i8x16(WEIGHT_BASE + row1_base + (uint32_t) beat * 16U, w_row1_block0 + beat * VPU_NUM_LANES);
+        write_i8x16(WEIGHT_BASE + row1_base + (uint32_t) (VPU_BLOCK_BEATS + beat) * 16U, w_row1_block1 + beat * VPU_NUM_LANES);
+    }
+
+    start_vpu();
+
+    uint32_t status = 0;
+    const int wait_rc = wait_done(&status);
+    int32_t lanes[4] = {0, 0, 0, 0};
+    if (wait_rc == 0) {
+        read_result_i32x4(0, lanes);
+    }
+    const uint32_t progress = rd32(REG_PROGRESS);
+
+    LOGI("packed self-test results=[%d,%d,%d,%d] expected=[32,64,-32,192] wait_rc=%d status=0x%08x progress=0x%08x",
+         lanes[0], lanes[1], lanes[2], lanes[3], wait_rc, status, progress);
+
+    wr32(REG_CTRL, CTRL_CLEAR_DONE);
+    return wait_rc == 0 && lanes[0] == 32 && lanes[1] == 64 && lanes[2] == -32 && lanes[3] == 192;
 }
 
 static bool fpga_program_weight_block(
@@ -1277,9 +1514,19 @@ int fpga_init(void) {
 
     g_vpu = (volatile uint8_t *) map;
     g_use_write64 = !env_flag_disabled("FPGA_WRITE64");
+    g_require_packed_q8 = env_flag_enabled("FPGA_REQUIRE_PACKED");
+    g_probe_packed_q8 = !env_flag_disabled("FPGA_PROBE_PACKED_Q8");
     g_offload_min_n = env_int_value("FPGA_MIN_N", FPGA_DEFAULT_MIN_N, 0, 1073741824);
     g_offload_max_n = env_int_value("FPGA_MAX_N", FPGA_DEFAULT_MAX_N, 0, 1073741824);
     g_offload_decode_max_n = env_int_value("FPGA_DECODE_MAX_N", FPGA_DEFAULT_DECODE_MAX_N, 0, 1073741824);
+    g_profile_slow_ms = env_double_value("FPGA_SLOW_MS", FPGA_DEFAULT_SLOW_MS, 0.0, 1000000.0);
+    g_profile_every = env_int_value("FPGA_PROFILE_EVERY", FPGA_DEFAULT_PROFILE_EVERY, 0, 1000000);
+    g_profile_top_n = env_int_value("FPGA_PROFILE_TOP", FPGA_DEFAULT_PROFILE_TOP_N, 1, 64);
+    if (!g_atexit_registered) {
+        atexit(fpga_cleanup);
+        g_atexit_registered = 1;
+    }
+    g_cleanup_done = 0;
     invalidate_vpu_config();
     g_fpga_start_us = now_us();
 
@@ -1313,6 +1560,18 @@ int fpga_init(void) {
             g_packed_q8_result_words = cap_result_words;
         }
     }
+    if (!g_packed_q8_supported && (g_probe_packed_q8 || env_flag_enabled("FPGA_FORCE_PACKED_Q8")) &&
+        !env_flag_disabled("FPGA_PACKED_Q8")) {
+        g_packed_q8_supported = 1;
+        g_packed_q8_max_blocks = std::min(VPU_PACKED_Q8_MAX_BLOCKS, g_vpu_max_beats / VPU_BLOCK_BEATS);
+        g_packed_q8_result_words =
+            (g_vpu_max_rows * g_packed_q8_max_blocks + VPU_RESULT_PACK_LANES - 1) /
+            VPU_RESULT_PACK_LANES;
+        LOGI("probing packed_q8 despite raw caps=0x%08x max_group_blocks=%d result_words=%d; packed self-test will verify (set FPGA_PROBE_PACKED_Q8=0 to skip)",
+             caps,
+             g_packed_q8_max_blocks,
+             g_packed_q8_result_words);
+    }
     if (!getenv("FPGA_DECODE_MAX_N") && g_packed_q8_supported) {
         g_offload_decode_max_n = 0;
     }
@@ -1332,11 +1591,19 @@ int fpga_init(void) {
          g_packed_q8_supported,
          g_packed_q8_max_blocks,
          g_packed_q8_result_words);
+    if (g_require_packed_q8 && !g_packed_q8_supported) {
+        LOGI("FPGA_REQUIRE_PACKED=1 and packed_q8 is unavailable; accepted GEMV offload will reject until packed_q8 is available");
+    }
     LOGI("No ZDMA programming is used: current bitstream exposes an AXI4-Full slave with local BRAM windows");
     LOGI("MMIO data write mode: %s (set FPGA_WRITE64=0 to force 32-bit writes)",
          g_use_write64 ? "64-bit" : "32-bit");
-    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d (auto 0 when packed_q8 is available; set FPGA_DECODE_MAX_N explicitly to override)",
-         g_offload_min_n, g_offload_max_n, g_offload_decode_max_n);
+    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d require_packed_q8=%d probe_packed_q8=%d",
+         g_offload_min_n, g_offload_max_n, g_offload_decode_max_n, g_require_packed_q8, g_probe_packed_q8);
+    LOGI("profile controls: slow_ms=%.3f profile_every=%d profile_top=%d (tail -f %s for realtime SLOW/PROFILE lines)",
+         g_profile_slow_ms,
+         g_profile_every,
+         g_profile_top_n,
+         FPGA_LOG_FILE);
     LOGI("trace controls: set FPGA_TRACE_DATA=1 to dump first data blocks; FPGA_TRACE_CALLS=N changes default first %d traced blocks",
          TRACE_DEFAULT_CALLS);
     log_address_map_once();
@@ -1372,11 +1639,43 @@ int fpga_init(void) {
         }
     }
 
+    if (g_packed_q8_supported) {
+        const bool packed_self_test_ok = fpga_packed_q8_smoke_test();
+        if (packed_self_test_ok) {
+            LOGI("packed_q8 self-test passed; packed GEMV offload is active");
+        } else {
+            LOGE("packed_q8 self-test failed; disabling packed_q8 offload for this process");
+            g_packed_q8_supported = 0;
+            g_packed_q8_max_blocks = 1;
+            g_packed_q8_result_words = VPU_DEFAULT_ROWS;
+            if (!getenv("FPGA_DECODE_MAX_N")) {
+                g_offload_decode_max_n = FPGA_DEFAULT_DECODE_MAX_N;
+            }
+            invalidate_vpu_config();
+            if (require_self_test && g_require_packed_q8) {
+                LOGE("FPGA_SELF_TEST requires packed_q8, refusing to enable FPGA acceleration for this process");
+                munmap(mapped_vpu_ptr(), VPU_MMAP_SIZE);
+                g_vpu = nullptr;
+                close(g_mem_fd);
+                g_mem_fd = -1;
+                return -1;
+            }
+        }
+    }
+
     return 0;
 }
 
 void fpga_cleanup(void) {
     pthread_mutex_lock(&g_mutex);
+
+    if (g_cleanup_done) {
+        pthread_mutex_unlock(&g_mutex);
+        return;
+    }
+    g_cleanup_done = 1;
+
+    fpga_profile_report_top("cleanup", g_profile_top_n);
 
     if (vpu_is_mapped()) {
         munmap(mapped_vpu_ptr(), VPU_MMAP_SIZE);
@@ -1482,17 +1781,19 @@ extern "C" int fpga_try_matmul_extended(
 
     const long long vpu_runs = estimate_vpu_runs(src0, src1);
     const long long t0_us = now_us();
+    const int packed_mode = g_packed_q8_supported ? 1 : 0;
+    const char * tensor_name = tensor_name_or_unknown(src0);
 
     LOGM("run layer=%d seq=%d tensor=%s K=%lld N=%lld M=%lld rows_limit=%d beats_limit=%d packed_q8=%d vpu_runs=%lld",
          effective_layer_id,
          seq_pos,
-         tensor_name_or_unknown(src0),
+         tensor_name,
          (long long) src0->ne[0],
          (long long) src0->ne[1],
          (long long) src1->ne[1],
          g_vpu_max_rows,
          g_vpu_max_beats,
-         g_packed_q8_supported,
+         packed_mode,
          vpu_runs);
 
     const bool hw_ok = fpga_hw_q8_0_matmul(src0, src1, dst);
@@ -1502,6 +1803,15 @@ extern "C" int fpga_try_matmul_extended(
     if (hw_ok) {
         g_fpga_count++;
         g_fpga_vpu_runs += vpu_runs;
+        fpga_profile_record_matmul(
+            tensor_name,
+            effective_layer_id,
+            src0->ne[0],
+            src0->ne[1],
+            src1->ne[1],
+            packed_mode,
+            vpu_runs,
+            elapsed_ms);
         LOGM("done via FPGA total_fpga_calls=%lld vpu_runs=%lld elapsed_ms=%.3f vpu_runs_per_s=%.1f total_vpu_runs=%lld",
              g_fpga_count,
              vpu_runs,
@@ -1511,8 +1821,13 @@ extern "C" int fpga_try_matmul_extended(
         log_dst_sample(dst, effective_layer_id, seq_pos);
     } else {
         g_cpu_count++;
-        LOGE("FPGA runtime failed after %.3f ms; computing this accepted matmul with local q8_0 software fallback",
-             elapsed_ms);
+        LOGE("FPGA runtime failed after %.3f ms layer=%d tensor=%s shape=K%lld_N%lld_M%lld; computing this accepted matmul with local q8_0 software fallback",
+             elapsed_ms,
+             effective_layer_id,
+             tensor_name,
+             (long long) src0->ne[0],
+             (long long) src0->ne[1],
+             (long long) src1->ne[1]);
         cpu_reference_q8_0_matmul(src0, src1, dst);
     }
 
