@@ -19,7 +19,7 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "2026-06-11-zcu104-packed-q8-v4"
+#define FPGA_HOST_TRACE_VERSION "2026-06-11-zcu104-packed-q8-v5"
 
 #define FPGA_LOG_LEVEL_INFO   1
 #define FPGA_LOG_LEVEL_MATMUL 1
@@ -106,6 +106,7 @@ static constexpr int      TRACE_DEFAULT_CALLS = 8;
 static constexpr int      TRACE_ROWS          = 4;
 static constexpr int      FPGA_DEFAULT_MIN_N  = 0;
 static constexpr int      FPGA_DEFAULT_MAX_N  = 65536;
+static constexpr int      FPGA_DEFAULT_DECODE_MAX_N = 4096;
 
 typedef struct {
     uint16_t d;
@@ -135,6 +136,7 @@ static int                 g_cfg_mode      = -1;
 static int                 g_cfg_scale     = -1;
 static int                 g_offload_min_n = FPGA_DEFAULT_MIN_N;
 static int                 g_offload_max_n = FPGA_DEFAULT_MAX_N;
+static int                 g_offload_decode_max_n = FPGA_DEFAULT_DECODE_MAX_N;
 static int                 g_packed_q8_supported = 0;
 static int                 g_packed_q8_max_blocks = 1;
 static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
@@ -142,6 +144,17 @@ static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
 static int g_current_layer_id = 0;
 int        g_current_seq_pos  = 0;
 static int g_is_attention_op  = 0;
+
+typedef struct {
+    std::vector<block_q8_0_t> act_blocks;
+    std::vector<block_q8_0_t> act_blocks_all;
+    std::vector<float>        act_scales;
+    std::vector<float>        weight_scales;
+    std::vector<int32_t>      partial;
+    std::vector<float>        accum;
+} fpga_scratch_t;
+
+static fpga_scratch_t g_scratch;
 
 static bool env_flag_enabled(const char * name) {
     const char * value = getenv(name);
@@ -201,6 +214,25 @@ static int trace_call_limit(void) {
 
 static bool trace_data_enabled(void) {
     return env_flag_enabled("FPGA_TRACE_DATA") && trace_call_limit() > 0;
+}
+
+static int infer_layer_id_from_name(const char * name, int fallback) {
+    if (!name || name[0] == '\0') {
+        return fallback;
+    }
+
+    int layer = -1;
+    if (sscanf(name, "blk.%d.", &layer) == 1 ||
+        sscanf(name, "layers.%d.", &layer) == 1 ||
+        sscanf(name, "model.layers.%d.", &layer) == 1) {
+        return layer;
+    }
+
+    return fallback;
+}
+
+static const char * tensor_name_or_unknown(const struct ggml_tensor * tensor) {
+    return (tensor && tensor->name[0] != '\0') ? tensor->name : "?";
 }
 
 static long long now_us(void) {
@@ -481,6 +513,25 @@ static void quantize_activation_vector(
     quantize_activation_vector_to(src1, m, k, act_blocks.data());
 }
 
+static void quantize_activation_matrix(
+        const struct ggml_tensor * src1,
+        int64_t m,
+        int64_t k,
+        std::vector<block_q8_0_t> & act_blocks_all,
+        std::vector<float> & act_scales) {
+    const int64_t nb = k / VPU_QK8_0;
+    act_blocks_all.resize((size_t) (m * nb));
+    act_scales.resize((size_t) (m * nb));
+
+    for (int64_t col = 0; col < m; ++col) {
+        block_q8_0_t * col_blocks = &act_blocks_all[(size_t) (col * nb)];
+        quantize_activation_vector_to(src1, col, k, col_blocks);
+        for (int64_t ib = 0; ib < nb; ++ib) {
+            act_scales[(size_t) (col * nb + ib)] = fp16_to_fp32(col_blocks[(size_t) ib].d);
+        }
+    }
+}
+
 static const block_q8_0_t * weight_block(
         const struct ggml_tensor * src0,
         int64_t row,
@@ -576,6 +627,10 @@ static bool fpga_validate_tensors(
     }
     if (g_offload_max_n > 0 && n > g_offload_max_n) {
         *reason = "N above FPGA offload policy";
+        return false;
+    }
+    if (m == 1 && g_offload_decode_max_n > 0 && n > g_offload_decode_max_n) {
+        *reason = "N above decode offload policy";
         return false;
     }
     if (src0->ne[2] != 1 || src0->ne[3] != 1 ||
@@ -681,6 +736,7 @@ static bool fpga_program_weight_block(
         int64_t row0,
         int rows,
         int64_t k_block,
+        float * weight_scales,
         bool trace_this,
         long long trace_id) {
     if (rows <= 0 || rows > g_vpu_max_rows) {
@@ -705,6 +761,9 @@ static bool fpga_program_weight_block(
 
     for (int row = 0; row < rows; ++row) {
         const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block);
+        if (weight_scales) {
+            weight_scales[(size_t) row] = fp16_to_fp32(wb->d);
+        }
         for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
             const uint32_t index = (uint32_t) row * (uint32_t) g_vpu_max_beats + (uint32_t) beat;
             const uint32_t weight_off = WEIGHT_BASE + index * 16U;
@@ -804,7 +863,8 @@ static bool fpga_run_q8_block(
         int64_t row0,
         int rows,
         int64_t k_block,
-        std::vector<int32_t> & partial) {
+        std::vector<int32_t> & partial,
+        std::vector<float> & weight_scales) {
     const bool trace_this = trace_data_enabled() && g_trace_blocks < trace_call_limit();
     const long long trace_id = trace_this ? g_trace_blocks++ : -1;
 
@@ -827,7 +887,9 @@ static bool fpga_run_q8_block(
              (unsigned long long) local_to_phys(RESULT_BASE + result_bytes - 1U));
     }
 
-    return fpga_program_weight_block(src0, row0, rows, k_block, trace_this, trace_id) &&
+    weight_scales.resize((size_t) rows);
+
+    return fpga_program_weight_block(src0, row0, rows, k_block, weight_scales.data(), trace_this, trace_id) &&
            fpga_run_loaded_q8_block(act, row0, rows, k_block, partial, trace_this, trace_id);
 }
 
@@ -836,7 +898,8 @@ static bool fpga_program_weight_group(
         int64_t row0,
         int rows,
         int64_t k_block0,
-        int group_blocks) {
+        int group_blocks,
+        std::vector<float> & weight_scales) {
     if (rows <= 0 || rows > g_vpu_max_rows || group_blocks <= 0) {
         LOGE("group weight guard rejected rows=%d max_rows=%d group_blocks=%d",
              rows, g_vpu_max_rows, group_blocks);
@@ -864,9 +927,13 @@ static bool fpga_program_weight_group(
         return false;
     }
 
+    weight_scales.resize((size_t) rows * (size_t) group_blocks);
+
     for (int row = 0; row < rows; ++row) {
         for (int gb = 0; gb < group_blocks; ++gb) {
             const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block0 + gb);
+            weight_scales[(size_t) row * (size_t) group_blocks + (size_t) gb] =
+                fp16_to_fp32(wb->d);
             for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
                 const int group_beat = gb * VPU_BLOCK_BEATS + beat;
                 const uint32_t index = (uint32_t) row * (uint32_t) g_vpu_max_beats + (uint32_t) group_beat;
@@ -935,7 +1002,7 @@ static bool fpga_run_loaded_q8_group(
         return false;
     }
 
-    partial.assign((size_t) result_values, 0);
+    partial.resize((size_t) result_values);
 
     wr32(REG_CTRL, CTRL_CLEAR_DONE);
     configure_vpu(rows, group_beats, VPU_MODE_PACKED_Q8);
@@ -1020,20 +1087,21 @@ static bool fpga_hw_q8_0_matmul_batched(
     const int64_t m = src1->ne[1];
     const int64_t nb = k / VPU_QK8_0;
 
-    std::vector<block_q8_0_t> act_blocks_all((size_t) (m * nb));
-    for (int64_t col = 0; col < m; ++col) {
-        quantize_activation_vector_to(src1, col, k, &act_blocks_all[(size_t) (col * nb)]);
-    }
+    std::vector<block_q8_0_t> & act_blocks_all = g_scratch.act_blocks_all;
+    std::vector<float> & act_scales = g_scratch.act_scales;
+    std::vector<float> & weight_scales = g_scratch.weight_scales;
+    std::vector<int32_t> & partial = g_scratch.partial;
+    std::vector<float> & accum = g_scratch.accum;
 
-    std::vector<int32_t> partial;
-    std::vector<float> accum;
+    quantize_activation_matrix(src1, m, k, act_blocks_all, act_scales);
 
     for (int64_t row0 = 0; row0 < n; row0 += g_vpu_max_rows) {
         const int rows = (int) std::min<int64_t>(g_vpu_max_rows, n - row0);
         accum.assign((size_t) (m * rows), 0.0f);
 
         for (int64_t ib = 0; ib < nb; ++ib) {
-            if (!fpga_program_weight_block(src0, row0, rows, ib, false, -1)) {
+            weight_scales.resize((size_t) rows);
+            if (!fpga_program_weight_block(src0, row0, rows, ib, weight_scales.data(), false, -1)) {
                 return false;
             }
 
@@ -1043,11 +1111,11 @@ static bool fpga_hw_q8_0_matmul_batched(
                     return false;
                 }
 
-                const float act_scale = fp16_to_fp32(act.d);
+                const float act_scale = act_scales[(size_t) (col * nb + ib)];
                 float * accum_col = &accum[(size_t) (col * rows)];
                 for (int row = 0; row < rows; ++row) {
-                    const block_q8_0_t * wb = weight_block(src0, row0 + row, ib);
-                    accum_col[(size_t) row] += (float) partial[(size_t) row] * act_scale * fp16_to_fp32(wb->d);
+                    accum_col[(size_t) row] +=
+                        (float) partial[(size_t) row] * act_scale * weight_scales[(size_t) row];
                 }
             }
         }
@@ -1072,13 +1140,13 @@ static bool fpga_hw_q8_0_matmul_grouped(
     const int64_t m = src1->ne[1];
     const int64_t nb = k / VPU_QK8_0;
 
-    std::vector<block_q8_0_t> act_blocks_all((size_t) (m * nb));
-    for (int64_t col = 0; col < m; ++col) {
-        quantize_activation_vector_to(src1, col, k, &act_blocks_all[(size_t) (col * nb)]);
-    }
+    std::vector<block_q8_0_t> & act_blocks_all = g_scratch.act_blocks_all;
+    std::vector<float> & act_scales = g_scratch.act_scales;
+    std::vector<float> & weight_scales = g_scratch.weight_scales;
+    std::vector<int32_t> & partial = g_scratch.partial;
+    std::vector<float> & accum = g_scratch.accum;
 
-    std::vector<int32_t> partial;
-    std::vector<float> accum;
+    quantize_activation_matrix(src1, m, k, act_blocks_all, act_scales);
 
     for (int64_t row0 = 0; row0 < n; row0 += g_vpu_max_rows) {
         const int rows = (int) std::min<int64_t>(g_vpu_max_rows, n - row0);
@@ -1088,7 +1156,7 @@ static bool fpga_hw_q8_0_matmul_grouped(
             const int remaining_blocks = (int) (nb - ib0);
             const int group_blocks = packed_q8_group_blocks_for_rows(rows, remaining_blocks);
 
-            if (!fpga_program_weight_group(src0, row0, rows, ib0, group_blocks)) {
+            if (!fpga_program_weight_group(src0, row0, rows, ib0, group_blocks, weight_scales)) {
                 return false;
             }
 
@@ -1104,11 +1172,11 @@ static bool fpga_hw_q8_0_matmul_grouped(
                 for (int row = 0; row < rows; ++row) {
                     for (int gb = 0; gb < group_blocks; ++gb) {
                         const int64_t ib = ib0 + gb;
-                        const block_q8_0_t & act = act_group[gb];
-                        const block_q8_0_t * wb = weight_block(src0, row0 + row, ib);
                         const int32_t raw = partial[(size_t) row * (size_t) group_blocks + (size_t) gb];
                         accum_col[(size_t) row] +=
-                            (float) raw * fp16_to_fp32(act.d) * fp16_to_fp32(wb->d);
+                            (float) raw *
+                            act_scales[(size_t) (col * nb + ib)] *
+                            weight_scales[(size_t) row * (size_t) group_blocks + (size_t) gb];
                     }
                 }
             }
@@ -1144,26 +1212,32 @@ static bool fpga_hw_q8_0_matmul(
         return fpga_hw_q8_0_matmul_batched(src0, src1, dst);
     }
 
-    std::vector<block_q8_0_t> act_blocks;
-    std::vector<int32_t> partial;
-    std::vector<float> accum;
+    std::vector<block_q8_0_t> & act_blocks = g_scratch.act_blocks;
+    std::vector<float> & act_scales = g_scratch.act_scales;
+    std::vector<float> & weight_scales = g_scratch.weight_scales;
+    std::vector<int32_t> & partial = g_scratch.partial;
+    std::vector<float> & accum = g_scratch.accum;
 
     for (int64_t col = 0; col < m; ++col) {
         quantize_activation_vector(src1, col, k, act_blocks);
+        act_scales.resize((size_t) nb);
+        for (int64_t ib = 0; ib < nb; ++ib) {
+            act_scales[(size_t) ib] = fp16_to_fp32(act_blocks[(size_t) ib].d);
+        }
 
         for (int64_t row0 = 0; row0 < n; row0 += g_vpu_max_rows) {
             const int rows = (int) std::min<int64_t>(g_vpu_max_rows, n - row0);
             accum.assign((size_t) rows, 0.0f);
 
             for (int64_t ib = 0; ib < nb; ++ib) {
-                if (!fpga_run_q8_block(act_blocks[(size_t) ib], src0, row0, rows, ib, partial)) {
+                if (!fpga_run_q8_block(act_blocks[(size_t) ib], src0, row0, rows, ib, partial, weight_scales)) {
                     return false;
                 }
 
-                const float act_scale = fp16_to_fp32(act_blocks[(size_t) ib].d);
+                const float act_scale = act_scales[(size_t) ib];
                 for (int row = 0; row < rows; ++row) {
-                    const block_q8_0_t * wb = weight_block(src0, row0 + row, ib);
-                    accum[(size_t) row] += (float) partial[(size_t) row] * act_scale * fp16_to_fp32(wb->d);
+                    accum[(size_t) row] +=
+                        (float) partial[(size_t) row] * act_scale * weight_scales[(size_t) row];
                 }
             }
 
@@ -1205,6 +1279,7 @@ int fpga_init(void) {
     g_use_write64 = !env_flag_disabled("FPGA_WRITE64");
     g_offload_min_n = env_int_value("FPGA_MIN_N", FPGA_DEFAULT_MIN_N, 0, 1073741824);
     g_offload_max_n = env_int_value("FPGA_MAX_N", FPGA_DEFAULT_MAX_N, 0, 1073741824);
+    g_offload_decode_max_n = env_int_value("FPGA_DECODE_MAX_N", FPGA_DEFAULT_DECODE_MAX_N, 0, 1073741824);
     invalidate_vpu_config();
     g_fpga_start_us = now_us();
 
@@ -1238,6 +1313,9 @@ int fpga_init(void) {
             g_packed_q8_result_words = cap_result_words;
         }
     }
+    if (!getenv("FPGA_DECODE_MAX_N") && g_packed_q8_supported) {
+        g_offload_decode_max_n = 0;
+    }
 
     LOGI("VPU mapped: base=0x%llx range=0x%llx mmap_size=0x%zx",
          (unsigned long long) VPU_BASE_PHYS,
@@ -1257,8 +1335,8 @@ int fpga_init(void) {
     LOGI("No ZDMA programming is used: current bitstream exposes an AXI4-Full slave with local BRAM windows");
     LOGI("MMIO data write mode: %s (set FPGA_WRITE64=0 to force 32-bit writes)",
          g_use_write64 ? "64-bit" : "32-bit");
-    LOGI("offload policy: min_N=%d max_N=%d (max_N=0 disables upper limit; default skips huge vocab projection)",
-         g_offload_min_n, g_offload_max_n);
+    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d (auto 0 when packed_q8 is available; set FPGA_DECODE_MAX_N explicitly to override)",
+         g_offload_min_n, g_offload_max_n, g_offload_decode_max_n);
     LOGI("trace controls: set FPGA_TRACE_DATA=1 to dump first data blocks; FPGA_TRACE_CALLS=N changes default first %d traced blocks",
          TRACE_DEFAULT_CALLS);
     log_address_map_once();
@@ -1363,6 +1441,8 @@ extern "C" int fpga_try_matmul_extended(
         int layer_id,
         int seq_pos,
         int is_attention) {
+    const int effective_layer_id = infer_layer_id_from_name(tensor_name_or_unknown(src0), layer_id);
+
     if (is_attention) {
         static int logged_attention_fallback = 0;
         if (!logged_attention_fallback) {
@@ -1377,7 +1457,13 @@ extern "C" int fpga_try_matmul_extended(
         g_cpu_count++;
         static int logged_rejects = 0;
         if (logged_rejects < 16) {
-            LOGI("reject matmul: %s", reason ? reason : "unknown");
+            LOGI("reject matmul: %s tensor=%s K=%lld N=%lld M=%lld layer=%d",
+                 reason ? reason : "unknown",
+                 tensor_name_or_unknown(src0),
+                 src0 ? (long long) src0->ne[0] : 0LL,
+                 src0 ? (long long) src0->ne[1] : 0LL,
+                 src1 ? (long long) src1->ne[1] : 0LL,
+                 effective_layer_id);
             logged_rejects++;
         }
         return 0;
@@ -1397,14 +1483,16 @@ extern "C" int fpga_try_matmul_extended(
     const long long vpu_runs = estimate_vpu_runs(src0, src1);
     const long long t0_us = now_us();
 
-    LOGM("run layer=%d seq=%d K=%lld N=%lld M=%lld rows_limit=%d beats_limit=%d vpu_runs=%lld",
-         layer_id,
+    LOGM("run layer=%d seq=%d tensor=%s K=%lld N=%lld M=%lld rows_limit=%d beats_limit=%d packed_q8=%d vpu_runs=%lld",
+         effective_layer_id,
          seq_pos,
+         tensor_name_or_unknown(src0),
          (long long) src0->ne[0],
          (long long) src0->ne[1],
          (long long) src1->ne[1],
          g_vpu_max_rows,
          g_vpu_max_beats,
+         g_packed_q8_supported,
          vpu_runs);
 
     const bool hw_ok = fpga_hw_q8_0_matmul(src0, src1, dst);
@@ -1420,7 +1508,7 @@ extern "C" int fpga_try_matmul_extended(
              elapsed_ms,
              run_rate,
              g_fpga_vpu_runs);
-        log_dst_sample(dst, layer_id, seq_pos);
+        log_dst_sample(dst, effective_layer_id, seq_pos);
     } else {
         g_cpu_count++;
         LOGE("FPGA runtime failed after %.3f ms; computing this accepted matmul with local q8_0 software fallback",
