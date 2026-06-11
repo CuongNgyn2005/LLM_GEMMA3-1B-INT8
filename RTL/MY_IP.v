@@ -17,7 +17,7 @@ module MY_IP #(
     parameter integer SCALE_WIDTH            = 16,
     parameter integer SCALE_FRAC_BITS        = 15,
     parameter integer RESULT_FIFO_DEPTH      = 8,
-    parameter integer MAX_ROWS               = 128,
+    parameter integer MAX_ROWS               = 256,
     parameter integer MAX_COL_BEATS          = 256
 ) (
     input  wire                                  s00_axi_aclk,

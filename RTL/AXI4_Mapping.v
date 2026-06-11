@@ -27,7 +27,7 @@ module AXI4_Mapping #(
     parameter integer SCALE_WIDTH              = 16,
     parameter integer SCALE_FRAC_BITS          = 15,
     parameter integer RESULT_FIFO_DEPTH        = 8,
-    parameter integer MAX_ROWS                 = 128,
+    parameter integer MAX_ROWS                 = 256,
     parameter integer MAX_COL_BEATS            = 256
 ) (
     input  wire                                  clk,
@@ -57,12 +57,19 @@ module AXI4_Mapping #(
 
     localparam integer ADDR_LSB = clog2(AXI_DATA_WIDTH / 8);
     localparam integer WEIGHT_DEPTH = MAX_ROWS * MAX_COL_BEATS;
+    localparam integer RESULT_PACK_LANES = AXI_DATA_WIDTH / ACC_WIDTH;
+    localparam integer MAX_GROUP_Q8_BLOCKS = 16;
+    localparam integer MAX_RESULT_VALUES = MAX_ROWS * MAX_GROUP_Q8_BLOCKS;
+    localparam integer RESULT_WORD_DEPTH =
+        (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
 
     localparam [15:0] MAX_ROWS_16 = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16 = MAX_COL_BEATS;
+    localparam [15:0] MAX_GROUP_Q8_BLOCKS_16 = MAX_GROUP_Q8_BLOCKS;
     localparam [31:0] MAX_ROWS_32 = MAX_ROWS;
     localparam [31:0] MAX_COL_BEATS_32 = MAX_COL_BEATS;
     localparam [31:0] WEIGHT_DEPTH_32 = WEIGHT_DEPTH;
+    localparam [31:0] RESULT_WORD_DEPTH_32 = RESULT_WORD_DEPTH;
 
     localparam [31:0] ACT_BASE_ADDR    = 32'h0001_0000;
     localparam [31:0] ACT_END_ADDR     = 32'h0002_0000;
@@ -166,7 +173,7 @@ module AXI4_Mapping #(
             case (region)
                 REGION_ACT:    mem_index_in_range = (index < MAX_COL_BEATS_32);
                 REGION_WEIGHT: mem_index_in_range = (index < WEIGHT_DEPTH_32);
-                REGION_RESULT: mem_index_in_range = (index < MAX_ROWS_32);
+                REGION_RESULT: mem_index_in_range = (index < RESULT_WORD_DEPTH_32);
                 default:       mem_index_in_range = 1'b0;
             endcase
         end
@@ -203,6 +210,11 @@ module AXI4_Mapping #(
                 16'h0080: begin
                     reg_read_data[15:0]  = core_active_row;
                     reg_read_data[31:16] = core_active_col_beat;
+                end
+                16'h0090: begin
+                    reg_read_data[0]      = 1'b1; // packed q8_0 partial mode
+                    reg_read_data[15:8]   = MAX_GROUP_Q8_BLOCKS_16[7:0];
+                    reg_read_data[31:16]  = RESULT_WORD_DEPTH_32[15:0];
                 end
                 default: reg_read_data = {AXI_DATA_WIDTH{1'b0}};
             endcase

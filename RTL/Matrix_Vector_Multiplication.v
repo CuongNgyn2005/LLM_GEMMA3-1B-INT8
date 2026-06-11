@@ -19,6 +19,11 @@
  * zero, the engine derives it from cfg_cols assuming NUM_LANES is a power of 2.
  * The last beat must be zero-padded by software when cfg_cols is not an exact
  * multiple of NUM_LANES.
+ *
+ * compute_mode[0] enables packed q8_0 partial mode.  In this mode the core
+ * treats every two 128-bit beats as one q8_0 block, emits one raw INT32 partial
+ * per row per q8_0 block, and packs four partials into each 128-bit result word.
+ * This reduces host start/poll cycles while keeping q8_0 scaling in software.
  *-----------------------------------------------------------------------------
  */
 
@@ -33,7 +38,7 @@ module Matrix_Vector_Multiplication #(
     parameter SCALE_FRAC_BITS    = 15,
     parameter RESULT_FIFO_DEPTH  = 8,
     parameter AXI_DATA_WIDTH     = 128,
-    parameter MAX_ROWS           = 128,
+    parameter MAX_ROWS           = 256,
     parameter MAX_COL_BEATS      = 256
 ) (
     input  wire                              CLK,
@@ -84,16 +89,24 @@ module Matrix_Vector_Multiplication #(
     localparam WEIGHT_BYTE_COUNT    = WEIGHT_BEAT_WIDTH / 8;
     localparam RESULT_BYTE_COUNT    = ACC_WIDTH / 8;
     localparam ACT_ADDR_WIDTH       = clog2(MAX_COL_BEATS);
-    localparam RESULT_ADDR_WIDTH    = clog2(MAX_ROWS);
+    localparam RESULT_PACK_LANES    = AXI_DATA_WIDTH / ACC_WIDTH;
+    localparam RESULT_LANE_SHIFT    = clog2(RESULT_PACK_LANES);
+    localparam MAX_GROUP_Q8_BLOCKS  = 16;
+    localparam MAX_RESULT_VALUES    = MAX_ROWS * MAX_GROUP_Q8_BLOCKS;
+    localparam RESULT_WORD_DEPTH    = (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
+    localparam RESULT_ADDR_WIDTH    = clog2(RESULT_WORD_DEPTH);
     localparam WEIGHT_DEPTH         = MAX_ROWS * MAX_COL_BEATS;
     localparam WEIGHT_ADDR_WIDTH    = clog2(WEIGHT_DEPTH);
     localparam LANE_SHIFT           = clog2(NUM_LANES);
     localparam [15:0] NUM_LANES_16          = NUM_LANES;
     localparam [15:0] MAX_ROWS_16           = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16      = MAX_COL_BEATS;
+    localparam [15:0] Q8_BLOCK_BEATS_16     = 16'd2;
     localparam [31:0] MAX_ROWS_32           = MAX_ROWS;
     localparam [31:0] MAX_COL_BEATS_32      = MAX_COL_BEATS;
     localparam [31:0] WEIGHT_DEPTH_32       = WEIGHT_DEPTH;
+    localparam [31:0] MAX_RESULT_VALUES_32  = MAX_RESULT_VALUES;
+    localparam [31:0] RESULT_WORD_DEPTH_32  = RESULT_WORD_DEPTH;
     localparam [WEIGHT_ADDR_WIDTH-1:0] MAX_COL_BEATS_WADDR = MAX_COL_BEATS;
 
     localparam [1:0] REGION_ACT     = 2'd0;
@@ -110,7 +123,7 @@ module Matrix_Vector_Multiplication #(
     wire [WEIGHT_BEAT_WIDTH-1:0] weight_compute_data;
     reg [ACT_BEAT_WIDTH-1:0]    act_pmau_data;
     reg [WEIGHT_BEAT_WIDTH-1:0] weight_pmau_data;
-    wire [ACC_WIDTH-1:0]        result_cpu_rd_data;
+    wire [AXI_DATA_WIDTH-1:0]   result_cpu_rd_data;
     reg [ACT_ADDR_WIDTH-1:0]    act_compute_addr;
     reg [WEIGHT_ADDR_WIDTH-1:0] weight_compute_addr;
     reg                         compute_rd_en;
@@ -125,7 +138,12 @@ module Matrix_Vector_Multiplication #(
     reg [15:0] active_col_beats_r;
     reg [15:0] row_idx_r;
     reg [15:0] read_beat_idx_r;
+    reg [15:0] block_idx_r;
+    reg [15:0] group_blocks_r;
+    reg [15:0] block_base_beat_r;
+    reg [31:0] result_row_base_r;
     reg [WEIGHT_ADDR_WIDTH-1:0] weight_row_base_r;
+    reg group_mode_r;
 
     reg feed_valid_r;
     reg feed_last_r;
@@ -138,12 +156,23 @@ module Matrix_Vector_Multiplication #(
         (cfg_cols + NUM_LANES_16 - 16'd1) >> LANE_SHIFT;
     wire [15:0] requested_col_beats =
         (cfg_col_beats != 16'd0) ? cfg_col_beats : auto_col_beats;
+    wire        requested_group_mode = compute_mode[0];
+    wire [15:0] requested_group_blocks =
+        requested_group_mode ? (requested_col_beats >> 1) : 16'd1;
+    wire [31:0] requested_result_values =
+        {16'd0, cfg_rows} * {16'd0, requested_group_blocks};
+    wire        requested_group_invalid =
+        requested_group_mode &&
+        ((requested_col_beats[0] != 1'b0) ||
+         (requested_group_blocks == 16'd0) ||
+         (requested_result_values > MAX_RESULT_VALUES_32));
 
     wire config_invalid =
         (cfg_rows == 16'd0) ||
         (requested_col_beats == 16'd0) ||
         (cfg_rows > MAX_ROWS_16) ||
-        (requested_col_beats > MAX_COL_BEATS_16);
+        (requested_col_beats > MAX_COL_BEATS_16) ||
+        requested_group_invalid;
 
     wire pmau_activation_ready;
     wire pmau_weight_ready;
@@ -156,17 +185,34 @@ module Matrix_Vector_Multiplication #(
     wire pmau_result_fire = pmau_result_valid && pmau_result_ready;
 
     wire feed_slot_open = (!feed_valid_r) || pmau_input_fire;
+    wire [15:0] run_beats_this_block =
+        group_mode_r ? Q8_BLOCK_BEATS_16 : active_col_beats_r;
+    wire [15:0] read_abs_beat =
+        group_mode_r ? (block_base_beat_r + read_beat_idx_r) : read_beat_idx_r;
     wire can_issue_read =
         (state_r == S_RUN) &&
         feed_slot_open &&
-        (read_beat_idx_r < active_col_beats_r);
-    wire issue_read_last = (read_beat_idx_r == (active_col_beats_r - 16'd1));
+        (read_beat_idx_r < run_beats_this_block);
+    wire issue_read_last = (read_beat_idx_r == (run_beats_this_block - 16'd1));
+
+    wire [31:0] result_value_index =
+        group_mode_r ? (result_row_base_r + {16'd0, block_idx_r}) :
+                       {16'd0, row_idx_r};
+    wire [RESULT_ADDR_WIDTH-1:0] result_wr_addr =
+        group_mode_r ? result_value_index[RESULT_LANE_SHIFT +: RESULT_ADDR_WIDTH] :
+                       row_idx_r[RESULT_ADDR_WIDTH-1:0];
+    wire [RESULT_LANE_SHIFT-1:0] result_wr_lane =
+        group_mode_r ? result_value_index[RESULT_LANE_SHIFT-1:0] :
+                       {RESULT_LANE_SHIFT{1'b0}};
+    wire result_wr_index_ok =
+        group_mode_r ? (result_value_index < MAX_RESULT_VALUES_32) :
+                       (row_idx_r < MAX_ROWS_16);
 
     assign busy            = (state_r == S_RUN) || (state_r == S_WAIT_RESULT);
     assign done            = done_r;
     assign error           = error_r;
     assign active_row      = row_idx_r;
-    assign active_col_beat = read_beat_idx_r;
+    assign active_col_beat = read_abs_beat;
 
     PMAU_Full #(
         .NUM_LANES         (NUM_LANES),
@@ -205,7 +251,7 @@ module Matrix_Vector_Multiplication #(
     wire weight_rd_hit = 1'b0;
     wire result_rd_hit =
         mm_rd_accept && (mm_rd_region == REGION_RESULT) &&
-        (mm_rd_index < MAX_ROWS_32);
+        (mm_rd_index < RESULT_WORD_DEPTH_32);
     wire rd_region_known =
         (mm_rd_region == REGION_ACT) ||
         (mm_rd_region == REGION_WEIGHT) ||
@@ -216,12 +262,22 @@ module Matrix_Vector_Multiplication #(
         mm_wr_strb[ACT_BYTE_COUNT-1:0];
     wire [WEIGHT_BYTE_COUNT-1:0] weight_wr_strobe =
         mm_wr_strb[WEIGHT_BYTE_COUNT-1:0];
-    wire [RESULT_BYTE_COUNT-1:0] result_wr_strobe =
-        {RESULT_BYTE_COUNT{pmau_result_fire && (row_idx_r < MAX_ROWS_16)}};
+    reg [AXI_DATA_WIDTH-1:0] result_wr_data;
+    reg [(AXI_DATA_WIDTH/8)-1:0] result_wr_strobe;
+    integer result_lane_i;
+    always @* begin
+        result_wr_data   = {AXI_DATA_WIDTH{1'b0}};
+        result_wr_strobe = {(AXI_DATA_WIDTH/8){1'b0}};
+        if (pmau_result_fire && result_wr_index_ok) begin
+            result_wr_data[ACC_WIDTH*result_wr_lane +: ACC_WIDTH] = pmau_result_data;
+            for (result_lane_i = 0; result_lane_i < RESULT_BYTE_COUNT; result_lane_i = result_lane_i + 1)
+                result_wr_strobe[RESULT_BYTE_COUNT*result_wr_lane + result_lane_i] = 1'b1;
+        end
+    end
 
     wire [ACT_BEAT_WIDTH-1:0]    act_cpu_rd_unused;
     wire [WEIGHT_BEAT_WIDTH-1:0] weight_cpu_rd_unused;
-    wire [ACC_WIDTH-1:0]         result_compute_rd_unused;
+    wire [AXI_DATA_WIDTH-1:0]    result_compute_rd_unused;
 
     Dual_Port_BRAM #(
         .AWIDTH (ACT_ADDR_WIDTH),
@@ -261,19 +317,19 @@ module Matrix_Vector_Multiplication #(
 
     Dual_Port_BRAM #(
         .AWIDTH (RESULT_ADDR_WIDTH),
-        .DWIDTH (ACC_WIDTH)
+        .DWIDTH (AXI_DATA_WIDTH)
     ) u_result_bram (
         .clka  (CLK),
         .ena   (result_rd_hit),
-        .wea   ({RESULT_BYTE_COUNT{1'b0}}),
+        .wea   ({(AXI_DATA_WIDTH/8){1'b0}}),
         .addra (mm_rd_index[RESULT_ADDR_WIDTH-1:0]),
-        .dina  ({ACC_WIDTH{1'b0}}),
+        .dina  ({AXI_DATA_WIDTH{1'b0}}),
         .douta (result_cpu_rd_data),
         .clkb  (CLK),
-        .enb   (pmau_result_fire && (row_idx_r < MAX_ROWS_16)),
+        .enb   (pmau_result_fire && result_wr_index_ok),
         .web   (result_wr_strobe),
-        .addrb (row_idx_r[RESULT_ADDR_WIDTH-1:0]),
-        .dinb  (pmau_result_data),
+        .addrb (result_wr_addr),
+        .dinb  (result_wr_data),
         .doutb (result_compute_rd_unused)
     );
 
@@ -308,7 +364,7 @@ module Matrix_Vector_Multiplication #(
                     end
 
                     REGION_RESULT: begin
-                        mm_rd_data[ACC_WIDTH-1:0] <= result_cpu_rd_data;
+                        mm_rd_data <= result_cpu_rd_data;
                     end
 
                     default: begin
@@ -328,7 +384,12 @@ module Matrix_Vector_Multiplication #(
             active_col_beats_r  <= 16'd0;
             row_idx_r           <= 16'd0;
             read_beat_idx_r     <= 16'd0;
+            block_idx_r          <= 16'd0;
+            group_blocks_r       <= 16'd1;
+            block_base_beat_r    <= 16'd0;
+            result_row_base_r    <= 32'd0;
             weight_row_base_r   <= {WEIGHT_ADDR_WIDTH{1'b0}};
+            group_mode_r         <= 1'b0;
             feed_valid_r        <= 1'b0;
             feed_last_r         <= 1'b0;
             read_valid_d_r      <= 1'b0;
@@ -357,6 +418,9 @@ module Matrix_Vector_Multiplication #(
                     read_valid_q_r     <= 1'b0;
                     read_beat_idx_r    <= 16'd0;
                     row_idx_r          <= 16'd0;
+                    block_idx_r        <= 16'd0;
+                    block_base_beat_r  <= 16'd0;
+                    result_row_base_r  <= 32'd0;
                     weight_row_base_r  <= {WEIGHT_ADDR_WIDTH{1'b0}};
 
                     if (ctrl_start) begin
@@ -369,6 +433,8 @@ module Matrix_Vector_Multiplication #(
                             error_r            <= 1'b0;
                             active_rows_r      <= cfg_rows;
                             active_col_beats_r <= requested_col_beats;
+                            group_mode_r       <= requested_group_mode;
+                            group_blocks_r     <= requested_group_blocks;
                             state_r            <= S_RUN;
                         end
                     end
@@ -393,9 +459,9 @@ module Matrix_Vector_Multiplication #(
 
                     if (can_issue_read) begin
                         compute_rd_en       <= 1'b1;
-                        act_compute_addr    <= read_beat_idx_r[ACT_ADDR_WIDTH-1:0];
+                        act_compute_addr    <= read_abs_beat[ACT_ADDR_WIDTH-1:0];
                         weight_compute_addr <= weight_row_base_r +
-                                               read_beat_idx_r[WEIGHT_ADDR_WIDTH-1:0];
+                                               read_abs_beat[WEIGHT_ADDR_WIDTH-1:0];
                         read_valid_d_r      <= 1'b1;
                         read_last_d_r       <= issue_read_last;
                         read_beat_idx_r     <= read_beat_idx_r + 16'd1;
@@ -414,15 +480,26 @@ module Matrix_Vector_Multiplication #(
                     feed_valid_r <= 1'b0;
 
                     if (pmau_result_fire) begin
-                        if ((row_idx_r + 16'd1) >= active_rows_r) begin
-                            done_r  <= 1'b1;
-                            state_r <= S_DONE;
-                        end else begin
-                            row_idx_r         <= row_idx_r + 16'd1;
+                        if (group_mode_r && ((block_idx_r + 16'd1) < group_blocks_r)) begin
+                            block_idx_r       <= block_idx_r + 16'd1;
+                            block_base_beat_r <= block_base_beat_r + Q8_BLOCK_BEATS_16;
                             read_beat_idx_r   <= 16'd0;
-                            weight_row_base_r <= weight_row_base_r +
-                                                 MAX_COL_BEATS_WADDR;
                             state_r           <= S_RUN;
+                        end else begin
+                            block_idx_r       <= 16'd0;
+                            block_base_beat_r <= 16'd0;
+
+                            if ((row_idx_r + 16'd1) >= active_rows_r) begin
+                                done_r  <= 1'b1;
+                                state_r <= S_DONE;
+                            end else begin
+                                row_idx_r         <= row_idx_r + 16'd1;
+                                read_beat_idx_r   <= 16'd0;
+                                result_row_base_r <= result_row_base_r + {16'd0, group_blocks_r};
+                                weight_row_base_r <= weight_row_base_r +
+                                                     MAX_COL_BEATS_WADDR;
+                                state_r           <= S_RUN;
+                            end
                         end
                     end
                 end
@@ -439,8 +516,13 @@ module Matrix_Vector_Multiplication #(
                             error_r            <= 1'b0;
                             active_rows_r      <= cfg_rows;
                             active_col_beats_r <= requested_col_beats;
+                            group_mode_r       <= requested_group_mode;
+                            group_blocks_r     <= requested_group_blocks;
                             row_idx_r          <= 16'd0;
                             read_beat_idx_r    <= 16'd0;
+                            block_idx_r        <= 16'd0;
+                            block_base_beat_r  <= 16'd0;
+                            result_row_base_r  <= 32'd0;
                             weight_row_base_r  <= {WEIGHT_ADDR_WIDTH{1'b0}};
                             state_r            <= S_RUN;
                         end
@@ -458,8 +540,13 @@ module Matrix_Vector_Multiplication #(
                         error_r            <= 1'b0;
                         active_rows_r      <= cfg_rows;
                         active_col_beats_r <= requested_col_beats;
+                        group_mode_r       <= requested_group_mode;
+                        group_blocks_r     <= requested_group_blocks;
                         row_idx_r          <= 16'd0;
                         read_beat_idx_r    <= 16'd0;
+                        block_idx_r        <= 16'd0;
+                        block_base_beat_r  <= 16'd0;
+                        result_row_base_r  <= 32'd0;
                         weight_row_base_r  <= {WEIGHT_ADDR_WIDTH{1'b0}};
                         state_r            <= S_RUN;
                     end

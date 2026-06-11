@@ -94,7 +94,7 @@ Default parameters:
 |---|---:|
 | `NUM_LANES` | 16 |
 | `AXI_DATA_WIDTH` | 128 |
-| `MAX_ROWS` | 128 |
+| `MAX_ROWS` | 256 |
 | `MAX_COL_BEATS` | 256 |
 
 Local tile capacity:
