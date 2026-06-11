@@ -19,7 +19,7 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "2026-06-10-zcu104-mmio-fast-v3"
+#define FPGA_HOST_TRACE_VERSION "2026-06-11-zcu104-packed-q8-v4"
 
 #define FPGA_LOG_LEVEL_INFO   1
 #define FPGA_LOG_LEVEL_MATMUL 1
@@ -77,6 +77,7 @@ static constexpr uint32_t REG_SCALE          = 0x00000050;
 static constexpr uint32_t REG_MODE           = 0x00000060;
 static constexpr uint32_t REG_LIMITS         = 0x00000070;
 static constexpr uint32_t REG_PROGRESS       = 0x00000080;
+static constexpr uint32_t REG_CAPS           = 0x00000090;
 
 static constexpr uint32_t CTRL_START         = 0x00000001;
 static constexpr uint32_t CTRL_CLEAR_DONE    = 0x00000002;
@@ -94,6 +95,8 @@ static constexpr uint32_t RESULT_END         = 0x00210000;
 static constexpr int      VPU_NUM_LANES      = 16;
 static constexpr int      VPU_QK8_0          = 32;
 static constexpr int      VPU_BLOCK_BEATS    = VPU_QK8_0 / VPU_NUM_LANES;
+static constexpr int      VPU_RESULT_PACK_LANES = 4;
+static constexpr uint32_t VPU_MODE_PACKED_Q8 = 0x00000001;
 static constexpr int      VPU_DEFAULT_ROWS   = 256;
 static constexpr int      VPU_DEFAULT_BEATS  = 256;
 static constexpr int      VPU_DEFAULT_COLS   = VPU_DEFAULT_BEATS * VPU_NUM_LANES;
@@ -126,9 +129,15 @@ static int                 g_vpu_max_cols  = VPU_DEFAULT_COLS;
 static int                 g_address_map_logged = 0;
 static int                 g_use_write64   = 1;
 static int                 g_cfg_rows      = -1;
-static int                 g_cfg_static_valid = 0;
+static int                 g_cfg_cols      = -1;
+static int                 g_cfg_col_beats = -1;
+static int                 g_cfg_mode      = -1;
+static int                 g_cfg_scale     = -1;
 static int                 g_offload_min_n = FPGA_DEFAULT_MIN_N;
 static int                 g_offload_max_n = FPGA_DEFAULT_MAX_N;
+static int                 g_packed_q8_supported = 0;
+static int                 g_packed_q8_max_blocks = 1;
+static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
 
 static int g_current_layer_id = 0;
 int        g_current_seq_pos  = 0;
@@ -202,7 +211,10 @@ static long long now_us(void) {
 
 static void invalidate_vpu_config(void) {
     g_cfg_rows = -1;
-    g_cfg_static_valid = 0;
+    g_cfg_cols = -1;
+    g_cfg_col_beats = -1;
+    g_cfg_mode = -1;
+    g_cfg_scale = -1;
 }
 
 static inline void * mapped_vpu_ptr(void) {
@@ -253,7 +265,7 @@ static void log_address_map_once(void) {
     LOGI("address safety: DDR reserved 0x%llx-0x%llx is not mmap'ed or written by this host path",
          (unsigned long long) DDR_RESERVED_BEGIN,
          (unsigned long long) DDR_RESERVED_END);
-    LOGI("register map: CTRL=0x%llx STATUS=0x%llx ROWS=0x%llx COLS=0x%llx COL_BEATS=0x%llx SCALE=0x%llx MODE=0x%llx LIMITS=0x%llx PROGRESS=0x%llx",
+    LOGI("register map: CTRL=0x%llx STATUS=0x%llx ROWS=0x%llx COLS=0x%llx COL_BEATS=0x%llx SCALE=0x%llx MODE=0x%llx LIMITS=0x%llx PROGRESS=0x%llx CAPS=0x%llx",
          (unsigned long long) local_to_phys(REG_CTRL),
          (unsigned long long) local_to_phys(REG_STATUS),
          (unsigned long long) local_to_phys(REG_ROWS),
@@ -262,7 +274,8 @@ static void log_address_map_once(void) {
          (unsigned long long) local_to_phys(REG_SCALE),
          (unsigned long long) local_to_phys(REG_MODE),
          (unsigned long long) local_to_phys(REG_LIMITS),
-         (unsigned long long) local_to_phys(REG_PROGRESS));
+         (unsigned long long) local_to_phys(REG_PROGRESS),
+         (unsigned long long) local_to_phys(REG_CAPS));
     log_window("ACT_IN", ACT_BASE, ACT_END, "W");
     log_window("WEIGHT", WEIGHT_BASE, WEIGHT_END, "W");
     log_window("RESULT", RESULT_BASE, RESULT_END, "R");
@@ -308,6 +321,10 @@ static inline uint32_t rd32(uint32_t off) {
     return *(volatile uint32_t *) (g_vpu + off);
 }
 
+static inline uint64_t rd64(uint32_t off) {
+    return *(volatile uint64_t *) (g_vpu + off);
+}
+
 static inline void wr32(uint32_t off, uint32_t val) {
     *(volatile uint32_t *) (g_vpu + off) = val;
     LOGR("wr32 off=0x%08x val=0x%08x", off, val);
@@ -330,18 +347,32 @@ static inline void write_i8x16(uint32_t off, const int8_t * lanes) {
     }
 }
 
-static void configure_vpu_for_q8_block(int rows) {
+static void configure_vpu(int rows, int col_beats, uint32_t mode) {
+    const int cols = col_beats * VPU_NUM_LANES;
     if (g_cfg_rows != rows) {
         wr32(REG_ROWS, (uint32_t) rows);
         g_cfg_rows = rows;
     }
-    if (!g_cfg_static_valid) {
-        wr32(REG_COLS, VPU_QK8_0);
-        wr32(REG_COL_BEATS, VPU_BLOCK_BEATS);
-        wr32(REG_SCALE, VPU_FP16_ONE);
-        wr32(REG_MODE, 0);
-        g_cfg_static_valid = 1;
+    if (g_cfg_cols != cols) {
+        wr32(REG_COLS, (uint32_t) cols);
+        g_cfg_cols = cols;
     }
+    if (g_cfg_col_beats != col_beats) {
+        wr32(REG_COL_BEATS, (uint32_t) col_beats);
+        g_cfg_col_beats = col_beats;
+    }
+    if (g_cfg_scale != (int) VPU_FP16_ONE) {
+        wr32(REG_SCALE, VPU_FP16_ONE);
+        g_cfg_scale = (int) VPU_FP16_ONE;
+    }
+    if (g_cfg_mode != (int) mode) {
+        wr32(REG_MODE, mode);
+        g_cfg_mode = (int) mode;
+    }
+}
+
+static void configure_vpu_for_q8_block(int rows) {
+    configure_vpu(rows, VPU_BLOCK_BEATS, 0);
 }
 
 static void start_vpu(void) {
@@ -567,7 +598,32 @@ static long long estimate_vpu_runs(const struct ggml_tensor * src0, const struct
     const int64_t m = src1->ne[1];
     const int64_t nb = k / VPU_QK8_0;
     const int64_t row_chunks = (n + g_vpu_max_rows - 1) / g_vpu_max_rows;
-    return (long long) (m * row_chunks * nb);
+    if (!g_packed_q8_supported) {
+        return (long long) (m * row_chunks * nb);
+    }
+
+    long long runs = 0;
+    for (int64_t row0 = 0; row0 < n; row0 += g_vpu_max_rows) {
+        const int rows = (int) std::min<int64_t>(g_vpu_max_rows, n - row0);
+        const int result_limited_blocks =
+            std::max(1, (g_packed_q8_result_words * VPU_RESULT_PACK_LANES) / std::max(1, rows));
+        const int max_group_blocks = std::max(1, std::min(g_packed_q8_max_blocks, result_limited_blocks));
+        runs += (nb + max_group_blocks - 1) / max_group_blocks;
+    }
+    return (long long) m * runs;
+}
+
+static int packed_q8_group_blocks_for_rows(int rows, int remaining_blocks) {
+    if (!g_packed_q8_supported) {
+        return 1;
+    }
+    const int beat_limited_blocks = std::max(1, g_vpu_max_beats / VPU_BLOCK_BEATS);
+    const int result_limited_blocks =
+        std::max(1, (g_packed_q8_result_words * VPU_RESULT_PACK_LANES) / std::max(1, rows));
+    int blocks = std::min(g_packed_q8_max_blocks, beat_limited_blocks);
+    blocks = std::min(blocks, result_limited_blocks);
+    blocks = std::min(blocks, remaining_blocks);
+    return std::max(1, blocks);
 }
 
 static int wait_done(uint32_t * final_status) {
@@ -775,6 +831,156 @@ static bool fpga_run_q8_block(
            fpga_run_loaded_q8_block(act, row0, rows, k_block, partial, trace_this, trace_id);
 }
 
+static bool fpga_program_weight_group(
+        const struct ggml_tensor * src0,
+        int64_t row0,
+        int rows,
+        int64_t k_block0,
+        int group_blocks) {
+    if (rows <= 0 || rows > g_vpu_max_rows || group_blocks <= 0) {
+        LOGE("group weight guard rejected rows=%d max_rows=%d group_blocks=%d",
+             rows, g_vpu_max_rows, group_blocks);
+        return false;
+    }
+
+    const int group_beats = group_blocks * VPU_BLOCK_BEATS;
+    if (group_beats > g_vpu_max_beats) {
+        LOGE("group weight guard rejected group_beats=%d max_beats=%d", group_beats, g_vpu_max_beats);
+        return false;
+    }
+
+    const uint32_t weight_last_index =
+        (uint32_t) (rows - 1) * (uint32_t) g_vpu_max_beats + (uint32_t) (group_beats - 1);
+    const uint32_t weight_bytes_to_last = weight_last_index * 16U + 16U;
+
+    if (!local_range_fits(WEIGHT_BASE, weight_bytes_to_last, WEIGHT_BASE, WEIGHT_END) ||
+        !mmap_range_fits(WEIGHT_BASE, weight_bytes_to_last)) {
+        LOGE("group weight guard rejected transfer: rows=%d row0=%lld k_block0=%lld group_blocks=%d weight_bytes=0x%x",
+             rows,
+             (long long) row0,
+             (long long) k_block0,
+             group_blocks,
+             weight_bytes_to_last);
+        return false;
+    }
+
+    for (int row = 0; row < rows; ++row) {
+        for (int gb = 0; gb < group_blocks; ++gb) {
+            const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block0 + gb);
+            for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
+                const int group_beat = gb * VPU_BLOCK_BEATS + beat;
+                const uint32_t index = (uint32_t) row * (uint32_t) g_vpu_max_beats + (uint32_t) group_beat;
+                const uint32_t weight_off = WEIGHT_BASE + index * 16U;
+                const int8_t * lanes = wb->qs + beat * VPU_NUM_LANES;
+                write_i8x16(weight_off, lanes);
+            }
+        }
+    }
+
+    return true;
+}
+
+static void read_result_i32x4(uint32_t result_word, int32_t out[4]) {
+    const uint32_t off = RESULT_BASE + result_word * 16U;
+    if (g_use_write64) {
+        const uint64_t lo = rd64(off + 0U);
+        const uint64_t hi = rd64(off + 8U);
+        out[0] = (int32_t) (uint32_t) (lo & 0xffffffffULL);
+        out[1] = (int32_t) (uint32_t) (lo >> 32);
+        out[2] = (int32_t) (uint32_t) (hi & 0xffffffffULL);
+        out[3] = (int32_t) (uint32_t) (hi >> 32);
+    } else {
+        out[0] = (int32_t) rd32(off + 0U);
+        out[1] = (int32_t) rd32(off + 4U);
+        out[2] = (int32_t) rd32(off + 8U);
+        out[3] = (int32_t) rd32(off + 12U);
+    }
+}
+
+static bool fpga_run_loaded_q8_group(
+        const block_q8_0_t * act_blocks,
+        int64_t row0,
+        int rows,
+        int64_t k_block0,
+        int group_blocks,
+        std::vector<int32_t> & partial) {
+    if (rows <= 0 || rows > g_vpu_max_rows || group_blocks <= 0) {
+        LOGE("group run guard rejected rows=%d max_rows=%d group_blocks=%d",
+             rows, g_vpu_max_rows, group_blocks);
+        return false;
+    }
+
+    const int group_beats = group_blocks * VPU_BLOCK_BEATS;
+    const uint32_t act_bytes = (uint32_t) group_beats * 16U;
+    const uint32_t result_values = (uint32_t) rows * (uint32_t) group_blocks;
+    const uint32_t result_words = (result_values + (uint32_t) VPU_RESULT_PACK_LANES - 1U) /
+                                  (uint32_t) VPU_RESULT_PACK_LANES;
+    const uint32_t result_bytes = result_words * 16U;
+
+    if (group_beats > g_vpu_max_beats ||
+        result_words > (uint32_t) g_packed_q8_result_words ||
+        !local_range_fits(ACT_BASE, act_bytes, ACT_BASE, ACT_END) ||
+        !local_range_fits(RESULT_BASE, result_bytes, RESULT_BASE, RESULT_END) ||
+        !mmap_range_fits(ACT_BASE, act_bytes) ||
+        !mmap_range_fits(RESULT_BASE, result_bytes)) {
+        LOGE("group run guard rejected transfer: rows=%d row0=%lld k_block0=%lld group_blocks=%d act_bytes=0x%x result_bytes=0x%x result_words=%u cap_words=%d",
+             rows,
+             (long long) row0,
+             (long long) k_block0,
+             group_blocks,
+             act_bytes,
+             result_bytes,
+             result_words,
+             g_packed_q8_result_words);
+        return false;
+    }
+
+    partial.assign((size_t) result_values, 0);
+
+    wr32(REG_CTRL, CTRL_CLEAR_DONE);
+    configure_vpu(rows, group_beats, VPU_MODE_PACKED_Q8);
+
+    for (int gb = 0; gb < group_blocks; ++gb) {
+        const block_q8_0_t & act = act_blocks[gb];
+        for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
+            const int group_beat = gb * VPU_BLOCK_BEATS + beat;
+            const uint32_t act_off = ACT_BASE + (uint32_t) group_beat * 16U;
+            const int8_t * lanes = act.qs + beat * VPU_NUM_LANES;
+            write_i8x16(act_off, lanes);
+        }
+    }
+
+    start_vpu();
+
+    uint32_t status = 0;
+    const int wait_rc = wait_done(&status);
+    if (wait_rc != 0) {
+        const uint32_t progress = rd32(REG_PROGRESS);
+        LOGE("VPU group failed wait_rc=%d status=0x%08x progress=0x%08x row0=%lld rows=%d k_block0=%lld group_blocks=%d",
+             wait_rc,
+             status,
+             progress,
+             (long long) row0,
+             rows,
+             (long long) k_block0,
+             group_blocks);
+        return false;
+    }
+
+    for (uint32_t word = 0; word < result_words; ++word) {
+        int32_t lanes[4];
+        read_result_i32x4(word, lanes);
+        for (int lane = 0; lane < VPU_RESULT_PACK_LANES; ++lane) {
+            const uint32_t value_index = word * (uint32_t) VPU_RESULT_PACK_LANES + (uint32_t) lane;
+            if (value_index < result_values) {
+                partial[(size_t) value_index] = lanes[lane];
+            }
+        }
+    }
+
+    return true;
+}
+
 static void cpu_reference_q8_0_matmul(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
@@ -857,6 +1063,70 @@ static bool fpga_hw_q8_0_matmul_batched(
     return true;
 }
 
+static bool fpga_hw_q8_0_matmul_grouped(
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    const int64_t k = src0->ne[0];
+    const int64_t n = src0->ne[1];
+    const int64_t m = src1->ne[1];
+    const int64_t nb = k / VPU_QK8_0;
+
+    std::vector<block_q8_0_t> act_blocks_all((size_t) (m * nb));
+    for (int64_t col = 0; col < m; ++col) {
+        quantize_activation_vector_to(src1, col, k, &act_blocks_all[(size_t) (col * nb)]);
+    }
+
+    std::vector<int32_t> partial;
+    std::vector<float> accum;
+
+    for (int64_t row0 = 0; row0 < n; row0 += g_vpu_max_rows) {
+        const int rows = (int) std::min<int64_t>(g_vpu_max_rows, n - row0);
+        accum.assign((size_t) (m * rows), 0.0f);
+
+        for (int64_t ib0 = 0; ib0 < nb;) {
+            const int remaining_blocks = (int) (nb - ib0);
+            const int group_blocks = packed_q8_group_blocks_for_rows(rows, remaining_blocks);
+
+            if (!fpga_program_weight_group(src0, row0, rows, ib0, group_blocks)) {
+                return false;
+            }
+
+            for (int64_t col = 0; col < m; ++col) {
+                const block_q8_0_t * act_group =
+                    &act_blocks_all[(size_t) (col * nb + ib0)];
+
+                if (!fpga_run_loaded_q8_group(act_group, row0, rows, ib0, group_blocks, partial)) {
+                    return false;
+                }
+
+                float * accum_col = &accum[(size_t) (col * rows)];
+                for (int row = 0; row < rows; ++row) {
+                    for (int gb = 0; gb < group_blocks; ++gb) {
+                        const int64_t ib = ib0 + gb;
+                        const block_q8_0_t & act = act_group[gb];
+                        const block_q8_0_t * wb = weight_block(src0, row0 + row, ib);
+                        const int32_t raw = partial[(size_t) row * (size_t) group_blocks + (size_t) gb];
+                        accum_col[(size_t) row] +=
+                            (float) raw * fp16_to_fp32(act.d) * fp16_to_fp32(wb->d);
+                    }
+                }
+            }
+
+            ib0 += group_blocks;
+        }
+
+        for (int64_t col = 0; col < m; ++col) {
+            const float * accum_col = &accum[(size_t) (col * rows)];
+            for (int row = 0; row < rows; ++row) {
+                store_dst_value(dst, row0 + row, col, accum_col[(size_t) row]);
+            }
+        }
+    }
+
+    return true;
+}
+
 static bool fpga_hw_q8_0_matmul(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * src1,
@@ -865,6 +1135,10 @@ static bool fpga_hw_q8_0_matmul(
     const int64_t n = src0->ne[1];
     const int64_t m = src1->ne[1];
     const int64_t nb = k / VPU_QK8_0;
+
+    if (g_packed_q8_supported) {
+        return fpga_hw_q8_0_matmul_grouped(src0, src1, dst);
+    }
 
     if (m > 1) {
         return fpga_hw_q8_0_matmul_batched(src0, src1, dst);
@@ -936,6 +1210,7 @@ int fpga_init(void) {
 
     uint32_t limits = 0;
     limits = rd32(REG_LIMITS);
+    const uint32_t caps = rd32(REG_CAPS);
     const int limit_rows  = (int) (limits & 0xFFFFU);
     const int limit_beats = (int) ((limits >> 16) & 0xFFFFU);
     if (limit_rows > 0 && limit_rows <= VPU_DEFAULT_ROWS) {
@@ -950,6 +1225,20 @@ int fpga_init(void) {
         LOGE("Ignoring unexpected VPU col-beat limit %d; host clamps to RTL default %d", limit_beats, VPU_DEFAULT_BEATS);
     }
 
+    g_packed_q8_supported = 0;
+    g_packed_q8_max_blocks = 1;
+    g_packed_q8_result_words = VPU_DEFAULT_ROWS;
+    if ((caps != 0U) && (caps != 0xFFFFFFFFU) && ((caps & 0x1U) != 0U) &&
+        !env_flag_disabled("FPGA_PACKED_Q8")) {
+        const int cap_blocks = (int) ((caps >> 8) & 0xFFU);
+        const int cap_result_words = (int) ((caps >> 16) & 0xFFFFU);
+        if (cap_blocks > 0 && cap_result_words > 0) {
+            g_packed_q8_supported = 1;
+            g_packed_q8_max_blocks = std::min(cap_blocks, g_vpu_max_beats / VPU_BLOCK_BEATS);
+            g_packed_q8_result_words = cap_result_words;
+        }
+    }
+
     LOGI("VPU mapped: base=0x%llx range=0x%llx mmap_size=0x%zx",
          (unsigned long long) VPU_BASE_PHYS,
          (unsigned long long) VPU_RANGE_PHYS,
@@ -960,6 +1249,11 @@ int fpga_init(void) {
          (unsigned long long) DDR_RESERVED_END);
     LOGI("VPU limits: rows=%d col_beats=%d cols=%d raw_limits=0x%08x",
          g_vpu_max_rows, g_vpu_max_beats, g_vpu_max_cols, limits);
+    LOGI("VPU caps: raw_caps=0x%08x packed_q8=%d max_group_blocks=%d result_words=%d (set FPGA_PACKED_Q8=0 to force legacy mode)",
+         caps,
+         g_packed_q8_supported,
+         g_packed_q8_max_blocks,
+         g_packed_q8_result_words);
     LOGI("No ZDMA programming is used: current bitstream exposes an AXI4-Full slave with local BRAM windows");
     LOGI("MMIO data write mode: %s (set FPGA_WRITE64=0 to force 32-bit writes)",
          g_use_write64 ? "64-bit" : "32-bit");
