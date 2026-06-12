@@ -20,7 +20,7 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v11-stage-profile"
+#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v12-capability-timing"
 
 #define FPGA_LOG_LEVEL_INFO   1
 #define FPGA_LOG_LEVEL_MATMUL 0
@@ -127,11 +127,19 @@ static constexpr double   FPGA_DEFAULT_SLOW_MS = 100.0;
 static constexpr int      FPGA_DEFAULT_PROFILE_EVERY = 256;
 static constexpr int      FPGA_DEFAULT_PROFILE_TOP_N = 8;
 static constexpr int      FPGA_DEFAULT_STAGE_EVERY = 128;
+static constexpr int      FPGA_DEFAULT_STATUS_EVERY = 128;
 
 typedef struct {
     uint16_t d;
     int8_t   qs[VPU_QK8_0];
 } block_q8_0_t;
+
+#if defined(__GNUC__) || defined(__clang__)
+typedef uint64_t fpga_u64x2_t __attribute__((vector_size(16), aligned(16)));
+#define FPGA_HAVE_MMIO128 1
+#else
+#define FPGA_HAVE_MMIO128 0
+#endif
 
 static_assert(sizeof(block_q8_0_t) == sizeof(uint16_t) + VPU_QK8_0, "unexpected q8_0 block layout");
 
@@ -149,6 +157,7 @@ static int                 g_vpu_max_beats = VPU_DEFAULT_BEATS;
 static int                 g_vpu_max_cols  = VPU_DEFAULT_COLS;
 static int                 g_address_map_logged = 0;
 static int                 g_use_write64   = 1;
+static int                 g_use_access128 = 0;
 static int                 g_cfg_rows      = -1;
 static int                 g_cfg_cols      = -1;
 static int                 g_cfg_col_beats = -1;
@@ -162,15 +171,18 @@ static int                 g_packed_q8_supported = 0;
 static int                 g_packed_q8_max_blocks = 1;
 static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
 static int                 g_require_packed_q8 = 0;
-static int                 g_probe_packed_q8 = 1;
+static int                 g_probe_packed_q8 = 0;
 static int                 g_abort_on_cpu_fallback = 0;
 static int                 g_legacy_allow_k_tiling = 0;
+static int                 g_offload_all = 0;
 static int                 g_cleanup_done = 0;
 static int                 g_atexit_registered = 0;
 static double              g_profile_slow_ms = FPGA_DEFAULT_SLOW_MS;
 static int                 g_profile_every = FPGA_DEFAULT_PROFILE_EVERY;
 static int                 g_profile_top_n = FPGA_DEFAULT_PROFILE_TOP_N;
 static int                 g_stage_profile_every = FPGA_DEFAULT_STAGE_EVERY;
+static int                 g_status_every = FPGA_DEFAULT_STATUS_EVERY;
+static int                 g_status_stderr = 0;
 static long long           g_profile_last_summary_call = 0;
 static long long           g_profile_slow_calls = 0;
 
@@ -189,8 +201,8 @@ typedef struct {
     const void *               cached_src1_data;
     int64_t                    cached_m;
     int64_t                    cached_k;
-    int64_t                    cached_nb0;
-    int64_t                    cached_nb1;
+    size_t                     cached_nb0;
+    size_t                     cached_nb1;
     bool                       activation_cache_valid;
 } fpga_scratch_t;
 
@@ -818,6 +830,14 @@ static inline uint64_t pack_u8x8(const int8_t * p) {
     return value;
 }
 
+#if FPGA_HAVE_MMIO128
+static inline fpga_u64x2_t pack_u8x16(const int8_t * p) {
+    fpga_u64x2_t value;
+    memcpy(&value, p, sizeof(value));
+    return value;
+}
+#endif
+
 static inline void mmio_fence(void) {
     __sync_synchronize();
 }
@@ -830,6 +850,12 @@ static inline uint64_t rd64(uint32_t off) {
     return *(volatile uint64_t *) (g_vpu + off);
 }
 
+#if FPGA_HAVE_MMIO128
+static inline fpga_u64x2_t rd128(uint32_t off) {
+    return *(volatile fpga_u64x2_t *) (g_vpu + off);
+}
+#endif
+
 static inline void wr32(uint32_t off, uint32_t val) {
     *(volatile uint32_t *) (g_vpu + off) = val;
     LOGR("wr32 off=0x%08x val=0x%08x", off, val);
@@ -840,7 +866,25 @@ static inline void wr64(uint32_t off, uint64_t val) {
     LOGR("wr64 off=0x%08x val=0x%llx", off, (unsigned long long) val);
 }
 
+#if FPGA_HAVE_MMIO128
+static inline void wr128(uint32_t off, fpga_u64x2_t val) {
+    *(volatile fpga_u64x2_t *) (g_vpu + off) = val;
+    uint64_t words[2];
+    memcpy(words, &val, sizeof(words));
+    LOGR("wr128 off=0x%08x val=0x%016llx%016llx",
+         off,
+         (unsigned long long) words[1],
+         (unsigned long long) words[0]);
+}
+#endif
+
 static inline void write_i8x16(uint32_t off, const int8_t * lanes) {
+#if FPGA_HAVE_MMIO128
+    if (g_use_access128) {
+        wr128(off, pack_u8x16(lanes));
+        return;
+    }
+#endif
     if (g_use_write64) {
         wr64(off + 0, pack_u8x8(lanes + 0));
         wr64(off + 8, pack_u8x8(lanes + 8));
@@ -1532,6 +1576,13 @@ static bool fpga_program_weight_group(
 
 static void read_result_i32x4(uint32_t result_word, int32_t out[4]) {
     const uint32_t off = RESULT_BASE + result_word * 16U;
+#if FPGA_HAVE_MMIO128
+    if (g_use_access128) {
+        const fpga_u64x2_t value = rd128(off);
+        memcpy(out, &value, 16U);
+        return;
+    }
+#endif
     if (g_use_write64) {
         const uint64_t lo = rd64(off + 0U);
         const uint64_t hi = rd64(off + 8U);
@@ -1871,11 +1922,13 @@ int fpga_init(void) {
 
     g_vpu = (volatile uint8_t *) map;
     g_use_write64 = !env_flag_disabled("FPGA_WRITE64");
+    g_use_access128 = FPGA_HAVE_MMIO128 && env_flag_enabled("FPGA_ACCESS128");
     g_require_packed_q8 = env_flag_enabled("FPGA_REQUIRE_PACKED");
-    g_probe_packed_q8 = !env_flag_disabled("FPGA_PROBE_PACKED_Q8");
+    g_probe_packed_q8 = env_flag_enabled("FPGA_PROBE_PACKED_Q8");
     g_abort_on_cpu_fallback = env_flag_enabled("FPGA_ABORT_ON_CPU_FALLBACK") ||
                               env_flag_enabled("FPGA_REQUIRE_FPGA_ONLY");
     g_legacy_allow_k_tiling = env_flag_enabled("FPGA_LEGACY_ALLOW_K_TILING");
+    g_offload_all = env_flag_enabled("FPGA_OFFLOAD_ALL");
     g_offload_min_n = env_int_value("FPGA_MIN_N", FPGA_DEFAULT_MIN_N, 0, 1073741824);
     g_offload_max_n = env_int_value("FPGA_MAX_N", FPGA_DEFAULT_MAX_N, 0, 1073741824);
     g_offload_decode_max_n = env_int_value("FPGA_DECODE_MAX_N", FPGA_DEFAULT_DECODE_MAX_N, 0, 1073741824);
@@ -1884,7 +1937,16 @@ int fpga_init(void) {
     g_profile_every = env_int_value("FPGA_PROFILE_EVERY", FPGA_DEFAULT_PROFILE_EVERY, 0, 1000000);
     g_profile_top_n = env_int_value("FPGA_PROFILE_TOP", FPGA_DEFAULT_PROFILE_TOP_N, 1, 64);
     g_stage_profile_every = env_int_value("FPGA_STAGE_EVERY", FPGA_DEFAULT_STAGE_EVERY, 0, 1000000);
+    g_status_every = env_int_value("FPGA_STATUS_EVERY", FPGA_DEFAULT_STATUS_EVERY, 0, 1000000);
+    g_status_stderr = env_flag_enabled("FPGA_STATUS_STDERR");
     g_log_flush_every = env_int_value("FPGA_LOG_FLUSH_EVERY", 16, 1, 1000000);
+    if (g_offload_all) {
+        g_offload_min_n = 0;
+        g_offload_max_n = 0;
+        g_offload_decode_max_n = 0;
+        g_legacy_max_n = 0;
+        g_legacy_allow_k_tiling = 1;
+    }
     if (!g_atexit_registered) {
         atexit(fpga_cleanup);
         g_atexit_registered = 1;
@@ -1893,6 +1955,9 @@ int fpga_init(void) {
     g_scratch.activation_cache_valid = false;
     invalidate_vpu_config();
     g_fpga_start_us = now_us();
+    g_vpu_max_rows = VPU_DEFAULT_ROWS;
+    g_vpu_max_beats = VPU_DEFAULT_BEATS;
+    g_vpu_max_cols = VPU_DEFAULT_COLS;
 
     uint32_t limits = 0;
     limits = rd32(REG_LIMITS);
@@ -1914,7 +1979,9 @@ int fpga_init(void) {
     g_packed_q8_supported = 0;
     g_packed_q8_max_blocks = 1;
     g_packed_q8_result_words = VPU_DEFAULT_ROWS;
-    if ((caps != 0U) && (caps != 0xFFFFFFFFU) && ((caps & 0x1U) != 0U) &&
+    const bool caps_valid = caps != 0U && caps != 0xFFFFFFFFU;
+    const bool force_packed_q8 = env_flag_enabled("FPGA_FORCE_PACKED_Q8");
+    if (caps_valid && ((caps & 0x1U) != 0U) &&
         !env_flag_disabled("FPGA_PACKED_Q8")) {
         const int cap_blocks = (int) ((caps >> 8) & 0xFFU);
         const int cap_result_words = (int) ((caps >> 16) & 0xFFFFU);
@@ -1924,14 +1991,14 @@ int fpga_init(void) {
             g_packed_q8_result_words = cap_result_words;
         }
     }
-    if (!g_packed_q8_supported && (g_probe_packed_q8 || env_flag_enabled("FPGA_FORCE_PACKED_Q8")) &&
+    if (!g_packed_q8_supported && (g_probe_packed_q8 || force_packed_q8) &&
         !env_flag_disabled("FPGA_PACKED_Q8")) {
         g_packed_q8_supported = 1;
         g_packed_q8_max_blocks = std::min(VPU_PACKED_Q8_MAX_BLOCKS, g_vpu_max_beats / VPU_BLOCK_BEATS);
         g_packed_q8_result_words =
             (g_vpu_max_rows * g_packed_q8_max_blocks + VPU_RESULT_PACK_LANES - 1) /
             VPU_RESULT_PACK_LANES;
-        LOGI("probing packed_q8 despite raw caps=0x%08x max_group_blocks=%d result_words=%d; packed self-test will verify (set FPGA_PROBE_PACKED_Q8=0 to skip)",
+        LOGI("explicit packed_q8 probe/force despite raw caps=0x%08x max_group_blocks=%d result_words=%d; packed self-test will verify",
              caps,
              g_packed_q8_max_blocks,
              g_packed_q8_result_words);
@@ -1955,27 +2022,34 @@ int fpga_init(void) {
          g_packed_q8_supported,
          g_packed_q8_max_blocks,
          g_packed_q8_result_words);
-    if (g_require_packed_q8 && !g_packed_q8_supported) {
-        LOGI("FPGA_REQUIRE_PACKED=1 and packed_q8 is unavailable; accepted GEMV offload will reject until packed_q8 is available");
+    if (!caps_valid) {
+        LOGE("REG_CAPS does not identify the packed RTL (raw=0x%08x). Legacy mode remains active unless FPGA_PROBE_PACKED_Q8=1 or FPGA_FORCE_PACKED_Q8=1 is explicitly set",
+             caps);
     }
     LOGI("No ZDMA programming is used: current bitstream exposes an AXI4-Full slave with local BRAM windows");
-    LOGI("MMIO data write mode: %s (set FPGA_WRITE64=0 to force 32-bit writes)",
-         g_use_write64 ? "64-bit" : "32-bit");
-    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d legacy_max_N=%d legacy_allow_K_tiling=%d require_packed_q8=%d probe_packed_q8=%d",
+    LOGI("MMIO data access mode: %s (FPGA_ACCESS128=1 is experimental; FPGA_WRITE64=0 forces 32-bit fallback)",
+         g_use_access128 ? "128-bit" : (g_use_write64 ? "64-bit" : "32-bit"));
+    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d legacy_max_N=%d legacy_allow_K_tiling=%d require_packed_q8=%d probe_packed_q8=%d offload_all=%d",
          g_offload_min_n,
          g_offload_max_n,
          g_offload_decode_max_n,
          g_legacy_max_n,
          g_legacy_allow_k_tiling,
          g_require_packed_q8,
-         g_probe_packed_q8);
+         g_probe_packed_q8,
+         g_offload_all);
+    if (g_offload_all) {
+        LOGE("FPGA_OFFLOAD_ALL=1 accepts every compatible Q8_0 x F32 matmul, including large output/token-head matrices; this is a coverage/debug mode and can reduce tokens/s with the current CPU-driven MMIO architecture");
+    }
     LOGI("fallback policy: abort_on_cpu_fallback=%d (set FPGA_ABORT_ON_CPU_FALLBACK=1 to verify FPGA-only execution)",
          g_abort_on_cpu_fallback);
-    LOGI("profile controls: slow_ms=%.3f profile_every=%d profile_top=%d stage_every=%d log_flush_every=%d (tail -f %s for realtime SLOW/PROFILE lines)",
+    LOGI("profile controls: slow_ms=%.3f profile_every=%d profile_top=%d stage_every=%d status_every=%d status_stderr=%d log_flush_every=%d (tail -f %s for realtime SLOW/PROFILE lines)",
          g_profile_slow_ms,
          g_profile_every,
          g_profile_top_n,
          g_stage_profile_every,
+         g_status_every,
+         g_status_stderr,
          g_log_flush_every,
          FPGA_LOG_FILE);
     LOGI("trace controls: set FPGA_TRACE_DATA=1 to dump first data blocks; FPGA_TRACE_CALLS=N changes default first %d traced blocks",
@@ -1987,10 +2061,30 @@ int fpga_init(void) {
              limits);
     }
 
+    if (g_require_packed_q8 && !g_packed_q8_supported) {
+        LOGE("FPGA_REQUIRE_PACKED=1 but packed capability is unavailable; refusing FPGA initialization instead of silently using legacy RTL");
+        munmap(mapped_vpu_ptr(), VPU_MMAP_SIZE);
+        g_vpu = nullptr;
+        close(g_mem_fd);
+        g_mem_fd = -1;
+        return -1;
+    }
+
     const bool require_self_test = env_flag_enabled("FPGA_SELF_TEST");
     bool self_test_ok = true;
-    if (g_use_write64 || require_self_test) {
+    if (g_use_access128 || g_use_write64 || require_self_test) {
         self_test_ok = fpga_smoke_test();
+        if (!self_test_ok && g_use_access128) {
+            LOGE("128-bit MMIO self-test failed; retrying with %s data accesses",
+                 g_use_write64 ? "64-bit" : "32-bit");
+            g_use_access128 = 0;
+            invalidate_vpu_config();
+            self_test_ok = fpga_smoke_test();
+            if (self_test_ok) {
+                LOGI("MMIO data access mode changed to %s after self-test fallback",
+                     g_use_write64 ? "64-bit" : "32-bit");
+            }
+        }
         if (!self_test_ok && g_use_write64) {
             LOGE("64-bit MMIO self-test failed; retrying with 32-bit data writes");
             g_use_write64 = 0;
@@ -2014,7 +2108,13 @@ int fpga_init(void) {
     }
 
     if (g_packed_q8_supported) {
-        const bool packed_self_test_ok = fpga_packed_q8_smoke_test();
+        bool packed_self_test_ok = fpga_packed_q8_smoke_test();
+        if (!packed_self_test_ok && g_use_access128) {
+            LOGE("packed_q8 test failed with 128-bit result reads; retrying packed test with 64-bit MMIO");
+            g_use_access128 = 0;
+            invalidate_vpu_config();
+            packed_self_test_ok = fpga_packed_q8_smoke_test();
+        }
         if (packed_self_test_ok) {
             LOGI("packed_q8 self-test passed; packed GEMV offload is active");
         } else {
@@ -2028,8 +2128,8 @@ int fpga_init(void) {
             LOGI("legacy FPGA policy active: legacy_max_N=%d (set FPGA_LEGACY_MAX_N=0 to force wide legacy offload)",
                  g_legacy_max_n);
             invalidate_vpu_config();
-            if (require_self_test && g_require_packed_q8) {
-                LOGE("FPGA_SELF_TEST requires packed_q8, refusing to enable FPGA acceleration for this process");
+            if (g_require_packed_q8) {
+                LOGE("FPGA_REQUIRE_PACKED=1 and packed_q8 self-test failed; refusing to enable FPGA acceleration for this process");
                 munmap(mapped_vpu_ptr(), VPU_MMAP_SIZE);
                 g_vpu = nullptr;
                 close(g_mem_fd);
@@ -2105,6 +2205,54 @@ extern "C" int fpga_run_matmul(
 
     LOGE("legacy fpga_run_matmul(A,B_d,B_qs,C,...) is disabled for this bitstream; use ggml tensor hook");
     return 0;
+}
+
+static void fpga_report_runtime_status(
+        const char * tensor_name,
+        int layer_id,
+        int seq_pos,
+        int64_t k,
+        int64_t n,
+        int64_t m,
+        long long vpu_runs,
+        double elapsed_ms) {
+    if (g_status_every <= 0 ||
+        (g_fpga_count != 1 && (g_fpga_count % g_status_every) != 0)) {
+        return;
+    }
+
+    const double calls_per_s = elapsed_ms > 0.0 ? 1000.0 / elapsed_ms : 0.0;
+    LOGI("status fpga_calls=%lld cpu_fallbacks=%lld vpu_runs=%lld layer=%d seq=%d tensor=%s shape=K%lld_N%lld_M%lld call_ms=%.3f calls_per_s=%.2f packed=%d limits=rows:%d,beats:%d",
+         g_fpga_count,
+         g_cpu_count,
+         vpu_runs,
+         layer_id,
+         seq_pos,
+         tensor_name,
+         (long long) k,
+         (long long) n,
+         (long long) m,
+         elapsed_ms,
+         calls_per_s,
+         g_packed_q8_supported,
+         g_vpu_max_rows,
+         g_vpu_max_beats);
+
+    if (g_status_stderr) {
+        fprintf(stderr,
+                "[FPGA][STATUS] calls=%lld cpu_fallbacks=%lld layer=%d seq=%d tensor=%s K=%lld N=%lld M=%lld call_ms=%.3f packed=%d\n",
+                g_fpga_count,
+                g_cpu_count,
+                layer_id,
+                seq_pos,
+                tensor_name,
+                (long long) k,
+                (long long) n,
+                (long long) m,
+                elapsed_ms,
+                g_packed_q8_supported);
+        fflush(stderr);
+    }
 }
 
 void fpga_set_context(int layer_id, int seq_pos, int is_attn) {
@@ -2333,6 +2481,14 @@ extern "C" int fpga_try_matmul_extended(
              elapsed_ms,
              run_rate,
              g_fpga_vpu_runs);
+        fpga_report_runtime_status(tensor_name,
+                                   effective_layer_id,
+                                   seq_pos,
+                                   src0->ne[0],
+                                   src0->ne[1],
+                                   src1->ne[1],
+                                   vpu_runs,
+                                   elapsed_ms);
         log_dst_sample(dst, effective_layer_id, seq_pos);
     } else {
         g_cpu_count++;
