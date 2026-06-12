@@ -32,6 +32,6 @@ cmake -S . -B build_mem \
 cmake --build build_mem --target llama-cli -j2
 
 sudo ./build_mem/bin/llama-cli \
-    -m /home/debian/soc/models/gemma-3-1b-it-Q8_0.gguf \
+    -m ./models/gemma-3-1b-it-Q8_0.gguf \
     -p "Please write about AI" \
     -n 64

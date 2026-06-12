@@ -20,13 +20,16 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v10-profile"
+#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v11-stage-profile"
 
 #define FPGA_LOG_LEVEL_INFO   1
 #define FPGA_LOG_LEVEL_MATMUL 0
 #define FPGA_LOG_LEVEL_REG    0
 #define FPGA_LOG_LEVEL_TIMING 1
 #define FPGA_LOG_LEVEL_DATA   1
+
+static int g_log_flush_every = 16;
+static int g_log_pending_lines = 0;
 
 static FILE * fpga_log_fp(void) {
     static FILE * fp = nullptr;
@@ -45,23 +48,31 @@ static FILE * fpga_log_fp(void) {
     return fp;
 }
 
-#define FPGA_LOG(level_flag, tag, fmt, ...)                                      \
+static void fpga_log_finish_line(FILE * fp, bool force_flush) {
+    g_log_pending_lines++;
+    if (force_flush || g_log_flush_every <= 1 || g_log_pending_lines >= g_log_flush_every) {
+        fflush(fp);
+        g_log_pending_lines = 0;
+    }
+}
+
+#define FPGA_LOG(level_flag, tag, force_flush, fmt, ...)                         \
     do {                                                                         \
         if (level_flag) {                                                        \
             FILE * _fp = fpga_log_fp();                                          \
             fprintf(_fp, "[FPGA][%-6s] " fmt "\n", tag, ##__VA_ARGS__);        \
-            fflush(_fp);                                                         \
+            fpga_log_finish_line(_fp, force_flush);                              \
         }                                                                        \
     } while (0)
 
-#define LOGI(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_INFO,   "INFO",   fmt, ##__VA_ARGS__)
-#define LOGM(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_MATMUL, "MATMUL", fmt, ##__VA_ARGS__)
-#define LOGR(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_REG,    "REG",    fmt, ##__VA_ARGS__)
-#define LOGT(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_TIMING, "TIMING", fmt, ##__VA_ARGS__)
-#define LOGD(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_DATA,   "DATA",   fmt, ##__VA_ARGS__)
-#define LOGE(fmt, ...) FPGA_LOG(1,                     "ERROR",  fmt, ##__VA_ARGS__)
-#define LOGS(fmt, ...) FPGA_LOG(1,                     "SLOW",   fmt, ##__VA_ARGS__)
-#define LOGP(fmt, ...) FPGA_LOG(1,                     "PROFILE",fmt, ##__VA_ARGS__)
+#define LOGI(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_INFO,   "INFO",    false, fmt, ##__VA_ARGS__)
+#define LOGM(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_MATMUL, "MATMUL",  false, fmt, ##__VA_ARGS__)
+#define LOGR(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_REG,    "REG",     false, fmt, ##__VA_ARGS__)
+#define LOGT(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_TIMING, "TIMING",  false, fmt, ##__VA_ARGS__)
+#define LOGD(fmt, ...) FPGA_LOG(FPGA_LOG_LEVEL_DATA,   "DATA",    false, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) FPGA_LOG(1,                     "ERROR",   true,  fmt, ##__VA_ARGS__)
+#define LOGS(fmt, ...) FPGA_LOG(1,                     "SLOW",    false, fmt, ##__VA_ARGS__)
+#define LOGP(fmt, ...) FPGA_LOG(1,                     "PROFILE", false, fmt, ##__VA_ARGS__)
 
 // Address map from DATN_RTL/RTL/AXI4_Mapping.v and Vivado design_1.bd.
 static constexpr uint64_t VPU_BASE_PHYS      = 0x00000000A0000000ULL;
@@ -113,8 +124,9 @@ static constexpr int      FPGA_DEFAULT_MAX_N  = 65536;
 static constexpr int      FPGA_DEFAULT_DECODE_MAX_N = 0;
 static constexpr int      FPGA_DEFAULT_LEGACY_MAX_N = 4096;
 static constexpr double   FPGA_DEFAULT_SLOW_MS = 100.0;
-static constexpr int      FPGA_DEFAULT_PROFILE_EVERY = 128;
+static constexpr int      FPGA_DEFAULT_PROFILE_EVERY = 256;
 static constexpr int      FPGA_DEFAULT_PROFILE_TOP_N = 8;
+static constexpr int      FPGA_DEFAULT_STAGE_EVERY = 128;
 
 typedef struct {
     uint16_t d;
@@ -158,6 +170,7 @@ static int                 g_atexit_registered = 0;
 static double              g_profile_slow_ms = FPGA_DEFAULT_SLOW_MS;
 static int                 g_profile_every = FPGA_DEFAULT_PROFILE_EVERY;
 static int                 g_profile_top_n = FPGA_DEFAULT_PROFILE_TOP_N;
+static int                 g_stage_profile_every = FPGA_DEFAULT_STAGE_EVERY;
 static long long           g_profile_last_summary_call = 0;
 static long long           g_profile_slow_calls = 0;
 
@@ -172,9 +185,28 @@ typedef struct {
     std::vector<float>        weight_scales;
     std::vector<int32_t>      partial;
     std::vector<float>        accum;
+    const struct ggml_tensor * cached_src1;
+    const void *               cached_src1_data;
+    int64_t                    cached_m;
+    int64_t                    cached_k;
+    int64_t                    cached_nb0;
+    int64_t                    cached_nb1;
+    bool                       activation_cache_valid;
 } fpga_scratch_t;
 
 static fpga_scratch_t g_scratch;
+static long long g_activation_cache_hits = 0;
+static long long g_activation_cache_misses = 0;
+
+typedef struct {
+    bool      active;
+    long long weight_write_us;
+    long long act_write_us;
+    long long vpu_wait_us;
+    long long result_read_us;
+} fpga_stage_profile_t;
+
+static fpga_stage_profile_t g_stage_profile = {false, 0, 0, 0, 0};
 
 typedef struct {
     std::string tensor;
@@ -973,6 +1005,37 @@ static void quantize_activation_matrix(
     }
 }
 
+static void ensure_quantized_activation_matrix(
+        const struct ggml_tensor * src1,
+        int64_t m,
+        int64_t k,
+        std::vector<block_q8_0_t> & act_blocks_all,
+        std::vector<float> & act_scales) {
+    const bool cache_hit =
+        g_scratch.activation_cache_valid &&
+        g_scratch.cached_src1 == src1 &&
+        g_scratch.cached_src1_data == src1->data &&
+        g_scratch.cached_m == m &&
+        g_scratch.cached_k == k &&
+        g_scratch.cached_nb0 == src1->nb[0] &&
+        g_scratch.cached_nb1 == src1->nb[1];
+
+    if (cache_hit) {
+        g_activation_cache_hits++;
+        return;
+    }
+
+    quantize_activation_matrix(src1, m, k, act_blocks_all, act_scales);
+    g_scratch.cached_src1 = src1;
+    g_scratch.cached_src1_data = src1->data;
+    g_scratch.cached_m = m;
+    g_scratch.cached_k = k;
+    g_scratch.cached_nb0 = src1->nb[0];
+    g_scratch.cached_nb1 = src1->nb[1];
+    g_scratch.activation_cache_valid = true;
+    g_activation_cache_misses++;
+}
+
 static const block_q8_0_t * weight_block(
         const struct ggml_tensor * src0,
         int64_t row,
@@ -1259,6 +1322,7 @@ static bool fpga_program_weight_block(
         return false;
     }
 
+    const long long stage_t0 = g_stage_profile.active ? now_us() : 0;
     for (int row = 0; row < rows; ++row) {
         const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block);
         if (weight_scales) {
@@ -1282,6 +1346,9 @@ static bool fpga_program_weight_block(
                 log_i8x16_lanes("WEIGHT_WRITE", trace_id, weight_off, row, beat, lanes);
             }
         }
+    }
+    if (g_stage_profile.active) {
+        g_stage_profile.weight_write_us += now_us() - stage_t0;
     }
 
     return true;
@@ -1321,6 +1388,7 @@ static bool fpga_run_loaded_q8_block(
     wr32(REG_CTRL, CTRL_CLEAR_DONE);
     configure_vpu_for_q8_block(rows);
 
+    const long long act_t0 = g_stage_profile.active ? now_us() : 0;
     for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
         const uint32_t act_off = ACT_BASE + (uint32_t) beat * 16U;
         const int8_t * lanes = act.qs + beat * VPU_NUM_LANES;
@@ -1329,11 +1397,18 @@ static bool fpga_run_loaded_q8_block(
             log_i8x16_lanes("ACT_WRITE", trace_id, act_off, 0, beat, lanes);
         }
     }
+    if (g_stage_profile.active) {
+        g_stage_profile.act_write_us += now_us() - act_t0;
+    }
 
+    const long long wait_t0 = g_stage_profile.active ? now_us() : 0;
     start_vpu();
 
     uint32_t status = 0;
     const int wait_rc = wait_done(&status);
+    if (g_stage_profile.active) {
+        g_stage_profile.vpu_wait_us += now_us() - wait_t0;
+    }
     if (wait_rc != 0) {
         const uint32_t progress = rd32(REG_PROGRESS);
         LOGE("VPU block failed wait_rc=%d status=0x%08x progress=0x%08x row0=%lld rows=%d k_block=%lld",
@@ -1341,6 +1416,7 @@ static bool fpga_run_loaded_q8_block(
         return false;
     }
 
+    const long long result_t0 = g_stage_profile.active ? now_us() : 0;
     for (int row = 0; row < rows; ++row) {
         const uint32_t result_off = RESULT_BASE + (uint32_t) row * 16U;
         partial[(size_t) row] = (int32_t) rd32(result_off);
@@ -1352,6 +1428,9 @@ static bool fpga_run_loaded_q8_block(
                  row,
                  partial[(size_t) row]);
         }
+    }
+    if (g_stage_profile.active) {
+        g_stage_profile.result_read_us += now_us() - result_t0;
     }
 
     return true;
@@ -1429,6 +1508,7 @@ static bool fpga_program_weight_group(
 
     weight_scales.resize((size_t) rows * (size_t) group_blocks);
 
+    const long long stage_t0 = g_stage_profile.active ? now_us() : 0;
     for (int row = 0; row < rows; ++row) {
         for (int gb = 0; gb < group_blocks; ++gb) {
             const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block0 + gb);
@@ -1442,6 +1522,9 @@ static bool fpga_program_weight_group(
                 write_i8x16(weight_off, lanes);
             }
         }
+    }
+    if (g_stage_profile.active) {
+        g_stage_profile.weight_write_us += now_us() - stage_t0;
     }
 
     return true;
@@ -1507,6 +1590,7 @@ static bool fpga_run_loaded_q8_group(
     wr32(REG_CTRL, CTRL_CLEAR_DONE);
     configure_vpu(rows, group_beats, VPU_MODE_PACKED_Q8);
 
+    const long long act_t0 = g_stage_profile.active ? now_us() : 0;
     for (int gb = 0; gb < group_blocks; ++gb) {
         const block_q8_0_t & act = act_blocks[gb];
         for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
@@ -1516,11 +1600,18 @@ static bool fpga_run_loaded_q8_group(
             write_i8x16(act_off, lanes);
         }
     }
+    if (g_stage_profile.active) {
+        g_stage_profile.act_write_us += now_us() - act_t0;
+    }
 
+    const long long wait_t0 = g_stage_profile.active ? now_us() : 0;
     start_vpu();
 
     uint32_t status = 0;
     const int wait_rc = wait_done(&status);
+    if (g_stage_profile.active) {
+        g_stage_profile.vpu_wait_us += now_us() - wait_t0;
+    }
     if (wait_rc != 0) {
         const uint32_t progress = rd32(REG_PROGRESS);
         LOGE("VPU group failed wait_rc=%d status=0x%08x progress=0x%08x row0=%lld rows=%d k_block0=%lld group_blocks=%d",
@@ -1534,6 +1625,7 @@ static bool fpga_run_loaded_q8_group(
         return false;
     }
 
+    const long long result_t0 = g_stage_profile.active ? now_us() : 0;
     for (uint32_t word = 0; word < result_words; ++word) {
         int32_t lanes[4];
         read_result_i32x4(word, lanes);
@@ -1543,6 +1635,9 @@ static bool fpga_run_loaded_q8_group(
                 partial[(size_t) value_index] = lanes[lane];
             }
         }
+    }
+    if (g_stage_profile.active) {
+        g_stage_profile.result_read_us += now_us() - result_t0;
     }
 
     return true;
@@ -1593,7 +1688,7 @@ static bool fpga_hw_q8_0_matmul_batched(
     std::vector<int32_t> & partial = g_scratch.partial;
     std::vector<float> & accum = g_scratch.accum;
 
-    quantize_activation_matrix(src1, m, k, act_blocks_all, act_scales);
+    ensure_quantized_activation_matrix(src1, m, k, act_blocks_all, act_scales);
 
     for (int64_t row0 = 0; row0 < n; row0 += g_vpu_max_rows) {
         const int rows = (int) std::min<int64_t>(g_vpu_max_rows, n - row0);
@@ -1646,7 +1741,7 @@ static bool fpga_hw_q8_0_matmul_grouped(
     std::vector<int32_t> & partial = g_scratch.partial;
     std::vector<float> & accum = g_scratch.accum;
 
-    quantize_activation_matrix(src1, m, k, act_blocks_all, act_scales);
+    ensure_quantized_activation_matrix(src1, m, k, act_blocks_all, act_scales);
 
     for (int64_t row0 = 0; row0 < n; row0 += g_vpu_max_rows) {
         const int rows = (int) std::min<int64_t>(g_vpu_max_rows, n - row0);
@@ -1712,18 +1807,17 @@ static bool fpga_hw_q8_0_matmul(
         return fpga_hw_q8_0_matmul_batched(src0, src1, dst);
     }
 
-    std::vector<block_q8_0_t> & act_blocks = g_scratch.act_blocks;
+    std::vector<block_q8_0_t> & act_blocks_all = g_scratch.act_blocks_all;
     std::vector<float> & act_scales = g_scratch.act_scales;
     std::vector<float> & weight_scales = g_scratch.weight_scales;
     std::vector<int32_t> & partial = g_scratch.partial;
     std::vector<float> & accum = g_scratch.accum;
 
+    ensure_quantized_activation_matrix(src1, m, k, act_blocks_all, act_scales);
+
     for (int64_t col = 0; col < m; ++col) {
-        quantize_activation_vector(src1, col, k, act_blocks);
-        act_scales.resize((size_t) nb);
-        for (int64_t ib = 0; ib < nb; ++ib) {
-            act_scales[(size_t) ib] = fp16_to_fp32(act_blocks[(size_t) ib].d);
-        }
+        const block_q8_0_t * act_blocks = &act_blocks_all[(size_t) (col * nb)];
+        const float * act_scales_col = &act_scales[(size_t) (col * nb)];
 
         for (int64_t row0 = 0; row0 < n; row0 += g_vpu_max_rows) {
             const int rows = (int) std::min<int64_t>(g_vpu_max_rows, n - row0);
@@ -1734,7 +1828,7 @@ static bool fpga_hw_q8_0_matmul(
                     return false;
                 }
 
-                const float act_scale = act_scales[(size_t) ib];
+                const float act_scale = act_scales_col[(size_t) ib];
                 for (int row = 0; row < rows; ++row) {
                     accum[(size_t) row] +=
                         (float) partial[(size_t) row] * act_scale * weight_scales[(size_t) row];
@@ -1789,11 +1883,14 @@ int fpga_init(void) {
     g_profile_slow_ms = env_double_value("FPGA_SLOW_MS", FPGA_DEFAULT_SLOW_MS, 0.0, 1000000.0);
     g_profile_every = env_int_value("FPGA_PROFILE_EVERY", FPGA_DEFAULT_PROFILE_EVERY, 0, 1000000);
     g_profile_top_n = env_int_value("FPGA_PROFILE_TOP", FPGA_DEFAULT_PROFILE_TOP_N, 1, 64);
+    g_stage_profile_every = env_int_value("FPGA_STAGE_EVERY", FPGA_DEFAULT_STAGE_EVERY, 0, 1000000);
+    g_log_flush_every = env_int_value("FPGA_LOG_FLUSH_EVERY", 16, 1, 1000000);
     if (!g_atexit_registered) {
         atexit(fpga_cleanup);
         g_atexit_registered = 1;
     }
     g_cleanup_done = 0;
+    g_scratch.activation_cache_valid = false;
     invalidate_vpu_config();
     g_fpga_start_us = now_us();
 
@@ -1874,10 +1971,12 @@ int fpga_init(void) {
          g_probe_packed_q8);
     LOGI("fallback policy: abort_on_cpu_fallback=%d (set FPGA_ABORT_ON_CPU_FALLBACK=1 to verify FPGA-only execution)",
          g_abort_on_cpu_fallback);
-    LOGI("profile controls: slow_ms=%.3f profile_every=%d profile_top=%d (tail -f %s for realtime SLOW/PROFILE lines)",
+    LOGI("profile controls: slow_ms=%.3f profile_every=%d profile_top=%d stage_every=%d log_flush_every=%d (tail -f %s for realtime SLOW/PROFILE lines)",
          g_profile_slow_ms,
          g_profile_every,
          g_profile_top_n,
+         g_stage_profile_every,
+         g_log_flush_every,
          FPGA_LOG_FILE);
     LOGI("trace controls: set FPGA_TRACE_DATA=1 to dump first data blocks; FPGA_TRACE_CALLS=N changes default first %d traced blocks",
          TRACE_DEFAULT_CALLS);
@@ -1977,7 +2076,12 @@ void fpga_cleanup(void) {
          g_runtime_fallback_total,
          elapsed_s,
          run_rate);
+    LOGI("activation quantization cache hits=%lld misses=%lld",
+         g_activation_cache_hits,
+         g_activation_cache_misses);
+    fflush(fpga_log_fp());
     invalidate_vpu_config();
+    g_scratch.activation_cache_valid = false;
     pthread_mutex_unlock(&g_mutex);
 }
 
@@ -2042,12 +2146,17 @@ extern "C" int fpga_try_matmul_extended(
                                        k,
                                        n,
                                        m);
-            LOGI("attention path requested but current SoC/VPU bitstream exposes only INT8 GEMV; using CPU fallback tensor=%s layer=%d shape=K%lld_N%lld_M%lld",
-                 tensor_name,
-                 effective_layer_id,
-                 (long long) k,
-                 (long long) n,
-                 (long long) m);
+            if (g_attention_fallback_total <= 8 ||
+                (g_attention_fallback_total % 128) == 0 ||
+                g_abort_on_cpu_fallback) {
+                LOGI("attention path requested but current SoC/VPU bitstream exposes only INT8 GEMV; using CPU fallback tensor=%s layer=%d shape=K%lld_N%lld_M%lld fallback_count=%lld",
+                     tensor_name,
+                     effective_layer_id,
+                     (long long) k,
+                     (long long) n,
+                     (long long) m,
+                     g_attention_fallback_total);
+            }
             pthread_mutex_unlock(&g_mutex);
             fpga_abort_cpu_fallback_if_requested("attention op unsupported by current INT8 GEMV bitstream",
                                                  tensor_name,
@@ -2134,6 +2243,14 @@ extern "C" int fpga_try_matmul_extended(
     pthread_mutex_lock(&g_mutex);
 
     const long long vpu_runs = estimate_vpu_runs(src0, src1);
+    const long long next_fpga_call = g_fpga_count + 1;
+    g_stage_profile.active =
+        g_stage_profile_every > 0 &&
+        (next_fpga_call == 1 || (next_fpga_call % g_stage_profile_every) == 0);
+    g_stage_profile.weight_write_us = 0;
+    g_stage_profile.act_write_us = 0;
+    g_stage_profile.vpu_wait_us = 0;
+    g_stage_profile.result_read_us = 0;
     const long long t0_us = now_us();
     const int packed_mode = g_packed_q8_supported ? 1 : 0;
     const char * tensor_name = tensor_name_or_unknown(src0);
@@ -2152,6 +2269,8 @@ extern "C" int fpga_try_matmul_extended(
 
     const bool hw_ok = fpga_hw_q8_0_matmul(src0, src1, dst);
     const long long t1_us = now_us();
+    const bool stage_sampled = g_stage_profile.active;
+    g_stage_profile.active = false;
     const double elapsed_ms = (double) (t1_us - t0_us) / 1000.0;
     const double run_rate = elapsed_ms > 0.0 ? ((double) vpu_runs * 1000.0) / elapsed_ms : 0.0;
     if (hw_ok) {
@@ -2166,6 +2285,48 @@ extern "C" int fpga_try_matmul_extended(
             packed_mode,
             vpu_runs,
             elapsed_ms);
+        if (stage_sampled) {
+            const long long measured_us =
+                g_stage_profile.weight_write_us +
+                g_stage_profile.act_write_us +
+                g_stage_profile.vpu_wait_us +
+                g_stage_profile.result_read_us;
+            const long long total_us = t1_us - t0_us;
+            const long long host_other_us = std::max(0LL, total_us - measured_us);
+            const char * dominant = "host_other";
+            long long dominant_us = host_other_us;
+            if (g_stage_profile.weight_write_us > dominant_us) {
+                dominant = "weight_mmio";
+                dominant_us = g_stage_profile.weight_write_us;
+            }
+            if (g_stage_profile.act_write_us > dominant_us) {
+                dominant = "activation_mmio";
+                dominant_us = g_stage_profile.act_write_us;
+            }
+            if (g_stage_profile.vpu_wait_us > dominant_us) {
+                dominant = "vpu_wait";
+                dominant_us = g_stage_profile.vpu_wait_us;
+            }
+            if (g_stage_profile.result_read_us > dominant_us) {
+                dominant = "result_mmio";
+            }
+            LOGP("stage tensor=%s layer=%d shape=K%lld_N%lld_M%lld packed=%d total_ms=%.3f weight_mmio_ms=%.3f activation_mmio_ms=%.3f vpu_wait_ms=%.3f result_mmio_ms=%.3f host_other_ms=%.3f dominant=%s cache_hits=%lld cache_misses=%lld",
+                 tensor_name,
+                 effective_layer_id,
+                 (long long) src0->ne[0],
+                 (long long) src0->ne[1],
+                 (long long) src1->ne[1],
+                 packed_mode,
+                 elapsed_ms,
+                 (double) g_stage_profile.weight_write_us / 1000.0,
+                 (double) g_stage_profile.act_write_us / 1000.0,
+                 (double) g_stage_profile.vpu_wait_us / 1000.0,
+                 (double) g_stage_profile.result_read_us / 1000.0,
+                 (double) host_other_us / 1000.0,
+                 dominant,
+                 g_activation_cache_hits,
+                 g_activation_cache_misses);
+        }
         LOGM("done via FPGA total_fpga_calls=%lld vpu_runs=%lld elapsed_ms=%.3f vpu_runs_per_s=%.1f total_vpu_runs=%lld",
              g_fpga_count,
              vpu_runs,
@@ -2206,4 +2367,5 @@ extern "C" int fpga_try_matmul_extended(
 
 extern "C" void fpga_reset_kv_cache(void) {
     g_current_seq_pos = 0;
+    g_scratch.activation_cache_valid = false;
 }
