@@ -20,7 +20,7 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v9-profile"
+#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v10-profile"
 
 #define FPGA_LOG_LEVEL_INFO   1
 #define FPGA_LOG_LEVEL_MATMUL 0
@@ -152,6 +152,7 @@ static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
 static int                 g_require_packed_q8 = 0;
 static int                 g_probe_packed_q8 = 1;
 static int                 g_abort_on_cpu_fallback = 0;
+static int                 g_legacy_allow_k_tiling = 0;
 static int                 g_cleanup_done = 0;
 static int                 g_atexit_registered = 0;
 static double              g_profile_slow_ms = FPGA_DEFAULT_SLOW_MS;
@@ -191,6 +192,19 @@ typedef struct {
 static std::vector<fpga_profile_entry_t> g_profile_entries;
 
 typedef struct {
+    int64_t     k;
+    int64_t     n;
+    int64_t     m;
+    int         packed;
+    std::string hint;
+    long long   calls;
+    long long   vpu_runs;
+    double      total_ms;
+    double      max_ms;
+    int         max_layer;
+} fpga_profile_group_t;
+
+typedef struct {
     std::string reason;
     std::string tensor;
     int64_t     k;
@@ -202,6 +216,18 @@ typedef struct {
 } fpga_reject_entry_t;
 
 static std::vector<fpga_reject_entry_t> g_reject_entries;
+
+typedef struct {
+    std::string reason;
+    std::string example_tensor;
+    int64_t     k;
+    int64_t     n;
+    int64_t     m;
+    long long   calls;
+    int         first_layer;
+    int         last_layer;
+} fpga_reject_group_t;
+
 static long long g_reject_total = 0;
 static long long g_attention_fallback_total = 0;
 static long long g_runtime_fallback_total = 0;
@@ -391,6 +417,65 @@ static void fpga_profile_report_top(const char * reason, int top_n) {
              avg_runs,
              bottleneck_hint(e.tensor.c_str(), e.n, e.m, e.packed));
     }
+
+    std::vector<fpga_profile_group_t> groups;
+    for (const fpga_profile_entry_t & e : g_profile_entries) {
+        const char * hint = bottleneck_hint(e.tensor.c_str(), e.n, e.m, e.packed);
+        fpga_profile_group_t * group = nullptr;
+        for (fpga_profile_group_t & candidate : groups) {
+            if (candidate.k == e.k && candidate.n == e.n && candidate.m == e.m &&
+                candidate.packed == e.packed && candidate.hint == hint) {
+                group = &candidate;
+                break;
+            }
+        }
+        if (!group) {
+            fpga_profile_group_t created;
+            created.k = e.k;
+            created.n = e.n;
+            created.m = e.m;
+            created.packed = e.packed;
+            created.hint = hint;
+            created.calls = 0;
+            created.vpu_runs = 0;
+            created.total_ms = 0.0;
+            created.max_ms = 0.0;
+            created.max_layer = -1;
+            groups.push_back(created);
+            group = &groups.back();
+        }
+        group->calls += e.calls;
+        group->vpu_runs += e.vpu_runs;
+        group->total_ms += e.total_ms;
+        if (e.max_ms > group->max_ms) {
+            group->max_ms = e.max_ms;
+            group->max_layer = e.max_layer;
+        }
+    }
+
+    std::sort(groups.begin(), groups.end(),
+              [](const fpga_profile_group_t & a, const fpga_profile_group_t & b) {
+                  return a.total_ms > b.total_ms;
+              });
+    const int group_count = std::min<int>(top_n, (int) groups.size());
+    for (int i = 0; i < group_count; ++i) {
+        const fpga_profile_group_t & g = groups[(size_t) i];
+        const double avg_ms = g.calls > 0 ? g.total_ms / (double) g.calls : 0.0;
+        const double avg_runs = g.calls > 0 ? (double) g.vpu_runs / (double) g.calls : 0.0;
+        LOGP("shape_top[%d] shape=K%lld_N%lld_M%lld packed=%d calls=%lld total_ms=%.3f avg_ms=%.3f max_ms=%.3f max_layer=%d avg_vpu_runs=%.1f hint=%s",
+             i + 1,
+             (long long) g.k,
+             (long long) g.n,
+             (long long) g.m,
+             g.packed,
+             g.calls,
+             g.total_ms,
+             avg_ms,
+             g.max_ms,
+             g.max_layer,
+             avg_runs,
+             g.hint.c_str());
+    }
 }
 
 static void fpga_profile_record_matmul(
@@ -496,6 +581,57 @@ static void fpga_reject_report_top(const char * reason, int top_n) {
              e.first_layer,
              e.last_layer,
              e.reason.c_str());
+    }
+
+    std::vector<fpga_reject_group_t> groups;
+    for (const fpga_reject_entry_t & e : g_reject_entries) {
+        fpga_reject_group_t * group = nullptr;
+        for (fpga_reject_group_t & candidate : groups) {
+            if (candidate.k == e.k && candidate.n == e.n && candidate.m == e.m &&
+                candidate.reason == e.reason) {
+                group = &candidate;
+                break;
+            }
+        }
+        if (!group) {
+            fpga_reject_group_t created;
+            created.reason = e.reason;
+            created.example_tensor = e.tensor;
+            created.k = e.k;
+            created.n = e.n;
+            created.m = e.m;
+            created.calls = 0;
+            created.first_layer = e.first_layer;
+            created.last_layer = e.last_layer;
+            groups.push_back(created);
+            group = &groups.back();
+        }
+        group->calls += e.calls;
+        if (group->first_layer < 0 || (e.first_layer >= 0 && e.first_layer < group->first_layer)) {
+            group->first_layer = e.first_layer;
+        }
+        if (e.last_layer > group->last_layer) {
+            group->last_layer = e.last_layer;
+        }
+    }
+
+    std::sort(groups.begin(), groups.end(),
+              [](const fpga_reject_group_t & a, const fpga_reject_group_t & b) {
+                  return a.calls > b.calls;
+              });
+    const int group_count = std::min<int>(top_n, (int) groups.size());
+    for (int i = 0; i < group_count; ++i) {
+        const fpga_reject_group_t & g = groups[(size_t) i];
+        LOGP("fallback_shape_top[%d] shape=K%lld_N%lld_M%lld calls=%lld first_layer=%d last_layer=%d example=%s reason=%s action=CPU_fallback_outside_fpga_host",
+             i + 1,
+             (long long) g.k,
+             (long long) g.n,
+             (long long) g.m,
+             g.calls,
+             g.first_layer,
+             g.last_layer,
+             g.example_tensor.c_str(),
+             g.reason.c_str());
     }
 }
 
@@ -922,7 +1058,7 @@ static bool fpga_validate_tensors(
         *reason = "K is not divisible by 32";
         return false;
     }
-    if (k > g_vpu_max_cols) {
+    if (k > g_vpu_max_cols && !g_packed_q8_supported && !g_legacy_allow_k_tiling) {
         *reason = "K exceeds VPU local column capacity";
         return false;
     }
@@ -1645,6 +1781,7 @@ int fpga_init(void) {
     g_probe_packed_q8 = !env_flag_disabled("FPGA_PROBE_PACKED_Q8");
     g_abort_on_cpu_fallback = env_flag_enabled("FPGA_ABORT_ON_CPU_FALLBACK") ||
                               env_flag_enabled("FPGA_REQUIRE_FPGA_ONLY");
+    g_legacy_allow_k_tiling = env_flag_enabled("FPGA_LEGACY_ALLOW_K_TILING");
     g_offload_min_n = env_int_value("FPGA_MIN_N", FPGA_DEFAULT_MIN_N, 0, 1073741824);
     g_offload_max_n = env_int_value("FPGA_MAX_N", FPGA_DEFAULT_MAX_N, 0, 1073741824);
     g_offload_decode_max_n = env_int_value("FPGA_DECODE_MAX_N", FPGA_DEFAULT_DECODE_MAX_N, 0, 1073741824);
@@ -1727,11 +1864,12 @@ int fpga_init(void) {
     LOGI("No ZDMA programming is used: current bitstream exposes an AXI4-Full slave with local BRAM windows");
     LOGI("MMIO data write mode: %s (set FPGA_WRITE64=0 to force 32-bit writes)",
          g_use_write64 ? "64-bit" : "32-bit");
-    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d legacy_max_N=%d require_packed_q8=%d probe_packed_q8=%d",
+    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d legacy_max_N=%d legacy_allow_K_tiling=%d require_packed_q8=%d probe_packed_q8=%d",
          g_offload_min_n,
          g_offload_max_n,
          g_offload_decode_max_n,
          g_legacy_max_n,
+         g_legacy_allow_k_tiling,
          g_require_packed_q8,
          g_probe_packed_q8);
     LOGI("fallback policy: abort_on_cpu_fallback=%d (set FPGA_ABORT_ON_CPU_FALLBACK=1 to verify FPGA-only execution)",
