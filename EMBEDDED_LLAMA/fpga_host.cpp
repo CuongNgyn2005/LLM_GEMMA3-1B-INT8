@@ -20,7 +20,7 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v12-capability-timing"
+#define FPGA_HOST_TRACE_VERSION "zcu104-packed-q8-v14-performance-floor"
 
 #define FPGA_LOG_LEVEL_INFO   1
 #define FPGA_LOG_LEVEL_MATMUL 0
@@ -120,7 +120,8 @@ static constexpr int      VPU_POLL_LIMIT     = 1000000;
 static constexpr int      TRACE_DEFAULT_CALLS = 8;
 static constexpr int      TRACE_ROWS          = 4;
 static constexpr int      FPGA_DEFAULT_MIN_N  = 0;
-static constexpr int      FPGA_DEFAULT_MAX_N  = 65536;
+static constexpr int      FPGA_DEFAULT_MAX_K  = 4096;
+static constexpr int      FPGA_DEFAULT_MAX_N  = 4096;
 static constexpr int      FPGA_DEFAULT_DECODE_MAX_N = 0;
 static constexpr int      FPGA_DEFAULT_LEGACY_MAX_N = 4096;
 static constexpr double   FPGA_DEFAULT_SLOW_MS = 100.0;
@@ -164,14 +165,18 @@ static int                 g_cfg_col_beats = -1;
 static int                 g_cfg_mode      = -1;
 static int                 g_cfg_scale     = -1;
 static int                 g_offload_min_n = FPGA_DEFAULT_MIN_N;
+static int                 g_offload_max_k = FPGA_DEFAULT_MAX_K;
 static int                 g_offload_max_n = FPGA_DEFAULT_MAX_N;
 static int                 g_offload_decode_max_n = FPGA_DEFAULT_DECODE_MAX_N;
+static int                 g_decode_offload_enabled = 0;
 static int                 g_legacy_max_n = FPGA_DEFAULT_LEGACY_MAX_N;
 static int                 g_packed_q8_supported = 0;
 static int                 g_packed_q8_max_blocks = 1;
 static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
 static int                 g_require_packed_q8 = 0;
 static int                 g_probe_packed_q8 = 0;
+static int                 g_allow_legacy_mode = 0;
+static int                 g_allow_failed_self_test = 0;
 static int                 g_abort_on_cpu_fallback = 0;
 static int                 g_legacy_allow_k_tiling = 0;
 static int                 g_offload_all = 0;
@@ -1169,6 +1174,10 @@ static bool fpga_validate_tensors(
         *reason = "K exceeds VPU local column capacity";
         return false;
     }
+    if (g_offload_max_k > 0 && k > g_offload_max_k) {
+        *reason = "K above FPGA performance policy";
+        return false;
+    }
     if (n < g_offload_min_n) {
         *reason = "N below FPGA offload policy";
         return false;
@@ -1183,6 +1192,10 @@ static bool fpga_validate_tensors(
     }
     if (g_require_packed_q8 && !g_packed_q8_supported) {
         *reason = "packed q8 is required by FPGA offload policy";
+        return false;
+    }
+    if (m == 1 && !g_decode_offload_enabled) {
+        *reason = "decode FPGA offload disabled by performance policy";
         return false;
     }
     if (m == 1 && g_offload_decode_max_n > 0 && n > g_offload_decode_max_n) {
@@ -1925,13 +1938,18 @@ int fpga_init(void) {
     g_use_access128 = FPGA_HAVE_MMIO128 && env_flag_enabled("FPGA_ACCESS128");
     g_require_packed_q8 = env_flag_enabled("FPGA_REQUIRE_PACKED");
     g_probe_packed_q8 = env_flag_enabled("FPGA_PROBE_PACKED_Q8");
+    g_allow_legacy_mode = env_flag_enabled("FPGA_ALLOW_LEGACY");
+    g_allow_failed_self_test = env_flag_enabled("FPGA_ALLOW_FAILED_SELF_TEST");
     g_abort_on_cpu_fallback = env_flag_enabled("FPGA_ABORT_ON_CPU_FALLBACK") ||
                               env_flag_enabled("FPGA_REQUIRE_FPGA_ONLY");
     g_legacy_allow_k_tiling = env_flag_enabled("FPGA_LEGACY_ALLOW_K_TILING");
     g_offload_all = env_flag_enabled("FPGA_OFFLOAD_ALL");
     g_offload_min_n = env_int_value("FPGA_MIN_N", FPGA_DEFAULT_MIN_N, 0, 1073741824);
+    g_offload_max_k = env_int_value("FPGA_MAX_K", FPGA_DEFAULT_MAX_K, 0, 1073741824);
     g_offload_max_n = env_int_value("FPGA_MAX_N", FPGA_DEFAULT_MAX_N, 0, 1073741824);
     g_offload_decode_max_n = env_int_value("FPGA_DECODE_MAX_N", FPGA_DEFAULT_DECODE_MAX_N, 0, 1073741824);
+    g_decode_offload_enabled = env_flag_enabled("FPGA_DECODE_OFFLOAD") ||
+                               getenv("FPGA_DECODE_MAX_N") != nullptr;
     g_legacy_max_n = env_int_value("FPGA_LEGACY_MAX_N", FPGA_DEFAULT_LEGACY_MAX_N, 0, 1073741824);
     g_profile_slow_ms = env_double_value("FPGA_SLOW_MS", FPGA_DEFAULT_SLOW_MS, 0.0, 1000000.0);
     g_profile_every = env_int_value("FPGA_PROFILE_EVERY", FPGA_DEFAULT_PROFILE_EVERY, 0, 1000000);
@@ -1942,8 +1960,10 @@ int fpga_init(void) {
     g_log_flush_every = env_int_value("FPGA_LOG_FLUSH_EVERY", 16, 1, 1000000);
     if (g_offload_all) {
         g_offload_min_n = 0;
+        g_offload_max_k = 0;
         g_offload_max_n = 0;
         g_offload_decode_max_n = 0;
+        g_decode_offload_enabled = 1;
         g_legacy_max_n = 0;
         g_legacy_allow_k_tiling = 1;
     }
@@ -2003,10 +2023,6 @@ int fpga_init(void) {
              g_packed_q8_max_blocks,
              g_packed_q8_result_words);
     }
-    if (!getenv("FPGA_DECODE_MAX_N") && g_packed_q8_supported) {
-        g_offload_decode_max_n = 0;
-    }
-
     LOGI("VPU mapped: base=0x%llx range=0x%llx mmap_size=0x%zx",
          (unsigned long long) VPU_BASE_PHYS,
          (unsigned long long) VPU_RANGE_PHYS,
@@ -2022,6 +2038,11 @@ int fpga_init(void) {
          g_packed_q8_supported,
          g_packed_q8_max_blocks,
          g_packed_q8_result_words);
+    if (g_packed_q8_supported && g_vpu_max_beats > VPU_PACKED_Q8_MAX_BLOCKS * VPU_BLOCK_BEATS) {
+        LOGE("VPU exposes %d col beats although packed mode uses at most %d; check the block-design MAX_COL_BEATS override because the oversized weight BRAM increases resource use and can hurt timing",
+             g_vpu_max_beats,
+             VPU_PACKED_Q8_MAX_BLOCKS * VPU_BLOCK_BEATS);
+    }
     if (!caps_valid) {
         LOGE("REG_CAPS does not identify the packed RTL (raw=0x%08x). Legacy mode remains active unless FPGA_PROBE_PACKED_Q8=1 or FPGA_FORCE_PACKED_Q8=1 is explicitly set",
              caps);
@@ -2029,15 +2050,27 @@ int fpga_init(void) {
     LOGI("No ZDMA programming is used: current bitstream exposes an AXI4-Full slave with local BRAM windows");
     LOGI("MMIO data access mode: %s (FPGA_ACCESS128=1 is experimental; FPGA_WRITE64=0 forces 32-bit fallback)",
          g_use_access128 ? "128-bit" : (g_use_write64 ? "64-bit" : "32-bit"));
-    LOGI("offload policy: min_N=%d max_N=%d decode_max_N=%d legacy_max_N=%d legacy_allow_K_tiling=%d require_packed_q8=%d probe_packed_q8=%d offload_all=%d",
+    LOGI("offload policy: min_N=%d max_K=%d max_N=%d decode_enabled=%d decode_max_N=%d legacy_max_N=%d legacy_allow_K_tiling=%d require_packed_q8=%d probe_packed_q8=%d allow_legacy=%d allow_failed_self_test=%d offload_all=%d",
          g_offload_min_n,
+         g_offload_max_k,
          g_offload_max_n,
+         g_decode_offload_enabled,
          g_offload_decode_max_n,
          g_legacy_max_n,
          g_legacy_allow_k_tiling,
          g_require_packed_q8,
          g_probe_packed_q8,
+         g_allow_legacy_mode,
+         g_allow_failed_self_test,
          g_offload_all);
+    if (!g_offload_all && !g_decode_offload_enabled) {
+        LOGI("performance floor active: M=1 decode matmuls stay on CPU because the v12 packed run spent about 9.4 seconds/token in FPGA MMIO; set FPGA_DECODE_OFFLOAD=1 for controlled decode tests");
+    }
+    if (!g_offload_all && (g_offload_max_k > 0 || g_offload_max_n > 0)) {
+        LOGI("wide-matrix guard active: default max_K=%d max_N=%d keeps FFN gate/up/down on CPU; set FPGA_MAX_K=0 FPGA_MAX_N=0 to remove the guard",
+             g_offload_max_k,
+             g_offload_max_n);
+    }
     if (g_offload_all) {
         LOGE("FPGA_OFFLOAD_ALL=1 accepts every compatible Q8_0 x F32 matmul, including large output/token-head matrices; this is a coverage/debug mode and can reduce tokens/s with the current CPU-driven MMIO architecture");
     }
@@ -2071,9 +2104,8 @@ int fpga_init(void) {
     }
 
     const bool require_self_test = env_flag_enabled("FPGA_SELF_TEST");
-    bool self_test_ok = true;
-    if (g_use_access128 || g_use_write64 || require_self_test) {
-        self_test_ok = fpga_smoke_test();
+    bool self_test_ok = fpga_smoke_test();
+    {
         if (!self_test_ok && g_use_access128) {
             LOGE("128-bit MMIO self-test failed; retrying with %s data accesses",
                  g_use_write64 ? "64-bit" : "32-bit");
@@ -2094,8 +2126,8 @@ int fpga_init(void) {
                 LOGI("MMIO data write mode changed to 32-bit after self-test fallback");
             }
         }
-        if (!self_test_ok && require_self_test) {
-            LOGE("FPGA_SELF_TEST failed; refusing to enable FPGA acceleration for this process");
+        if (!self_test_ok && (require_self_test || !g_allow_failed_self_test)) {
+            LOGE("basic FPGA self-test failed; refusing acceleration to prevent incorrect output and the measured legacy slowdown. Set FPGA_ALLOW_FAILED_SELF_TEST=1 only for RTL debugging");
             munmap(mapped_vpu_ptr(), VPU_MMAP_SIZE);
             g_vpu = nullptr;
             close(g_mem_fd);
@@ -2103,8 +2135,17 @@ int fpga_init(void) {
             return -1;
         }
         if (!self_test_ok) {
-            LOGE("FPGA self-test failed; continuing because FPGA_SELF_TEST is not set");
+            LOGE("basic FPGA self-test failed but FPGA_ALLOW_FAILED_SELF_TEST=1; continuing in unsafe debug mode");
         }
+    }
+
+    if (!g_packed_q8_supported && !g_allow_legacy_mode) {
+        LOGE("packed_q8 capability is unavailable; refusing legacy mode because board measurements show it is slower than CPU. Set FPGA_ALLOW_LEGACY=1 only for controlled comparison");
+        munmap(mapped_vpu_ptr(), VPU_MMAP_SIZE);
+        g_vpu = nullptr;
+        close(g_mem_fd);
+        g_mem_fd = -1;
+        return -1;
     }
 
     if (g_packed_q8_supported) {
@@ -2128,8 +2169,8 @@ int fpga_init(void) {
             LOGI("legacy FPGA policy active: legacy_max_N=%d (set FPGA_LEGACY_MAX_N=0 to force wide legacy offload)",
                  g_legacy_max_n);
             invalidate_vpu_config();
-            if (g_require_packed_q8) {
-                LOGE("FPGA_REQUIRE_PACKED=1 and packed_q8 self-test failed; refusing to enable FPGA acceleration for this process");
+            if (g_require_packed_q8 || !g_allow_legacy_mode) {
+                LOGE("packed_q8 self-test failed; refusing slow legacy mode by default. Set FPGA_ALLOW_LEGACY=1 only for controlled comparison");
                 munmap(mapped_vpu_ptr(), VPU_MMAP_SIZE);
                 g_vpu = nullptr;
                 close(g_mem_fd);
