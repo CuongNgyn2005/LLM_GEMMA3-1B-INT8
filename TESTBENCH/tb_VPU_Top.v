@@ -6,7 +6,7 @@ module tb_VPU_Top;
     localparam integer DATA_WIDTH    = 128;
     localparam integer ADDR_WIDTH    = 40;
     localparam integer NUM_LANES     = 16;
-    localparam integer MAX_ROWS      = 8;
+    localparam integer MAX_ROWS      = 256;
     localparam integer MAX_COL_BEATS = 8;
     localparam integer MAX_TEST_COLS = NUM_LANES * MAX_COL_BEATS;
 
@@ -16,6 +16,8 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] REG_COLS      = 40'h0000_0030;
     localparam [ADDR_WIDTH-1:0] REG_COL_BEATS = 40'h0000_0040;
     localparam [ADDR_WIDTH-1:0] REG_SCALE     = 40'h0000_0050;
+    localparam [ADDR_WIDTH-1:0] REG_MODE      = 40'h0000_0060;
+    localparam [ADDR_WIDTH-1:0] REG_CAPS      = 40'h0000_0090;
     localparam [ADDR_WIDTH-1:0] ACT_BASE      = 40'h0001_0000;
     localparam [ADDR_WIDTH-1:0] WEIGHT_BASE   = 40'h0010_0000;
     localparam [ADDR_WIDTH-1:0] RESULT_BASE   = 40'h0020_0000;
@@ -203,6 +205,22 @@ module tb_VPU_Top;
         end
     endfunction
 
+    function signed [31:0] golden_q8_block;
+        input integer row;
+        input integer block_id;
+        integer lane;
+        integer idx;
+        reg signed [31:0] acc;
+        begin
+            acc = 32'sd0;
+            for (lane = 0; lane < 32; lane = lane + 1) begin
+                idx = block_id * 32 + lane;
+                acc = acc + activation[idx] * weight[row*MAX_TEST_COLS + idx];
+            end
+            golden_q8_block = acc;
+        end
+    endfunction
+
     task fail;
         input [255:0] message;
         begin
@@ -230,27 +248,39 @@ module tb_VPU_Top;
             awregion <= 4'd0;
             awuser   <= 1'b0;
             awvalid  <= 1'b1;
+            wvalid   <= 1'b0;
+            bready   <= 1'b1;
+
+            timeout = 0;
+            while (!awready) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("AXI write address timeout");
+                    timeout = 0;
+                end
+            end
+            @(posedge clk);
+            awvalid <= 1'b0;
+
+            @(posedge clk);
             wdata    <= data;
             wstrb    <= strb;
             wlast    <= 1'b1;
             wuser    <= 1'b0;
             wvalid   <= 1'b1;
-            bready   <= 1'b1;
 
             timeout = 0;
-            while (awvalid || wvalid) begin
+            while (!wready) begin
                 @(posedge clk);
                 timeout = timeout + 1;
                 if (timeout > 100) begin
-                    fail("AXI write handshake timeout");
-                    awvalid <= 1'b0;
-                    wvalid  <= 1'b0;
+                    fail("AXI write data timeout");
+                    timeout = 0;
                 end
-                if (awvalid && awready)
-                    awvalid <= 1'b0;
-                if (wvalid && wready)
-                    wvalid <= 1'b0;
             end
+            @(posedge clk);
+            wvalid <= 1'b0;
 
             timeout = 0;
             while (!bvalid) begin
@@ -266,7 +296,9 @@ module tb_VPU_Top;
                 fail("AXI write response was not OKAY");
 
             @(posedge clk);
-            bready <= 1'b0;
+            while (bvalid)
+                @(posedge clk);
+            bready <= 1'b1;
             wlast  <= 1'b0;
             wstrb  <= {(DATA_WIDTH/8){1'b0}};
             wdata  <= {DATA_WIDTH{1'b0}};
@@ -299,6 +331,14 @@ module tb_VPU_Top;
                 timeout = timeout + 1;
                 if (timeout > 100) begin
                     fail("AXI read address timeout");
+                    $display("[TB][DBG] arready=%b read_active=%b rd_pending=%b rvalid=%b bvalid=%b wr_active=%b map_rd_valid=%b",
+                             arready,
+                             dut.u_my_ip.read_active_r,
+                             dut.u_my_ip.rd_pending_r,
+                             dut.u_my_ip.rvalid_r,
+                             dut.u_my_ip.bvalid_r,
+                             dut.u_my_ip.wr_active_r,
+                             dut.u_my_ip.map_rd_valid);
                     arvalid <= 1'b0;
                 end
                 if (arvalid && arready)
@@ -311,6 +351,13 @@ module tb_VPU_Top;
                 timeout = timeout + 1;
                 if (timeout > 200) begin
                     fail("AXI read data timeout");
+                    $display("[TB][DBG] read_active=%b rd_pending=%b rvalid=%b map_rd_en=%b map_rd_valid=%b map_rd_error=%b",
+                             dut.u_my_ip.read_active_r,
+                             dut.u_my_ip.rd_pending_r,
+                             dut.u_my_ip.rvalid_r,
+                             dut.u_my_ip.map_rd_en_r,
+                             dut.u_my_ip.map_rd_valid,
+                             dut.u_my_ip.map_rd_error);
                     timeout = 0;
                 end
             end
@@ -376,6 +423,7 @@ module tb_VPU_Top;
             axi_write(REG_COLS, word32(cols), 16'h000f);
             axi_write(REG_COL_BEATS, word32(explicit_col_beats), 16'h000f);
             axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
+            axi_write(REG_MODE, word32(32'h0000_0000), 16'h000f);
 
             for (beat = 0; beat < current_col_beats; beat = beat + 1)
                 axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
@@ -423,11 +471,97 @@ module tb_VPU_Top;
         end
     endtask
 
+    task run_group_case;
+        input integer case_id;
+        input integer rows;
+        input integer group_blocks;
+        integer beat;
+        integer row;
+        integer block_id;
+        integer linear;
+        integer word_idx;
+        integer lane_idx;
+        integer timeout;
+        integer start_cycle;
+        integer done_cycle;
+        reg [DATA_WIDTH-1:0] rd_word;
+        reg signed [31:0] got;
+        reg signed [31:0] expected;
+        begin
+            init_case_data(case_id, rows, group_blocks * 32);
+
+            $display("[TB] GROUP CASE %0d: rows=%0d q8_blocks=%0d load_beats=%0d",
+                     case_id, rows, group_blocks, current_col_beats);
+
+            axi_read(REG_CAPS, rd_word);
+            if (rd_word[0] !== 1'b1)
+                fail("Packed q8 capability bit was not set");
+
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_ROWS, word32(rows), 16'h000f);
+            axi_write(REG_COLS, word32(group_blocks * 32), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(group_blocks * 2), 16'h000f);
+            axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
+            axi_write(REG_MODE, word32(32'h0000_0001), 16'h000f);
+
+            for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+
+            for (row = 0; row < rows; row = row + 1) begin
+                for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * MAX_COL_BEATS) + beat) * 16,
+                              pack_weight(row, beat), 16'hffff);
+            end
+
+            start_cycle = cycle_count;
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+
+            timeout = 0;
+            rd_word = {DATA_WIDTH{1'b0}};
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word);
+                timeout = timeout + 1;
+                if (rd_word[2]) begin
+                    fail("Packed q8 core reported configuration error");
+                    timeout = 1000;
+                    rd_word[0] = 1'b1;
+                end
+                if (timeout > 1000) begin
+                    fail("Packed q8 core did not finish");
+                    rd_word[0] = 1'b1;
+                end
+            end
+            done_cycle = cycle_count;
+
+            for (row = 0; row < rows; row = row + 1) begin
+                for (block_id = 0; block_id < group_blocks; block_id = block_id + 1) begin
+                    linear = row * group_blocks + block_id;
+                    word_idx = linear / 4;
+                    lane_idx = linear % 4;
+                    axi_read(RESULT_BASE + word_idx * 16, rd_word);
+                    got = rd_word[32*lane_idx +: 32];
+                    expected = golden_q8_block(row, block_id);
+                    if (got !== expected) begin
+                        $display("[TB][FAIL] packed row=%0d block=%0d got=%0d expected=%0d",
+                                 row, block_id, got, expected);
+                        fail_count = fail_count + 1;
+                    end else begin
+                        $display("[TB][PASS] packed row=%0d block=%0d result=%0d",
+                                 row, block_id, got);
+                        pass_count = pass_count + 1;
+                    end
+                end
+            end
+
+            $display("[TB] GROUP CASE %0d compute+poll cycles=%0d", case_id, done_cycle - start_cycle);
+        end
+    endtask
+
     initial begin
         resetn = 1'b0;
         awid = 0; awaddr = 0; awlen = 0; awsize = 0; awburst = 0; awlock = 0;
         awcache = 0; awprot = 0; awqos = 0; awregion = 0; awuser = 0; awvalid = 0;
-        wdata = 0; wstrb = 0; wlast = 0; wuser = 0; wvalid = 0; bready = 0;
+        wdata = 0; wstrb = 0; wlast = 0; wuser = 0; wvalid = 0; bready = 1;
         arid = 0; araddr = 0; arlen = 0; arsize = 0; arburst = 0; arlock = 0;
         arcache = 0; arprot = 0; arqos = 0; arregion = 0; aruser = 0; arvalid = 0;
         rready = 0;
@@ -441,6 +575,8 @@ module tb_VPU_Top;
 
         run_case(1, 3, 64, 4);
         run_case(2, 2, 17, 0);
+        run_case(3, 129, 17, 0);
+        run_group_case(4, 5, 3);
 
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
         if (fail_count == 0) begin
