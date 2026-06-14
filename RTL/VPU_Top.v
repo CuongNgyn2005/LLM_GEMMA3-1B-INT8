@@ -29,7 +29,7 @@ module VPU_Top #(
     parameter integer SCALE_FRAC_BITS        = 15,
     parameter integer RESULT_FIFO_DEPTH      = 8,
     parameter integer MAX_ROWS               = 256,
-    parameter integer MAX_COL_BEATS          = 256
+    parameter integer MAX_COL_BEATS          = 32
 ) (
     input  wire                                  s00_axi_aclk,
     input  wire                                  s00_axi_aresetn,

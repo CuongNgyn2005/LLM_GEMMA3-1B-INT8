@@ -7,8 +7,9 @@
  * internal activation/weight valid signals are asserted.  The datapath is
  * fully pipelined:
  *
- *   Stage 0          : NUM_LANES signed INT8 x INT8 mult_gen_0 instances
- *   Stage 1          : multiplier-output capture after IP latency
+ *   DSP pipeline     : NUM_LANES signed INT8 x INT8 mult_gen_0 instances
+ *                      configured for three pipeline stages
+ *   Product capture  : multiplier-output capture after IP latency
  *   Stage 2..log2(N) : registered binary adder tree
  *   Commit stage     : row accumulator, fixed-point dequant, result FIFO
  *
@@ -20,8 +21,8 @@
  * - NUM_LANES must be a power of two.  16/32/64/128 are the intended values.
  * - scale_factor is treated as a positive fixed-point scale with
  *   SCALE_FRAC_BITS fractional bits.  FP16 1.0 (16'h3c00) is bypassed for the
- *   existing raw-accumulator test flow; replace this with a real FP16 unit if
- *   you want to match the paper's FP16 VPU exactly.
+ *   existing raw-accumulator test flow.  FP16 is only a possible future
+ *   numeric-format option; this project intentionally implements an INT8 VPU.
  * - RESULT_FIFO_DEPTH must be a power of two.
  * - Reset is active-low and synchronous.
  *-----------------------------------------------------------------------------
@@ -87,7 +88,9 @@ module PMAU_Full #(
     localparam FIFO_COUNT_WIDTH  = FIFO_PTR_WIDTH + 1;
     localparam SCALE_EXT_WIDTH   = SCALE_WIDTH + 1;
     localparam DEQUANT_WIDTH     = ACC_WIDTH + SCALE_EXT_WIDTH;
-    localparam MULT_IP_LATENCY   = 2;
+    // Must match mult_gen_0.xci C_LATENCY/PipeStages.  The current IP is
+    // intentionally configured for three stages to meet the timing target.
+    localparam MULT_IP_LATENCY   = 3;
     localparam [FIFO_COUNT_WIDTH-1:0] FIFO_DEPTH_COUNT = RESULT_FIFO_DEPTH;
     localparam [SCALE_WIDTH-1:0] FP16_ONE = 16'h3c00;
 

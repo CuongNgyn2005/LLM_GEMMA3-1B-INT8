@@ -95,7 +95,7 @@ Default parameters:
 | `NUM_LANES` | 16 |
 | `AXI_DATA_WIDTH` | 128 |
 | `MAX_ROWS` | 256 |
-| `MAX_COL_BEATS` | 256 |
+| `MAX_COL_BEATS` | 32 (16 packed q8_0 blocks per launch) |
 
 Local tile capacity:
 

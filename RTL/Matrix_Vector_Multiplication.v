@@ -7,7 +7,7 @@
  * The AXI wrapper writes tensor data into these memory windows, configures the
  * active matrix size, then pulses ctrl_start.  The compute path feeds one
  * NUM_LANES-wide INT8 activation/weight beat per clock into PMAU_Full
- * after the first BRAM read latency cycle.  Results are stored one row per
+ * after the pipelined BRAM read latency.  Results are stored one row per
  * 128-bit result word, using the low ACC_WIDTH bits.
  *
  * Addressing contract used by the AXI wrapper:
@@ -39,7 +39,7 @@ module Matrix_Vector_Multiplication #(
     parameter RESULT_FIFO_DEPTH  = 8,
     parameter AXI_DATA_WIDTH     = 128,
     parameter MAX_ROWS           = 256,
-    parameter MAX_COL_BEATS      = 256
+    parameter MAX_COL_BEATS      = 32
 ) (
     input  wire                              CLK,
     input  wire                              RST,
@@ -87,6 +87,9 @@ module Matrix_Vector_Multiplication #(
     localparam AXI_BYTE_COUNT       = AXI_DATA_WIDTH / 8;
     localparam ACT_BYTE_COUNT       = ACT_BEAT_WIDTH / 8;
     localparam WEIGHT_BYTE_COUNT    = WEIGHT_BEAT_WIDTH / 8;
+    localparam WEIGHT_BANKS         = 4;
+    localparam WEIGHT_BANK_WIDTH    = WEIGHT_BEAT_WIDTH / WEIGHT_BANKS;
+    localparam WEIGHT_BANK_BYTES    = WEIGHT_BANK_WIDTH / 8;
     localparam RESULT_BYTE_COUNT    = ACC_WIDTH / 8;
     localparam ACT_ADDR_WIDTH       = clog2(MAX_COL_BEATS);
     localparam RESULT_PACK_LANES    = AXI_DATA_WIDTH / ACC_WIDTH;
@@ -118,6 +121,7 @@ module Matrix_Vector_Multiplication #(
     localparam [2:0] S_WAIT_RESULT  = 3'd2;
     localparam [2:0] S_DONE         = 3'd3;
     localparam [2:0] S_ERROR        = 3'd4;
+    localparam [2:0] S_VALIDATE     = 3'd5;
 
     wire [ACT_BEAT_WIDTH-1:0]   act_compute_data;
     wire [WEIGHT_BEAT_WIDTH-1:0] weight_compute_data;
@@ -125,11 +129,29 @@ module Matrix_Vector_Multiplication #(
     reg [WEIGHT_BEAT_WIDTH-1:0] weight_pmau_data;
     wire [AXI_DATA_WIDTH-1:0]   result_cpu_rd_data;
     reg [ACT_ADDR_WIDTH-1:0]    act_compute_addr;
-    reg [WEIGHT_ADDR_WIDTH-1:0] weight_compute_addr;
     reg                         compute_rd_en;
+    (* keep = "true", dont_touch = "true" *)
+    reg [WEIGHT_ADDR_WIDTH-1:0] weight_compute_addr_bank [0:WEIGHT_BANKS-1];
+    (* keep = "true", dont_touch = "true" *)
+    reg                         weight_compute_en_bank [0:WEIGHT_BANKS-1];
     reg                         mm_rd_pending_r;
     reg [1:0]                   mm_rd_region_d_r;
     reg                         mm_rd_error_d_r;
+    reg                         rd_pipe_en_r;
+    reg [1:0]                   rd_pipe_region_r;
+    reg [31:0]                  rd_pipe_index_r;
+
+    // Local write pipeline.  AXI4_Mapping already registers its request, but
+    // that register can be placed far from the banked weight BRAMs.  Capturing
+    // the complete request again inside the GEMV hierarchy keeps address, data,
+    // and byte enables aligned while cutting the long inter-module route.
+    reg                         wr_pipe_en_r;
+    reg [1:0]                   wr_pipe_region_r;
+    reg [31:0]                  wr_pipe_index_r;
+    (* keep = "true", dont_touch = "true" *)
+    reg [WEIGHT_ADDR_WIDTH-1:0] weight_wr_addr_bank [0:WEIGHT_BANKS-1];
+    reg [AXI_DATA_WIDTH-1:0]    wr_pipe_data_r;
+    reg [(AXI_DATA_WIDTH/8)-1:0] wr_pipe_strb_r;
 
     reg [2:0]  state_r;
     reg        done_r;
@@ -140,17 +162,22 @@ module Matrix_Vector_Multiplication #(
     reg [15:0] read_beat_idx_r;
     reg [15:0] block_idx_r;
     reg [15:0] group_blocks_r;
-    reg [15:0] block_base_beat_r;
     reg [31:0] result_row_base_r;
     reg [WEIGHT_ADDR_WIDTH-1:0] weight_row_base_r;
     reg group_mode_r;
 
     reg feed_valid_r;
     reg feed_last_r;
+    reg feed_group_last_r;
     reg read_valid_d_r;
     reg read_last_d_r;
+    reg read_group_last_d_r;
     reg read_valid_q_r;
     reg read_last_q_r;
+    reg read_group_last_q_r;
+    reg read_valid_x_r;
+    reg read_last_x_r;
+    reg read_group_last_x_r;
 
     wire [15:0] auto_col_beats =
         (cfg_cols + NUM_LANES_16 - 16'd1) >> LANE_SHIFT;
@@ -159,41 +186,46 @@ module Matrix_Vector_Multiplication #(
     wire        requested_group_mode = compute_mode[0];
     wire [15:0] requested_group_blocks =
         requested_group_mode ? (requested_col_beats >> 1) : 16'd1;
-    wire [31:0] requested_result_values =
-        {16'd0, cfg_rows} * {16'd0, requested_group_blocks};
-    wire        requested_group_invalid =
-        requested_group_mode &&
-        ((requested_col_beats[0] != 1'b0) ||
-         (requested_group_blocks == 16'd0) ||
-         (requested_result_values > MAX_RESULT_VALUES_32));
-
-    wire config_invalid =
-        (cfg_rows == 16'd0) ||
-        (requested_col_beats == 16'd0) ||
-        (cfg_rows > MAX_ROWS_16) ||
-        (requested_col_beats > MAX_COL_BEATS_16) ||
-        requested_group_invalid;
+    wire active_group_invalid =
+        group_mode_r &&
+        ((active_col_beats_r[0] != 1'b0) ||
+         (group_blocks_r == 16'd0) ||
+         (group_blocks_r > MAX_GROUP_Q8_BLOCKS));
+    wire active_config_invalid =
+        (active_rows_r == 16'd0) ||
+        (active_col_beats_r == 16'd0) ||
+        (active_rows_r > MAX_ROWS_16) ||
+        (active_col_beats_r > MAX_COL_BEATS_16) ||
+        active_group_invalid;
 
     wire pmau_activation_ready;
     wire pmau_weight_ready;
     wire pmau_result_valid;
     wire [ACC_WIDTH-1:0] pmau_result_data;
     wire pmau_result_last;
-    wire pmau_result_ready = (state_r == S_WAIT_RESULT);
+    wire pmau_result_ready =
+        (state_r == S_RUN) || (state_r == S_WAIT_RESULT);
     wire pmau_input_fire =
         feed_valid_r && pmau_activation_ready && pmau_weight_ready;
     wire pmau_result_fire = pmau_result_valid && pmau_result_ready;
 
     wire feed_slot_open = (!feed_valid_r) || pmau_input_fire;
-    wire [15:0] run_beats_this_block =
-        group_mode_r ? Q8_BLOCK_BEATS_16 : active_col_beats_r;
-    wire [15:0] read_abs_beat =
-        group_mode_r ? (block_base_beat_r + read_beat_idx_r) : read_beat_idx_r;
+    wire consume_read_x = read_valid_x_r && feed_slot_open;
+    wire read_x_slot_open = (!read_valid_x_r) || consume_read_x;
+    wire shift_q_to_x = read_valid_q_r && read_x_slot_open;
+    wire read_q_slot_open = (!read_valid_q_r) || shift_q_to_x;
+    wire shift_d_to_q = read_valid_d_r && read_q_slot_open;
+    wire read_d_slot_open = (!read_valid_d_r) || shift_d_to_q;
+    wire [15:0] read_abs_beat = read_beat_idx_r;
     wire can_issue_read =
         (state_r == S_RUN) &&
-        feed_slot_open &&
-        (read_beat_idx_r < run_beats_this_block);
-    wire issue_read_last = (read_beat_idx_r == (run_beats_this_block - 16'd1));
+        read_d_slot_open &&
+        (read_beat_idx_r < active_col_beats_r);
+    wire issue_read_last =
+        group_mode_r ? (read_beat_idx_r[0] == 1'b1) :
+                       (read_beat_idx_r == (active_col_beats_r - 16'd1));
+    wire issue_read_group_last =
+        (read_beat_idx_r == (active_col_beats_r - 16'd1));
 
     wire [31:0] result_value_index =
         group_mode_r ? (result_row_base_r + {16'd0, block_idx_r}) :
@@ -242,26 +274,64 @@ module Matrix_Vector_Multiplication #(
         .result_last       (pmau_result_last)
     );
 
-    wire mm_rd_accept = mm_rd_en && !mm_wr_en;
+    integer wr_bank_i;
+    integer fsm_bank_i;
+    always @(posedge CLK) begin
+        if (!RST) begin
+            wr_pipe_en_r     <= 1'b0;
+            wr_pipe_region_r <= REGION_ACT;
+            wr_pipe_index_r  <= 32'd0;
+            wr_pipe_data_r   <= {AXI_DATA_WIDTH{1'b0}};
+            wr_pipe_strb_r   <= {(AXI_DATA_WIDTH/8){1'b0}};
+            for (wr_bank_i = 0; wr_bank_i < WEIGHT_BANKS; wr_bank_i = wr_bank_i + 1)
+                weight_wr_addr_bank[wr_bank_i] <= {WEIGHT_ADDR_WIDTH{1'b0}};
+        end else begin
+            wr_pipe_en_r <= mm_wr_en;
+            if (mm_wr_en) begin
+                wr_pipe_region_r <= mm_wr_region;
+                wr_pipe_index_r  <= mm_wr_index;
+                wr_pipe_data_r   <= mm_wr_data;
+                wr_pipe_strb_r   <= mm_wr_strb;
+                for (wr_bank_i = 0; wr_bank_i < WEIGHT_BANKS; wr_bank_i = wr_bank_i + 1)
+                    weight_wr_addr_bank[wr_bank_i] <= mm_wr_index[WEIGHT_ADDR_WIDTH-1:0];
+            end
+        end
+    end
+
+    always @(posedge CLK) begin
+        if (!RST) begin
+            rd_pipe_en_r     <= 1'b0;
+            rd_pipe_region_r <= REGION_RESULT;
+            rd_pipe_index_r  <= 32'd0;
+        end else begin
+            rd_pipe_en_r <= mm_rd_en;
+            if (mm_rd_en) begin
+                rd_pipe_region_r <= mm_rd_region;
+                rd_pipe_index_r  <= mm_rd_index;
+            end
+        end
+    end
+
+    wire mm_rd_accept = rd_pipe_en_r;
     wire act_wr_hit =
-        mm_wr_en && (mm_wr_region == REGION_ACT);
+        wr_pipe_en_r && (wr_pipe_region_r == REGION_ACT);
     wire weight_wr_hit =
-        mm_wr_en && (mm_wr_region == REGION_WEIGHT);
+        wr_pipe_en_r && (wr_pipe_region_r == REGION_WEIGHT);
     wire act_rd_hit = 1'b0;
     wire weight_rd_hit = 1'b0;
     wire result_rd_hit =
-        mm_rd_accept && (mm_rd_region == REGION_RESULT) &&
-        (mm_rd_index < RESULT_WORD_DEPTH_32);
+        mm_rd_accept && (rd_pipe_region_r == REGION_RESULT) &&
+        (rd_pipe_index_r < RESULT_WORD_DEPTH_32);
     wire rd_region_known =
-        (mm_rd_region == REGION_ACT) ||
-        (mm_rd_region == REGION_WEIGHT) ||
-        (mm_rd_region == REGION_RESULT);
+        (rd_pipe_region_r == REGION_ACT) ||
+        (rd_pipe_region_r == REGION_WEIGHT) ||
+        (rd_pipe_region_r == REGION_RESULT);
     wire rd_index_ok = result_rd_hit;
 
     wire [ACT_BYTE_COUNT-1:0]    act_wr_strobe =
-        mm_wr_strb[ACT_BYTE_COUNT-1:0];
+        wr_pipe_strb_r[ACT_BYTE_COUNT-1:0];
     wire [WEIGHT_BYTE_COUNT-1:0] weight_wr_strobe =
-        mm_wr_strb[WEIGHT_BYTE_COUNT-1:0];
+        wr_pipe_strb_r[WEIGHT_BYTE_COUNT-1:0];
     reg [AXI_DATA_WIDTH-1:0] result_wr_data;
     reg [(AXI_DATA_WIDTH/8)-1:0] result_wr_strobe;
     integer result_lane_i;
@@ -281,13 +351,14 @@ module Matrix_Vector_Multiplication #(
 
     Dual_Port_BRAM #(
         .AWIDTH (ACT_ADDR_WIDTH),
-        .DWIDTH (ACT_BEAT_WIDTH)
+        .DWIDTH (ACT_BEAT_WIDTH),
+        .OUTPUT_REG (1)
     ) u_act_bram (
         .clka  (CLK),
         .ena   (act_wr_hit),
         .wea   (act_wr_strobe),
-        .addra (mm_wr_index[ACT_ADDR_WIDTH-1:0]),
-        .dina  (mm_wr_data[ACT_BEAT_WIDTH-1:0]),
+        .addra (wr_pipe_index_r[ACT_ADDR_WIDTH-1:0]),
+        .dina  (wr_pipe_data_r[ACT_BEAT_WIDTH-1:0]),
         .douta (act_cpu_rd_unused),
         .clkb  (CLK),
         .enb   (compute_rd_en),
@@ -297,23 +368,32 @@ module Matrix_Vector_Multiplication #(
         .doutb (act_compute_data)
     );
 
-    Dual_Port_BRAM #(
-        .AWIDTH (WEIGHT_ADDR_WIDTH),
-        .DWIDTH (WEIGHT_BEAT_WIDTH)
-    ) u_weight_bram (
-        .clka  (CLK),
-        .ena   (weight_wr_hit),
-        .wea   (weight_wr_strobe),
-        .addra (mm_wr_index[WEIGHT_ADDR_WIDTH-1:0]),
-        .dina  (mm_wr_data[WEIGHT_BEAT_WIDTH-1:0]),
-        .douta (weight_cpu_rd_unused),
-        .clkb  (CLK),
-        .enb   (compute_rd_en),
-        .web   ({WEIGHT_BYTE_COUNT{1'b0}}),
-        .addrb (weight_compute_addr),
-        .dinb  ({WEIGHT_BEAT_WIDTH{1'b0}}),
-        .doutb (weight_compute_data)
-    );
+    // Four 32-bit banks keep each BRAM address/enable route local while the
+    // concatenated interface remains one 128-bit weight beat.
+    genvar weight_bank_g;
+    generate
+        for (weight_bank_g = 0; weight_bank_g < WEIGHT_BANKS;
+             weight_bank_g = weight_bank_g + 1) begin : GEN_WEIGHT_BANK
+            Dual_Port_BRAM #(
+                .AWIDTH (WEIGHT_ADDR_WIDTH),
+                .DWIDTH (WEIGHT_BANK_WIDTH),
+                .OUTPUT_REG (1)
+            ) u_weight_bram_bank (
+                .clka  (CLK),
+                .ena   (weight_wr_hit),
+                .wea   (weight_wr_strobe[WEIGHT_BANK_BYTES*weight_bank_g +: WEIGHT_BANK_BYTES]),
+                .addra (weight_wr_addr_bank[weight_bank_g]),
+                .dina  (wr_pipe_data_r[WEIGHT_BANK_WIDTH*weight_bank_g +: WEIGHT_BANK_WIDTH]),
+                .douta (weight_cpu_rd_unused[WEIGHT_BANK_WIDTH*weight_bank_g +: WEIGHT_BANK_WIDTH]),
+                .clkb  (CLK),
+                .enb   (weight_compute_en_bank[weight_bank_g]),
+                .web   ({WEIGHT_BANK_BYTES{1'b0}}),
+                .addrb (weight_compute_addr_bank[weight_bank_g]),
+                .dinb  ({WEIGHT_BANK_WIDTH{1'b0}}),
+                .doutb (weight_compute_data[WEIGHT_BANK_WIDTH*weight_bank_g +: WEIGHT_BANK_WIDTH])
+            );
+        end
+    endgenerate
 
     Dual_Port_BRAM #(
         .AWIDTH (RESULT_ADDR_WIDTH),
@@ -322,7 +402,7 @@ module Matrix_Vector_Multiplication #(
         .clka  (CLK),
         .ena   (result_rd_hit),
         .wea   ({(AXI_DATA_WIDTH/8){1'b0}}),
-        .addra (mm_rd_index[RESULT_ADDR_WIDTH-1:0]),
+        .addra (rd_pipe_index_r[RESULT_ADDR_WIDTH-1:0]),
         .dina  ({AXI_DATA_WIDTH{1'b0}}),
         .douta (result_cpu_rd_data),
         .clkb  (CLK),
@@ -344,7 +424,7 @@ module Matrix_Vector_Multiplication #(
         end else begin
             mm_rd_pending_r <= mm_rd_accept;
             if (mm_rd_accept) begin
-                mm_rd_region_d_r <= mm_rd_region;
+                mm_rd_region_d_r <= rd_pipe_region_r;
                 mm_rd_error_d_r  <= (!rd_region_known) || (!rd_index_ok);
             end
 
@@ -386,24 +466,35 @@ module Matrix_Vector_Multiplication #(
             read_beat_idx_r     <= 16'd0;
             block_idx_r          <= 16'd0;
             group_blocks_r       <= 16'd1;
-            block_base_beat_r    <= 16'd0;
             result_row_base_r    <= 32'd0;
             weight_row_base_r   <= {WEIGHT_ADDR_WIDTH{1'b0}};
             group_mode_r         <= 1'b0;
             feed_valid_r        <= 1'b0;
             feed_last_r         <= 1'b0;
+            feed_group_last_r   <= 1'b0;
             read_valid_d_r      <= 1'b0;
             read_last_d_r       <= 1'b0;
+            read_group_last_d_r <= 1'b0;
             read_valid_q_r      <= 1'b0;
             read_last_q_r       <= 1'b0;
+            read_group_last_q_r <= 1'b0;
+            read_valid_x_r      <= 1'b0;
+            read_last_x_r       <= 1'b0;
+            read_group_last_x_r <= 1'b0;
             compute_rd_en       <= 1'b0;
             act_compute_addr    <= {ACT_ADDR_WIDTH{1'b0}};
-            weight_compute_addr <= {WEIGHT_ADDR_WIDTH{1'b0}};
+            for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
+                weight_compute_addr_bank[fsm_bank_i] <= {WEIGHT_ADDR_WIDTH{1'b0}};
+                weight_compute_en_bank[fsm_bank_i]   <= 1'b0;
+            end
             act_pmau_data       <= {ACT_BEAT_WIDTH{1'b0}};
             weight_pmau_data    <= {WEIGHT_BEAT_WIDTH{1'b0}};
         end else begin
             compute_rd_en  <= 1'b0;
+            for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1)
+                weight_compute_en_bank[fsm_bank_i] <= 1'b0;
             read_valid_d_r <= 1'b0;
+            read_group_last_d_r <= 1'b0;
 
             if (ctrl_clear_done) begin
                 done_r  <= 1'b0;
@@ -414,29 +505,35 @@ module Matrix_Vector_Multiplication #(
                 S_IDLE: begin
                     feed_valid_r       <= 1'b0;
                     feed_last_r        <= 1'b0;
+                    feed_group_last_r  <= 1'b0;
                     read_valid_d_r     <= 1'b0;
                     read_valid_q_r     <= 1'b0;
+                    read_valid_x_r     <= 1'b0;
                     read_beat_idx_r    <= 16'd0;
                     row_idx_r          <= 16'd0;
                     block_idx_r        <= 16'd0;
-                    block_base_beat_r  <= 16'd0;
                     result_row_base_r  <= 32'd0;
                     weight_row_base_r  <= {WEIGHT_ADDR_WIDTH{1'b0}};
 
                     if (ctrl_start) begin
                         done_r <= 1'b0;
-                        if (config_invalid) begin
-                            error_r <= 1'b1;
-                            done_r  <= 1'b1;
-                            state_r <= S_ERROR;
-                        end else begin
-                            error_r            <= 1'b0;
-                            active_rows_r      <= cfg_rows;
-                            active_col_beats_r <= requested_col_beats;
-                            group_mode_r       <= requested_group_mode;
-                            group_blocks_r     <= requested_group_blocks;
-                            state_r            <= S_RUN;
-                        end
+                        error_r            <= 1'b0;
+                        active_rows_r      <= cfg_rows;
+                        active_col_beats_r <= requested_col_beats;
+                        group_mode_r       <= requested_group_mode;
+                        group_blocks_r     <= requested_group_blocks;
+                        state_r            <= S_VALIDATE;
+                    end
+                end
+
+                S_VALIDATE: begin
+                    feed_valid_r <= 1'b0;
+                    if (active_config_invalid) begin
+                        error_r <= 1'b1;
+                        done_r  <= 1'b1;
+                        state_r <= S_ERROR;
+                    end else begin
+                        state_r <= S_RUN;
                     end
                 end
 
@@ -444,34 +541,53 @@ module Matrix_Vector_Multiplication #(
                     if (pmau_input_fire)
                         feed_valid_r <= 1'b0;
 
-                    if (read_valid_q_r && feed_slot_open) begin
+                    if (consume_read_x) begin
                         feed_valid_r <= 1'b1;
-                        feed_last_r  <= read_last_q_r;
+                        feed_last_r  <= read_last_x_r;
+                        feed_group_last_r <= read_group_last_x_r;
                         act_pmau_data    <= act_compute_data;
                         weight_pmau_data <= weight_compute_data;
+                        read_valid_x_r <= 1'b0;
+                    end
+
+                    if (shift_q_to_x) begin
+                        read_valid_x_r <= 1'b1;
+                        read_last_x_r  <= read_last_q_r;
+                        read_group_last_x_r <= read_group_last_q_r;
                         read_valid_q_r <= 1'b0;
                     end
 
-                    if (read_valid_d_r) begin
+                    if (shift_d_to_q) begin
                         read_valid_q_r <= 1'b1;
                         read_last_q_r  <= read_last_d_r;
+                        read_group_last_q_r <= read_group_last_d_r;
                     end
 
                     if (can_issue_read) begin
                         compute_rd_en       <= 1'b1;
                         act_compute_addr    <= read_abs_beat[ACT_ADDR_WIDTH-1:0];
-                        weight_compute_addr <= weight_row_base_r +
-                                               read_abs_beat[WEIGHT_ADDR_WIDTH-1:0];
+                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
+                            weight_compute_en_bank[fsm_bank_i] <= 1'b1;
+                            weight_compute_addr_bank[fsm_bank_i] <= weight_row_base_r +
+                                read_abs_beat[WEIGHT_ADDR_WIDTH-1:0];
+                        end
                         read_valid_d_r      <= 1'b1;
                         read_last_d_r       <= issue_read_last;
+                        read_group_last_d_r <= issue_read_group_last;
                         read_beat_idx_r     <= read_beat_idx_r + 16'd1;
                     end
 
-                    if (pmau_input_fire && feed_last_r) begin
+                    if (group_mode_r && pmau_result_fire)
+                        block_idx_r <= block_idx_r + 16'd1;
+
+                    if (pmau_input_fire && feed_group_last_r) begin
                         feed_valid_r    <= 1'b0;
                         compute_rd_en   <= 1'b0;
+                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1)
+                            weight_compute_en_bank[fsm_bank_i] <= 1'b0;
                         read_valid_d_r  <= 1'b0;
                         read_valid_q_r  <= 1'b0;
+                        read_valid_x_r  <= 1'b0;
                         state_r         <= S_WAIT_RESULT;
                     end
                 end
@@ -480,14 +596,10 @@ module Matrix_Vector_Multiplication #(
                     feed_valid_r <= 1'b0;
 
                     if (pmau_result_fire) begin
-                        if (group_mode_r && ((block_idx_r + 16'd1) < group_blocks_r)) begin
+                        if ((block_idx_r + 16'd1) < group_blocks_r) begin
                             block_idx_r       <= block_idx_r + 16'd1;
-                            block_base_beat_r <= block_base_beat_r + Q8_BLOCK_BEATS_16;
-                            read_beat_idx_r   <= 16'd0;
-                            state_r           <= S_RUN;
                         end else begin
                             block_idx_r       <= 16'd0;
-                            block_base_beat_r <= 16'd0;
 
                             if ((row_idx_r + 16'd1) >= active_rows_r) begin
                                 done_r  <= 1'b1;
@@ -507,25 +619,18 @@ module Matrix_Vector_Multiplication #(
                 S_DONE: begin
                     feed_valid_r <= 1'b0;
                     if (ctrl_start) begin
-                        done_r <= 1'b0;
-                        if (config_invalid) begin
-                            error_r <= 1'b1;
-                            done_r  <= 1'b1;
-                            state_r <= S_ERROR;
-                        end else begin
-                            error_r            <= 1'b0;
-                            active_rows_r      <= cfg_rows;
-                            active_col_beats_r <= requested_col_beats;
-                            group_mode_r       <= requested_group_mode;
-                            group_blocks_r     <= requested_group_blocks;
-                            row_idx_r          <= 16'd0;
-                            read_beat_idx_r    <= 16'd0;
-                            block_idx_r        <= 16'd0;
-                            block_base_beat_r  <= 16'd0;
-                            result_row_base_r  <= 32'd0;
-                            weight_row_base_r  <= {WEIGHT_ADDR_WIDTH{1'b0}};
-                            state_r            <= S_RUN;
-                        end
+                        done_r              <= 1'b0;
+                        error_r             <= 1'b0;
+                        active_rows_r       <= cfg_rows;
+                        active_col_beats_r  <= requested_col_beats;
+                        group_mode_r        <= requested_group_mode;
+                        group_blocks_r      <= requested_group_blocks;
+                        row_idx_r           <= 16'd0;
+                        read_beat_idx_r     <= 16'd0;
+                        block_idx_r         <= 16'd0;
+                        result_row_base_r   <= 32'd0;
+                        weight_row_base_r   <= {WEIGHT_ADDR_WIDTH{1'b0}};
+                        state_r             <= S_VALIDATE;
                     end
                 end
 
@@ -535,7 +640,7 @@ module Matrix_Vector_Multiplication #(
                         done_r  <= 1'b0;
                         error_r <= 1'b0;
                         state_r <= S_IDLE;
-                    end else if (ctrl_start && !config_invalid) begin
+                    end else if (ctrl_start) begin
                         done_r             <= 1'b0;
                         error_r            <= 1'b0;
                         active_rows_r      <= cfg_rows;
@@ -545,10 +650,9 @@ module Matrix_Vector_Multiplication #(
                         row_idx_r          <= 16'd0;
                         read_beat_idx_r    <= 16'd0;
                         block_idx_r        <= 16'd0;
-                        block_base_beat_r  <= 16'd0;
                         result_row_base_r  <= 32'd0;
                         weight_row_base_r  <= {WEIGHT_ADDR_WIDTH{1'b0}};
-                        state_r            <= S_RUN;
+                        state_r            <= S_VALIDATE;
                     end
                 end
 
