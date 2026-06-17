@@ -86,7 +86,6 @@ module Matrix_Vector_Multiplication #(
     localparam WEIGHT_BEAT_WIDTH    = NUM_LANES * WEIGHT_WIDTH;
     localparam AXI_BYTE_COUNT       = AXI_DATA_WIDTH / 8;
     localparam ACT_BYTE_COUNT       = ACT_BEAT_WIDTH / 8;
-    localparam WEIGHT_BYTE_COUNT    = WEIGHT_BEAT_WIDTH / 8;
     localparam WEIGHT_BANKS         = 4;
     localparam WEIGHT_BANK_WIDTH    = WEIGHT_BEAT_WIDTH / WEIGHT_BANKS;
     localparam WEIGHT_BANK_BYTES    = WEIGHT_BANK_WIDTH / 8;
@@ -100,6 +99,17 @@ module Matrix_Vector_Multiplication #(
     localparam RESULT_ADDR_WIDTH    = clog2(RESULT_WORD_DEPTH);
     localparam WEIGHT_DEPTH         = MAX_ROWS * MAX_COL_BEATS;
     localparam WEIGHT_ADDR_WIDTH    = clog2(WEIGHT_DEPTH);
+    // Split each 32-bit weight bank into 16K-word depth shards.  For the
+    // 256x256 board configuration this creates four shards per bank and keeps
+    // the RAM address nets local without changing the logical MMIO address map.
+    localparam WEIGHT_LOCAL_ADDR_WIDTH =
+        (WEIGHT_ADDR_WIDTH > 14) ? 14 : WEIGHT_ADDR_WIDTH;
+    localparam WEIGHT_SHARD_DEPTH      = (1 << WEIGHT_LOCAL_ADDR_WIDTH);
+    localparam WEIGHT_DEPTH_SHARDS     =
+        (WEIGHT_DEPTH + WEIGHT_SHARD_DEPTH - 1) / WEIGHT_SHARD_DEPTH;
+    localparam WEIGHT_SHARD_SEL_WIDTH  =
+        (WEIGHT_DEPTH_SHARDS > 1) ? clog2(WEIGHT_DEPTH_SHARDS) : 1;
+    localparam WEIGHT_RAM_COUNT        = WEIGHT_BANKS * WEIGHT_DEPTH_SHARDS;
     localparam LANE_SHIFT           = clog2(NUM_LANES);
     localparam [15:0] NUM_LANES_16          = NUM_LANES;
     localparam [15:0] MAX_ROWS_16           = MAX_ROWS;
@@ -124,16 +134,17 @@ module Matrix_Vector_Multiplication #(
     localparam [2:0] S_VALIDATE     = 3'd5;
 
     wire [ACT_BEAT_WIDTH-1:0]   act_compute_data;
-    wire [WEIGHT_BEAT_WIDTH-1:0] weight_compute_data;
+    reg [WEIGHT_BEAT_WIDTH-1:0]  weight_compute_data;
+    wire [WEIGHT_BANK_WIDTH*WEIGHT_RAM_COUNT-1:0] weight_compute_data_leaf;
     reg [ACT_BEAT_WIDTH-1:0]    act_pmau_data;
     reg [WEIGHT_BEAT_WIDTH-1:0] weight_pmau_data;
     wire [AXI_DATA_WIDTH-1:0]   result_cpu_rd_data;
     reg [ACT_ADDR_WIDTH-1:0]    act_compute_addr;
     reg                         compute_rd_en;
-    (* keep = "true", dont_touch = "true" *)
-    reg [WEIGHT_ADDR_WIDTH-1:0] weight_compute_addr_bank [0:WEIGHT_BANKS-1];
-    (* keep = "true", dont_touch = "true" *)
-    reg                         weight_compute_en_bank [0:WEIGHT_BANKS-1];
+    (* keep = "true" *)
+    reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_compute_addr_leaf [0:WEIGHT_RAM_COUNT-1];
+    (* keep = "true" *)
+    reg                         weight_compute_en_leaf [0:WEIGHT_RAM_COUNT-1];
     reg                         mm_rd_pending_r;
     reg [1:0]                   mm_rd_region_d_r;
     reg                         mm_rd_error_d_r;
@@ -148,8 +159,14 @@ module Matrix_Vector_Multiplication #(
     reg                         wr_pipe_en_r;
     reg [1:0]                   wr_pipe_region_r;
     reg [31:0]                  wr_pipe_index_r;
-    (* keep = "true", dont_touch = "true" *)
-    reg [WEIGHT_ADDR_WIDTH-1:0] weight_wr_addr_bank [0:WEIGHT_BANKS-1];
+    (* keep = "true" *)
+    reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_wr_addr_leaf [0:WEIGHT_RAM_COUNT-1];
+    (* keep = "true" *)
+    reg                         weight_wr_en_leaf [0:WEIGHT_RAM_COUNT-1];
+    (* keep = "true" *)
+    reg [WEIGHT_BANK_WIDTH-1:0] weight_wr_data_leaf [0:WEIGHT_RAM_COUNT-1];
+    (* keep = "true" *)
+    reg [WEIGHT_BANK_BYTES-1:0] weight_wr_strb_leaf [0:WEIGHT_RAM_COUNT-1];
     reg [AXI_DATA_WIDTH-1:0]    wr_pipe_data_r;
     reg [(AXI_DATA_WIDTH/8)-1:0] wr_pipe_strb_r;
 
@@ -172,12 +189,21 @@ module Matrix_Vector_Multiplication #(
     reg read_valid_d_r;
     reg read_last_d_r;
     reg read_group_last_d_r;
+    reg read_req_valid_r;
+    reg [ACT_ADDR_WIDTH-1:0] read_req_act_addr_r;
+    reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] read_req_weight_addr_r;
+    reg [WEIGHT_SHARD_SEL_WIDTH-1:0] read_req_shard_r;
+    reg read_req_last_r;
+    reg read_req_group_last_r;
     reg read_valid_q_r;
     reg read_last_q_r;
     reg read_group_last_q_r;
     reg read_valid_x_r;
     reg read_last_x_r;
     reg read_group_last_x_r;
+    reg [WEIGHT_SHARD_SEL_WIDTH-1:0] read_shard_d_r;
+    reg [WEIGHT_SHARD_SEL_WIDTH-1:0] read_shard_q_r;
+    reg [WEIGHT_SHARD_SEL_WIDTH-1:0] read_shard_x_r;
 
     wire [15:0] auto_col_beats =
         (cfg_cols + NUM_LANES_16 - 16'd1) >> LANE_SHIFT;
@@ -216,10 +242,18 @@ module Matrix_Vector_Multiplication #(
     wire read_q_slot_open = (!read_valid_q_r) || shift_q_to_x;
     wire shift_d_to_q = read_valid_d_r && read_q_slot_open;
     wire read_d_slot_open = (!read_valid_d_r) || shift_d_to_q;
+    wire shift_req_to_d = read_req_valid_r && read_d_slot_open;
+    wire read_req_slot_open = (!read_req_valid_r) || shift_req_to_d;
     wire [15:0] read_abs_beat = read_beat_idx_r;
+    wire [WEIGHT_ADDR_WIDTH-1:0] issue_weight_addr =
+        weight_row_base_r + read_abs_beat[WEIGHT_ADDR_WIDTH-1:0];
+    wire [WEIGHT_LOCAL_ADDR_WIDTH-1:0] issue_weight_local_addr =
+        issue_weight_addr[WEIGHT_LOCAL_ADDR_WIDTH-1:0];
+    wire [WEIGHT_SHARD_SEL_WIDTH-1:0] issue_weight_shard =
+        issue_weight_addr >> WEIGHT_LOCAL_ADDR_WIDTH;
     wire can_issue_read =
         (state_r == S_RUN) &&
-        read_d_slot_open &&
+        read_req_slot_open &&
         (read_beat_idx_r < active_col_beats_r);
     wire issue_read_last =
         group_mode_r ? (read_beat_idx_r[0] == 1'b1) :
@@ -274,8 +308,18 @@ module Matrix_Vector_Multiplication #(
         .result_last       (pmau_result_last)
     );
 
+    wire [WEIGHT_LOCAL_ADDR_WIDTH-1:0] wr_pipe_weight_local_addr =
+        wr_pipe_index_r[WEIGHT_LOCAL_ADDR_WIDTH-1:0];
+    wire [WEIGHT_SHARD_SEL_WIDTH-1:0] wr_pipe_weight_shard =
+        wr_pipe_index_r >> WEIGHT_LOCAL_ADDR_WIDTH;
+
     integer wr_bank_i;
+    integer wr_shard_i;
+    integer wr_ram_i;
     integer fsm_bank_i;
+    integer fsm_shard_i;
+    integer fsm_ram_i;
+    integer mux_bank_i;
     always @(posedge CLK) begin
         if (!RST) begin
             wr_pipe_en_r     <= 1'b0;
@@ -283,8 +327,12 @@ module Matrix_Vector_Multiplication #(
             wr_pipe_index_r  <= 32'd0;
             wr_pipe_data_r   <= {AXI_DATA_WIDTH{1'b0}};
             wr_pipe_strb_r   <= {(AXI_DATA_WIDTH/8){1'b0}};
-            for (wr_bank_i = 0; wr_bank_i < WEIGHT_BANKS; wr_bank_i = wr_bank_i + 1)
-                weight_wr_addr_bank[wr_bank_i] <= {WEIGHT_ADDR_WIDTH{1'b0}};
+            for (wr_ram_i = 0; wr_ram_i < WEIGHT_RAM_COUNT; wr_ram_i = wr_ram_i + 1) begin
+                weight_wr_addr_leaf[wr_ram_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
+                weight_wr_en_leaf[wr_ram_i]   <= 1'b0;
+                weight_wr_data_leaf[wr_ram_i] <= {WEIGHT_BANK_WIDTH{1'b0}};
+                weight_wr_strb_leaf[wr_ram_i] <= {WEIGHT_BANK_BYTES{1'b0}};
+            end
         end else begin
             wr_pipe_en_r <= mm_wr_en;
             if (mm_wr_en) begin
@@ -292,8 +340,26 @@ module Matrix_Vector_Multiplication #(
                 wr_pipe_index_r  <= mm_wr_index;
                 wr_pipe_data_r   <= mm_wr_data;
                 wr_pipe_strb_r   <= mm_wr_strb;
-                for (wr_bank_i = 0; wr_bank_i < WEIGHT_BANKS; wr_bank_i = wr_bank_i + 1)
-                    weight_wr_addr_bank[wr_bank_i] <= mm_wr_index[WEIGHT_ADDR_WIDTH-1:0];
+            end
+
+            for (wr_bank_i = 0; wr_bank_i < WEIGHT_BANKS; wr_bank_i = wr_bank_i + 1) begin
+                for (wr_shard_i = 0; wr_shard_i < WEIGHT_DEPTH_SHARDS;
+                     wr_shard_i = wr_shard_i + 1) begin
+                    weight_wr_en_leaf[wr_bank_i*WEIGHT_DEPTH_SHARDS + wr_shard_i]
+                        <= 1'b0;
+                    if (wr_pipe_en_r &&
+                        (wr_pipe_region_r == REGION_WEIGHT) &&
+                        (wr_pipe_weight_shard == wr_shard_i)) begin
+                        weight_wr_addr_leaf[wr_bank_i*WEIGHT_DEPTH_SHARDS + wr_shard_i]
+                            <= wr_pipe_weight_local_addr;
+                        weight_wr_en_leaf[wr_bank_i*WEIGHT_DEPTH_SHARDS + wr_shard_i]
+                            <= 1'b1;
+                        weight_wr_data_leaf[wr_bank_i*WEIGHT_DEPTH_SHARDS + wr_shard_i]
+                            <= wr_pipe_data_r[WEIGHT_BANK_WIDTH*wr_bank_i +: WEIGHT_BANK_WIDTH];
+                        weight_wr_strb_leaf[wr_bank_i*WEIGHT_DEPTH_SHARDS + wr_shard_i]
+                            <= wr_pipe_strb_r[WEIGHT_BANK_BYTES*wr_bank_i +: WEIGHT_BANK_BYTES];
+                    end
+                end
             end
         end
     end
@@ -315,8 +381,6 @@ module Matrix_Vector_Multiplication #(
     wire mm_rd_accept = rd_pipe_en_r;
     wire act_wr_hit =
         wr_pipe_en_r && (wr_pipe_region_r == REGION_ACT);
-    wire weight_wr_hit =
-        wr_pipe_en_r && (wr_pipe_region_r == REGION_WEIGHT);
     wire act_rd_hit = 1'b0;
     wire weight_rd_hit = 1'b0;
     wire result_rd_hit =
@@ -330,8 +394,6 @@ module Matrix_Vector_Multiplication #(
 
     wire [ACT_BYTE_COUNT-1:0]    act_wr_strobe =
         wr_pipe_strb_r[ACT_BYTE_COUNT-1:0];
-    wire [WEIGHT_BYTE_COUNT-1:0] weight_wr_strobe =
-        wr_pipe_strb_r[WEIGHT_BYTE_COUNT-1:0];
     reg [AXI_DATA_WIDTH-1:0] result_wr_data;
     reg [(AXI_DATA_WIDTH/8)-1:0] result_wr_strobe;
     integer result_lane_i;
@@ -346,7 +408,7 @@ module Matrix_Vector_Multiplication #(
     end
 
     wire [ACT_BEAT_WIDTH-1:0]    act_cpu_rd_unused;
-    wire [WEIGHT_BEAT_WIDTH-1:0] weight_cpu_rd_unused;
+    wire [WEIGHT_BANK_WIDTH*WEIGHT_RAM_COUNT-1:0] weight_cpu_rd_unused;
     wire [AXI_DATA_WIDTH-1:0]    result_compute_rd_unused;
 
     Dual_Port_BRAM #(
@@ -368,32 +430,50 @@ module Matrix_Vector_Multiplication #(
         .doutb (act_compute_data)
     );
 
-    // Four 32-bit banks keep each BRAM address/enable route local while the
-    // concatenated interface remains one 128-bit weight beat.
+    // Four 32-bit lane banks preserve the packed-Q8 interface.  Splitting each
+    // lane bank by depth bounds the physical BRAM address fanout without
+    // changing the logical MMIO address map.
     genvar weight_bank_g;
+    genvar weight_shard_g;
     generate
         for (weight_bank_g = 0; weight_bank_g < WEIGHT_BANKS;
              weight_bank_g = weight_bank_g + 1) begin : GEN_WEIGHT_BANK
-            Dual_Port_BRAM #(
-                .AWIDTH (WEIGHT_ADDR_WIDTH),
-                .DWIDTH (WEIGHT_BANK_WIDTH),
-                .OUTPUT_REG (1)
-            ) u_weight_bram_bank (
-                .clka  (CLK),
-                .ena   (weight_wr_hit),
-                .wea   (weight_wr_strobe[WEIGHT_BANK_BYTES*weight_bank_g +: WEIGHT_BANK_BYTES]),
-                .addra (weight_wr_addr_bank[weight_bank_g]),
-                .dina  (wr_pipe_data_r[WEIGHT_BANK_WIDTH*weight_bank_g +: WEIGHT_BANK_WIDTH]),
-                .douta (weight_cpu_rd_unused[WEIGHT_BANK_WIDTH*weight_bank_g +: WEIGHT_BANK_WIDTH]),
-                .clkb  (CLK),
-                .enb   (weight_compute_en_bank[weight_bank_g]),
-                .web   ({WEIGHT_BANK_BYTES{1'b0}}),
-                .addrb (weight_compute_addr_bank[weight_bank_g]),
-                .dinb  ({WEIGHT_BANK_WIDTH{1'b0}}),
-                .doutb (weight_compute_data[WEIGHT_BANK_WIDTH*weight_bank_g +: WEIGHT_BANK_WIDTH])
-            );
+            for (weight_shard_g = 0; weight_shard_g < WEIGHT_DEPTH_SHARDS;
+                 weight_shard_g = weight_shard_g + 1) begin : GEN_WEIGHT_SHARD
+                localparam integer WEIGHT_RAM_INDEX =
+                    weight_bank_g * WEIGHT_DEPTH_SHARDS + weight_shard_g;
+                Dual_Port_BRAM #(
+                    .AWIDTH (WEIGHT_LOCAL_ADDR_WIDTH),
+                    .DWIDTH (WEIGHT_BANK_WIDTH),
+                    .OUTPUT_REG (1)
+                ) u_weight_bram_bank (
+                    .clka  (CLK),
+                    .ena   (weight_wr_en_leaf[WEIGHT_RAM_INDEX]),
+                    .wea   (weight_wr_strb_leaf[WEIGHT_RAM_INDEX]),
+                    .addra (weight_wr_addr_leaf[WEIGHT_RAM_INDEX]),
+                    .dina  (weight_wr_data_leaf[WEIGHT_RAM_INDEX]),
+                    .douta (weight_cpu_rd_unused[WEIGHT_BANK_WIDTH*WEIGHT_RAM_INDEX +: WEIGHT_BANK_WIDTH]),
+                    .clkb  (CLK),
+                    .enb   (weight_compute_en_leaf[WEIGHT_RAM_INDEX]),
+                    .web   ({WEIGHT_BANK_BYTES{1'b0}}),
+                    .addrb (weight_compute_addr_leaf[WEIGHT_RAM_INDEX]),
+                    .dinb  ({WEIGHT_BANK_WIDTH{1'b0}}),
+                    .doutb (weight_compute_data_leaf[WEIGHT_BANK_WIDTH*WEIGHT_RAM_INDEX +: WEIGHT_BANK_WIDTH])
+                );
+            end
         end
     endgenerate
+
+    always @* begin
+        weight_compute_data = {WEIGHT_BEAT_WIDTH{1'b0}};
+        for (mux_bank_i = 0; mux_bank_i < WEIGHT_BANKS; mux_bank_i = mux_bank_i + 1) begin
+            weight_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
+                weight_compute_data_leaf[
+                    WEIGHT_BANK_WIDTH*(mux_bank_i*WEIGHT_DEPTH_SHARDS + read_shard_x_r)
+                    +: WEIGHT_BANK_WIDTH
+                ];
+        end
+    end
 
     Dual_Port_BRAM #(
         .AWIDTH (RESULT_ADDR_WIDTH),
@@ -472,6 +552,12 @@ module Matrix_Vector_Multiplication #(
             feed_valid_r        <= 1'b0;
             feed_last_r         <= 1'b0;
             feed_group_last_r   <= 1'b0;
+            read_req_valid_r    <= 1'b0;
+            read_req_act_addr_r <= {ACT_ADDR_WIDTH{1'b0}};
+            read_req_weight_addr_r <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
+            read_req_shard_r    <= {WEIGHT_SHARD_SEL_WIDTH{1'b0}};
+            read_req_last_r     <= 1'b0;
+            read_req_group_last_r <= 1'b0;
             read_valid_d_r      <= 1'b0;
             read_last_d_r       <= 1'b0;
             read_group_last_d_r <= 1'b0;
@@ -481,18 +567,23 @@ module Matrix_Vector_Multiplication #(
             read_valid_x_r      <= 1'b0;
             read_last_x_r       <= 1'b0;
             read_group_last_x_r <= 1'b0;
+            read_shard_d_r      <= {WEIGHT_SHARD_SEL_WIDTH{1'b0}};
+            read_shard_q_r      <= {WEIGHT_SHARD_SEL_WIDTH{1'b0}};
+            read_shard_x_r      <= {WEIGHT_SHARD_SEL_WIDTH{1'b0}};
             compute_rd_en       <= 1'b0;
             act_compute_addr    <= {ACT_ADDR_WIDTH{1'b0}};
-            for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
-                weight_compute_addr_bank[fsm_bank_i] <= {WEIGHT_ADDR_WIDTH{1'b0}};
-                weight_compute_en_bank[fsm_bank_i]   <= 1'b0;
+            for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_COUNT; fsm_ram_i = fsm_ram_i + 1) begin
+                weight_compute_addr_leaf[fsm_ram_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
+                weight_compute_en_leaf[fsm_ram_i]   <= 1'b0;
             end
             act_pmau_data       <= {ACT_BEAT_WIDTH{1'b0}};
             weight_pmau_data    <= {WEIGHT_BEAT_WIDTH{1'b0}};
         end else begin
             compute_rd_en  <= 1'b0;
-            for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1)
-                weight_compute_en_bank[fsm_bank_i] <= 1'b0;
+            for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_COUNT; fsm_ram_i = fsm_ram_i + 1)
+                weight_compute_en_leaf[fsm_ram_i] <= 1'b0;
+            if (shift_req_to_d)
+                read_req_valid_r <= 1'b0;
             read_valid_d_r <= 1'b0;
             read_group_last_d_r <= 1'b0;
 
@@ -507,6 +598,7 @@ module Matrix_Vector_Multiplication #(
                     feed_last_r        <= 1'b0;
                     feed_group_last_r  <= 1'b0;
                     read_valid_d_r     <= 1'b0;
+                    read_req_valid_r   <= 1'b0;
                     read_valid_q_r     <= 1'b0;
                     read_valid_x_r     <= 1'b0;
                     read_beat_idx_r    <= 16'd0;
@@ -554,6 +646,7 @@ module Matrix_Vector_Multiplication #(
                         read_valid_x_r <= 1'b1;
                         read_last_x_r  <= read_last_q_r;
                         read_group_last_x_r <= read_group_last_q_r;
+                        read_shard_x_r <= read_shard_q_r;
                         read_valid_q_r <= 1'b0;
                     end
 
@@ -561,20 +654,35 @@ module Matrix_Vector_Multiplication #(
                         read_valid_q_r <= 1'b1;
                         read_last_q_r  <= read_last_d_r;
                         read_group_last_q_r <= read_group_last_d_r;
+                        read_shard_q_r <= read_shard_d_r;
+                    end
+
+                    if (shift_req_to_d) begin
+                        compute_rd_en       <= 1'b1;
+                        act_compute_addr    <= read_req_act_addr_r;
+                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
+                            for (fsm_shard_i = 0; fsm_shard_i < WEIGHT_DEPTH_SHARDS;
+                                 fsm_shard_i = fsm_shard_i + 1) begin
+                                weight_compute_en_leaf[fsm_bank_i*WEIGHT_DEPTH_SHARDS + fsm_shard_i]
+                                    <= (read_req_shard_r == fsm_shard_i);
+                                weight_compute_addr_leaf[fsm_bank_i*WEIGHT_DEPTH_SHARDS + fsm_shard_i]
+                                    <= read_req_weight_addr_r;
+                            end
+                        end
+                        read_valid_d_r      <= 1'b1;
+                        read_last_d_r       <= read_req_last_r;
+                        read_group_last_d_r <= read_req_group_last_r;
+                        read_shard_d_r      <= read_req_shard_r;
                     end
 
                     if (can_issue_read) begin
-                        compute_rd_en       <= 1'b1;
-                        act_compute_addr    <= read_abs_beat[ACT_ADDR_WIDTH-1:0];
-                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
-                            weight_compute_en_bank[fsm_bank_i] <= 1'b1;
-                            weight_compute_addr_bank[fsm_bank_i] <= weight_row_base_r +
-                                read_abs_beat[WEIGHT_ADDR_WIDTH-1:0];
-                        end
-                        read_valid_d_r      <= 1'b1;
-                        read_last_d_r       <= issue_read_last;
-                        read_group_last_d_r <= issue_read_group_last;
-                        read_beat_idx_r     <= read_beat_idx_r + 16'd1;
+                        read_req_valid_r      <= 1'b1;
+                        read_req_act_addr_r   <= read_abs_beat[ACT_ADDR_WIDTH-1:0];
+                        read_req_weight_addr_r <= issue_weight_local_addr;
+                        read_req_shard_r      <= issue_weight_shard;
+                        read_req_last_r       <= issue_read_last;
+                        read_req_group_last_r <= issue_read_group_last;
+                        read_beat_idx_r       <= read_beat_idx_r + 16'd1;
                     end
 
                     if (group_mode_r && pmau_result_fire)
@@ -583,8 +691,9 @@ module Matrix_Vector_Multiplication #(
                     if (pmau_input_fire && feed_group_last_r) begin
                         feed_valid_r    <= 1'b0;
                         compute_rd_en   <= 1'b0;
-                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1)
-                            weight_compute_en_bank[fsm_bank_i] <= 1'b0;
+                        for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_COUNT; fsm_ram_i = fsm_ram_i + 1)
+                            weight_compute_en_leaf[fsm_ram_i] <= 1'b0;
+                        read_req_valid_r <= 1'b0;
                         read_valid_d_r  <= 1'b0;
                         read_valid_q_r  <= 1'b0;
                         read_valid_x_r  <= 1'b0;
@@ -627,6 +736,7 @@ module Matrix_Vector_Multiplication #(
                         group_blocks_r      <= requested_group_blocks;
                         row_idx_r           <= 16'd0;
                         read_beat_idx_r     <= 16'd0;
+                        read_req_valid_r    <= 1'b0;
                         block_idx_r         <= 16'd0;
                         result_row_base_r   <= 32'd0;
                         weight_row_base_r   <= {WEIGHT_ADDR_WIDTH{1'b0}};
@@ -649,6 +759,7 @@ module Matrix_Vector_Multiplication #(
                         group_blocks_r     <= requested_group_blocks;
                         row_idx_r          <= 16'd0;
                         read_beat_idx_r    <= 16'd0;
+                        read_req_valid_r   <= 1'b0;
                         block_idx_r        <= 16'd0;
                         result_row_base_r  <= 32'd0;
                         weight_row_base_r  <= {WEIGHT_ADDR_WIDTH{1'b0}};
