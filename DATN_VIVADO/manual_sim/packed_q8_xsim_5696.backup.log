@@ -1,0 +1,93 @@
+#-----------------------------------------------------------
+# Vivado v2022.2 (64-bit)
+# SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+# IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+# Start of session at: Mon Jun 15 17:15:19 2026
+# Process ID: 5696
+# Current directory: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim
+# Command line: vivado.exe -mode batch -source .\run_packed_q8_xsim.tcl -nojournal -log .\packed_q8_xsim.log
+# Log file: D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/./packed_q8_xsim.log
+# Journal file: 
+# Running On: Cuong-Desktop, OS: Windows, CPU Frequency: 2496 MHz, CPU Physical cores: 6, Host memory: 16984 MB
+#-----------------------------------------------------------
+CRITICAL WARNING: [Common 17-741] No write access right to the local Tcl store at 'C'. XilinxTclStore is reverted to the installation area. If you want to use local Tcl Store, please change the access right and relaunch Vivado.
+WARNING: [Common 17-1509] Migration of commands.paini file failed with error : boost::filesystem::directory_iterator::construct: Access is denied: "C:\Users\PC\AppData\Roaming/Xilinx/Vivado/2022.2/commands"
+source {.\run_packed_q8_xsim.tcl}
+# set script_dir [file normalize [file dirname [info script]]]
+# set repo_root [file normalize [file join $script_dir ".." ".."]]
+# set project_dir [file join $script_dir "packed_q8_xsim_project"]
+# set part_name "xczu7ev-ffvc1156-2-e"
+# create_project packed_q8_xsim $project_dir -part $part_name -force
+create_project: Time (s): cpu = 00:00:04 ; elapsed = 00:00:06 . Memory (MB): peak = 1000.020 ; gain = 117.914
+# add_files [file join $repo_root "RTL" "Dual_Port_BRAM.v"]
+# add_files [file join $repo_root "RTL" "PMAU_Full.v"]
+# add_files [file join $repo_root "RTL" "Matrix_Vector_Multiplication.v"]
+# add_files [file join $script_dir "tb_packed_q8_core.v"]
+# add_files [file join $script_dir "tb_matmul_dsp_core.v"]
+# add_files [file join $repo_root "DATN_VIVADO" "project_1" "project_1.srcs" "sources_1" "ip" "mult_gen_0" "mult_gen_0.xci"]
+INFO: [IP_Flow 19-234] Refreshing IP repositories
+INFO: [IP_Flow 19-1704] No user IP repositories specified
+INFO: [IP_Flow 19-2313] Loaded Vivado IP repository 'D:/Xlinx/Vivado/2022.2/data/ip'.
+WARNING: [Vivado 12-13650] The IP file 'D:/DOAN/DATN_RTL/DATN_VIVADO/project_1/project_1.srcs/sources_1/ip/mult_gen_0/mult_gen_0.xci' has been moved from its original location, as a result the outputs for this IP will now be generated in 'd:/doan/datn_rtl/datn_vivado/project_1/tmp_edit_project.gen/sources_1/ip/mult_gen_0'. Alternatively a copy of the IP can be imported into the project using one of the 'import_ip' or 'import_files' commands.
+# generate_target all [get_ips mult_gen_0]
+# update_compile_order -fileset sources_1
+# update_compile_order -fileset sim_1
+# set_property top tb_packed_q8_core [get_filesets sim_1]
+# set_property top_lib xil_defaultlib [get_filesets sim_1]
+# set_property -name {xsim.simulate.runtime} -value {20 us} -objects [get_filesets sim_1]
+# launch_simulation
+Command: launch_simulation 
+INFO: [Vivado 12-12493] Simulation top is 'tb_packed_q8_core'
+WARNING: [Vivado 12-13340] Unable to auto find GCC executables from simulator install path! (path not set)
+WARNING: [Vivado 12-13277] Compiled library path does not exist: ''
+INFO: [Vivado 12-5698] Checking validity of IPs in the design for the 'XSim' simulator...
+INFO: [Vivado 12-5682] Launching behavioral simulation in 'D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/packed_q8_xsim_project/packed_q8_xsim.sim/sim_1/behav/xsim'
+INFO: [Vivado 12-13660] Precompiled IP simulation library mode is enabled (default). The design IP libraries will be referenced from the compiled library path. Please note that if the precompiled version of the library is not found from the path or the IP is in locked state, then the library source files for these IPs will be compiled locally as part of the compile order.
+INFO: [Vivado 12-4795] Using compiled simulation libraries for IPs
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [SIM-utils-72] Using boost library from 'D:/Xlinx/Vivado/2022.2/tps/boost_1_72_0'
+INFO: [USF-XSim-7] Finding pre-compiled libraries...
+INFO: [USF-XSim-11] File 'D:/Xlinx/Vivado/2022.2/data/xsim/xsim.ini' copied to run dir:'D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/packed_q8_xsim_project/packed_q8_xsim.sim/sim_1/behav/xsim'
+INFO: [SIM-utils-54] Inspecting design source files for 'tb_packed_q8_core' in fileset 'sim_1'...
+INFO: [USF-XSim-97] Finding global include files...
+INFO: [USF-XSim-98] Fetching design files from 'sim_1'...
+INFO: [USF-XSim-2] XSim::Compile design
+INFO: [USF-XSim-61] Executing 'COMPILE and ANALYZE' step in 'D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/packed_q8_xsim_project/packed_q8_xsim.sim/sim_1/behav/xsim'
+"xvlog --incr --relax -prj tb_packed_q8_core_vlog.prj"
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/Dual_Port_BRAM.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module Dual_Port_BRAM
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/Matrix_Vector_Multiplication.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module Matrix_Vector_Multiplication
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/RTL/PMAU_Full.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module PMAU_Full
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/tb_packed_q8_core.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_packed_q8_core
+INFO: [VRFC 10-2263] Analyzing Verilog file "D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/packed_q8_xsim_project/packed_q8_xsim.sim/sim_1/behav/xsim/glbl.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module glbl
+"xvhdl --incr --relax -prj tb_packed_q8_core_vhdl.prj"
+INFO: [VRFC 10-163] Analyzing VHDL file "D:/DOAN/DATN_RTL/DATN_VIVADO/project_1/tmp_edit_project.gen/sources_1/ip/mult_gen_0/sim/mult_gen_0.vhd" into library xil_defaultlib
+INFO: [VRFC 10-3107] analyzing entity 'mult_gen_0'
+INFO: [USF-XSim-69] 'compile' step finished in '2' seconds
+INFO: [USF-XSim-3] XSim::Elaborate design
+INFO: [USF-XSim-61] Executing 'ELABORATE' step in 'D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/packed_q8_xsim_project/packed_q8_xsim.sim/sim_1/behav/xsim'
+"xelab --incr --debug typical --relax --mt 2 -L xil_defaultlib -L xbip_utils_v3_0_10 -L xbip_pipe_v3_0_6 -L xbip_bram18k_v3_0_6 -L mult_gen_v12_0_18 -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_packed_q8_core_behav xil_defaultlib.tb_packed_q8_core xil_defaultlib.glbl -log elaborate.log"
+Vivado Simulator v2022.2
+Copyright 1986-1999, 2001-2022 Xilinx, Inc. All Rights Reserved.
+Running: D:/Xlinx/Vivado/2022.2/bin/unwrapped/win64.o/xelab.exe --incr --debug typical --relax --mt 2 -L xil_defaultlib -L xbip_utils_v3_0_10 -L xbip_pipe_v3_0_6 -L xbip_bram18k_v3_0_6 -L mult_gen_v12_0_18 -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_packed_q8_core_behav xil_defaultlib.tb_packed_q8_core xil_defaultlib.glbl -log elaborate.log 
+Using 2 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+ERROR: [VRFC 10-2991] 'u_weight_bram_shard' is not declared under prefix 'GEN_WEIGHT_SHARD' [D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/tb_packed_q8_core.v:198]
+ERROR: [VRFC 10-2991] 'u_weight_bram_shard' is not declared under prefix 'GEN_WEIGHT_SHARD' [D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/tb_packed_q8_core.v:199]
+ERROR: [XSIM 43-3322] Static elaboration of top level Verilog design unit(s) in library work failed.
+INFO: [USF-XSim-69] 'elaborate' step finished in '2' seconds
+INFO: [USF-XSim-99] Step results log file:'D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/packed_q8_xsim_project/packed_q8_xsim.sim/sim_1/behav/xsim/elaborate.log'
+ERROR: [USF-XSim-62] 'elaborate' step failed with error(s). Please check the Tcl console output or 'D:/DOAN/DATN_RTL/DATN_VIVADO/manual_sim/packed_q8_xsim_project/packed_q8_xsim.sim/sim_1/behav/xsim/elaborate.log' file for more information.
+ERROR: [Vivado 12-4473] Detected error while running simulation. Please correct the issue and retry this operation.
+launch_simulation: Time (s): cpu = 00:00:00 ; elapsed = 00:00:05 . Memory (MB): peak = 1075.430 ; gain = 1.723
+ERROR: [Common 17-39] 'launch_simulation' failed due to earlier errors.
+
+    while executing
+"launch_simulation"
+    (file ".\run_packed_q8_xsim.tcl" line 23)
+INFO: [Common 17-206] Exiting Vivado at Mon Jun 15 17:15:37 2026...

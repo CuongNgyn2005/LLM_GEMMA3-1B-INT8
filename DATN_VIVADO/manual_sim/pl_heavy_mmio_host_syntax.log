@@ -1,0 +1,2 @@
+﻿COMMAND: cd /mnt/d/DOAN/llama.cpp && g++ -std=c++11 -Wall -Wextra -Wformat=2 -fsyntax-only -I ggml/include -I ggml/src -I ggml/src/ggml-cpu ggml/src/ggml-cpu/fpga_host.cpp
+RESULT: PASS
