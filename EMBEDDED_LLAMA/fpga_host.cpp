@@ -55,6 +55,10 @@ static FILE * fpga_log_fp(void) {
     return fp;
 }
 
+static unsigned long long fpga_ptr_addr(const volatile void * ptr) {
+    return (unsigned long long) reinterpret_cast<uintptr_t>(ptr);
+}
+
 static void fpga_log_finish_line(FILE * fp, bool force_flush) {
     g_log_pending_lines++;
     if (force_flush || g_log_flush_every <= 1 || g_log_pending_lines >= g_log_flush_every) {
@@ -705,9 +709,9 @@ static bool fpga_dma_init(void) {
     g_dma->ZDMA_CH_CTRL2          = 0x00000000;
     mmio_fence();
 
-    LOGDMA("ZDMA init base=0x%llx virt=%p status=0x%08x isr=0x%08x ctrl0=0x%08x ctrl1=0x%08x data_attr=0x%08x",
+    LOGDMA("ZDMA init base=0x%llx virt=0x%llx status=0x%08x isr=0x%08x ctrl0=0x%08x ctrl1=0x%08x data_attr=0x%08x",
            (unsigned long long) DMA_BASE_PHYS,
-           (void *) g_dma,
+           fpga_ptr_addr(g_dma),
            g_dma->ZDMA_CH_STATUS,
            g_dma->ZDMA_CH_ISR,
            g_dma->ZDMA_CH_CTRL0,
@@ -1481,10 +1485,10 @@ int fpga_init(void) {
            (unsigned long long) LMM_BASE_PHYS,
            (unsigned long long) DMA_BASE_PHYS,
            (unsigned long long) DDR_BASE_PHYS);
-    LOGDMA("mappings dma=%s virt=%p size=0x%zx vpu=%s virt=%p size=0x%zx ddr=%s virt=%p size=0x%zx",
-           g_dma_map_source.c_str(), (void *) g_dma, g_dma_map_size,
-           g_vpu_map_source.c_str(), (void *) g_vpu, g_vpu_map_size,
-           g_ddr_map_source.c_str(), (void *) g_ddr, g_ddr_map_size);
+    LOGDMA("mappings dma=%s virt=0x%llx size=0x%zx vpu=%s virt=0x%llx size=0x%zx ddr=%s virt=0x%llx size=0x%zx",
+           g_dma_map_source.c_str(), fpga_ptr_addr(g_dma), g_dma_map_size,
+           g_vpu_map_source.c_str(), fpga_ptr_addr(g_vpu), g_vpu_map_size,
+           g_ddr_map_source.c_str(), fpga_ptr_addr(g_ddr), g_ddr_map_size);
     LOGI("VPU windows act=0x%08x weight=0x%08x result=0x%08x data_movement=ZDMA_bulk_copy no_axi_stream_main=1",
          ACT_BASE, WEIGHT_BASE, RESULT_BASE);
     LOGI("VPU limits rows=%d col_beats=%d cols=%d raw_limits=0x%08x caps=0x%08x packed_q8=%d max_group_blocks=%d result_words=%d",
