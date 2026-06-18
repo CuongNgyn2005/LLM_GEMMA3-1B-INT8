@@ -7,8 +7,9 @@
  * internal activation/weight valid signals are asserted.  The datapath is
  * fully pipelined:
  *
- *   Stage 0          : NUM_LANES signed INT8 x INT8 mult_gen_0 instances
- *   Stage 1          : multiplier-output capture after IP latency
+ *   DSP pipeline     : NUM_LANES signed INT8 x INT8 mult_gen_0 instances
+ *                      configured for three pipeline stages
+ *   Product capture  : multiplier-output capture after IP latency
  *   Stage 2..log2(N) : registered binary adder tree
  *   Commit stage     : row accumulator, fixed-point dequant, result FIFO
  *
@@ -20,8 +21,8 @@
  * - NUM_LANES must be a power of two.  16/32/64/128 are the intended values.
  * - scale_factor is treated as a positive fixed-point scale with
  *   SCALE_FRAC_BITS fractional bits.  FP16 1.0 (16'h3c00) is bypassed for the
- *   existing raw-accumulator test flow; replace this with a real FP16 unit if
- *   you want to match the paper's FP16 VPU exactly.
+ *   existing raw-accumulator test flow.  FP16 is only a possible future
+ *   numeric-format option; this project intentionally implements an INT8 VPU.
  * - RESULT_FIFO_DEPTH must be a power of two.
  * - Reset is active-low and synchronous.
  *-----------------------------------------------------------------------------
@@ -87,7 +88,9 @@ module PMAU_Full #(
     localparam FIFO_COUNT_WIDTH  = FIFO_PTR_WIDTH + 1;
     localparam SCALE_EXT_WIDTH   = SCALE_WIDTH + 1;
     localparam DEQUANT_WIDTH     = ACC_WIDTH + SCALE_EXT_WIDTH;
-    localparam MULT_IP_LATENCY   = 2;
+    // Must match mult_gen_0.xci C_LATENCY/PipeStages.  The current IP is
+    // intentionally configured for three stages to meet the timing target.
+    localparam MULT_IP_LATENCY   = 3;
     localparam [FIFO_COUNT_WIDTH-1:0] FIFO_DEPTH_COUNT = RESULT_FIFO_DEPTH;
     localparam [SCALE_WIDTH-1:0] FP16_ONE = 16'h3c00;
 
@@ -125,29 +128,18 @@ module PMAU_Full #(
 
     wire result_fire = result_valid && result_ready;
 
-    reg [FIFO_COUNT_WIDTH-1:0] pending_result_count;
-    integer pending_i;
-    always @* begin
-        pending_result_count = {FIFO_COUNT_WIDTH{1'b0}};
-        for (pending_i = 0; pending_i <= MULT_IP_LATENCY; pending_i = pending_i + 1) begin
-            if (mult_valid_pipe[pending_i] && mult_last_pipe[pending_i])
-                pending_result_count = pending_result_count + {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
-        end
-        for (pending_i = 0; pending_i <= TREE_LEVELS; pending_i = pending_i + 1) begin
-            if (valid_pipe[pending_i] && last_pipe[pending_i])
-                pending_result_count = pending_result_count + {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
-        end
-        if (deq_s1_valid)
-            pending_result_count = pending_result_count + {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
-        if (deq_s2_valid)
-            pending_result_count = pending_result_count + {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
-    end
+    // Track completed rows that have entered the arithmetic pipeline but have
+    // not reached the result FIFO yet.  The previous implementation rebuilt
+    // this value every cycle with two procedural for-loops.  A sequential
+    // occupancy counter removes that popcount/adder network from the input
+    // ready path while preserving the same reservation semantics.
+    reg [FIFO_COUNT_WIDTH-1:0] inflight_result_count;
 
     wire [FIFO_COUNT_WIDTH-1:0] fifo_count_after_pop =
         fifo_count - {{(FIFO_COUNT_WIDTH-1){1'b0}}, result_fire};
 
     wire [FIFO_COUNT_WIDTH-1:0] reserved_result_slots =
-        fifo_count_after_pop + pending_result_count;
+        fifo_count_after_pop + inflight_result_count;
 
     wire both_inputs_valid = activation_valid && weight_valid;
     wire incoming_pair_last = both_inputs_valid && activation_last && weight_last;
@@ -161,6 +153,7 @@ module PMAU_Full #(
     assign weight_ready     = can_accept_pair && activation_valid;
 
     wire input_fire = both_inputs_valid && can_accept_pair;
+    wire accepted_row_end = input_fire && activation_last && weight_last;
 
     // -------------------------------------------------------------------------
     // Stage 0: signed INT8 x INT8 Vivado multiplier IP instances
@@ -322,6 +315,7 @@ module PMAU_Full #(
             fifo_wr_ptr <= {FIFO_PTR_WIDTH{1'b0}};
             fifo_rd_ptr <= {FIFO_PTR_WIDTH{1'b0}};
             fifo_count  <= {FIFO_COUNT_WIDTH{1'b0}};
+            inflight_result_count <= {FIFO_COUNT_WIDTH{1'b0}};
 
             for (k = 0; k < RESULT_FIFO_DEPTH; k = k + 1) begin
                 result_fifo_data[k] <= {ACC_WIDTH{1'b0}};
@@ -341,6 +335,14 @@ module PMAU_Full #(
                 2'b10: fifo_count <= fifo_count + {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
                 2'b01: fifo_count <= fifo_count - {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
                 default: fifo_count <= fifo_count;
+            endcase
+
+            case ({accepted_row_end, fifo_push})
+                2'b10: inflight_result_count <= inflight_result_count +
+                                                     {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
+                2'b01: inflight_result_count <= inflight_result_count -
+                                                     {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
+                default: inflight_result_count <= inflight_result_count;
             endcase
 
             if (final_valid) begin
