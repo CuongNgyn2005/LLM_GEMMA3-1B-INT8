@@ -66,7 +66,6 @@ module AXI4_Mapping #(
     localparam [15:0] MAX_ROWS_16 = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16 = MAX_COL_BEATS;
     localparam [15:0] MAX_GROUP_Q8_BLOCKS_16 = MAX_GROUP_Q8_BLOCKS;
-    localparam [31:0] MAX_ROWS_32 = MAX_ROWS;
     localparam [31:0] MAX_COL_BEATS_32 = MAX_COL_BEATS;
     localparam [31:0] WEIGHT_DEPTH_32 = WEIGHT_DEPTH;
     localparam [31:0] RESULT_WORD_DEPTH_32 = RESULT_WORD_DEPTH;
@@ -190,14 +189,15 @@ module AXI4_Mapping #(
     wire core_error;
     wire [15:0] core_active_row;
     wire [15:0] core_active_col_beat;
+    wire status_error = core_error;
 
     function [AXI_DATA_WIDTH-1:0] reg_read_data;
         input [31:0] addr;
         begin
             reg_read_data = {AXI_DATA_WIDTH{1'b0}};
             case (addr[15:0])
-                16'h0000: reg_read_data[2:0]   = {core_error, core_busy, core_done};
-                16'h0010: reg_read_data[2:0]   = {core_error, core_busy, core_done};
+                16'h0000: reg_read_data[2:0]   = {status_error, core_busy, core_done};
+                16'h0010: reg_read_data[2:0]   = {status_error, core_busy, core_done};
                 16'h0020: reg_read_data[31:0]  = cfg_rows_reg;
                 16'h0030: reg_read_data[31:0]  = cfg_cols_reg;
                 16'h0040: reg_read_data[31:0]  = cfg_col_beats_reg;
@@ -284,11 +284,14 @@ module AXI4_Mapping #(
         end
     end
 
-    wire core_rd_en =
+    wire mmio_core_rd_en =
         map_rd_en && is_result_addr(rd_addr_local) &&
         mem_index_in_range(rd_addr_local);
-    wire [1:0] core_rd_region = mem_region(rd_addr_local);
-    wire [31:0] core_rd_index = mem_index(rd_addr_local);
+    wire [1:0] mmio_core_rd_region = mem_region(rd_addr_local);
+    wire [31:0] mmio_core_rd_index = mem_index(rd_addr_local);
+    wire core_rd_en = mmio_core_rd_en;
+    wire [1:0] core_rd_region = mmio_core_rd_region;
+    wire [31:0] core_rd_index = mmio_core_rd_index;
     wire [AXI_DATA_WIDTH-1:0] core_rd_data;
     wire core_rd_valid;
     wire core_rd_error;

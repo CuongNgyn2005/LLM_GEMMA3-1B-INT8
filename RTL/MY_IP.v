@@ -20,7 +20,11 @@ module MY_IP #(
     parameter integer MAX_ROWS               = 256,
     parameter integer MAX_COL_BEATS          = 32
 ) (
+    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
+    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
     input  wire                                  s00_axi_aclk,
+    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 s00_axi_aresetn RST" *)
+    (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
     input  wire                                  s00_axi_aresetn,
 
     input  wire [C_S00_AXI_ID_WIDTH-1:0]         s00_axi_awid,
