@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <string>
@@ -257,6 +258,7 @@ static bool                g_trace_data_enabled = false;
 static bool                g_cleanup_done = false;
 static bool                g_atexit_registered = false;
 static bool                g_abort_on_cpu_fallback = true;
+static bool                g_uio_inventory_logged = false;
 static int                 g_profile_every = FPGA_DEFAULT_PROFILE_EVERY;
 static int                 g_ip_status_every = FPGA_DEFAULT_STATUS_EVERY;
 static long long           g_dma_timeout_us = FPGA_DEFAULT_DMA_TIMEOUT_US;
@@ -456,9 +458,69 @@ static bool read_text_file(const std::string & path, std::string * out) {
     return true;
 }
 
+static bool parse_uio_map_size(const std::string & uio, size_t * map_size) {
+    std::string size_text;
+    if (!read_text_file("/sys/class/uio/" + uio + "/maps/map0/size", &size_text)) {
+        return false;
+    }
+
+    char * end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = strtoull(size_text.c_str(), &end, 0);
+    if (errno != 0 || end == size_text.c_str() || parsed == 0ULL) {
+        return false;
+    }
+
+    *map_size = (size_t) parsed;
+    return true;
+}
+
+static void log_uio_inventory_once(void) {
+    if (g_uio_inventory_logged) {
+        return;
+    }
+    g_uio_inventory_logged = true;
+
+    DIR * dir = opendir("/sys/class/uio");
+    if (!dir) {
+        LOGE("UIO inventory unavailable: /sys/class/uio cannot be opened errno=%d (%s)",
+             errno, strerror(errno));
+        return;
+    }
+
+    bool any = false;
+    struct dirent * ent = nullptr;
+    while ((ent = readdir(dir)) != nullptr) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+
+        const std::string uio = ent->d_name;
+        std::string name;
+        std::string addr;
+        std::string size;
+        read_text_file("/sys/class/uio/" + uio + "/name", &name);
+        read_text_file("/sys/class/uio/" + uio + "/maps/map0/addr", &addr);
+        read_text_file("/sys/class/uio/" + uio + "/maps/map0/size", &size);
+        LOGE("UIO inventory dev=/dev/%s name=%s addr=%s size=%s",
+             uio.c_str(),
+             name.empty() ? "?" : name.c_str(),
+             addr.empty() ? "?" : addr.c_str(),
+             size.empty() ? "?" : size.c_str());
+        any = true;
+    }
+    closedir(dir);
+
+    if (!any) {
+        LOGE("UIO inventory: /sys/class/uio exists but contains no uio devices");
+    }
+}
+
 static bool find_uio_device(const char * wanted_name, std::string * dev_path, size_t * map_size) {
     DIR * dir = opendir("/sys/class/uio");
     if (!dir) {
+        LOGE("UIO lookup for name=%s failed: /sys/class/uio cannot be opened errno=%d (%s)",
+             wanted_name, errno, strerror(errno));
         return false;
     }
 
@@ -478,42 +540,87 @@ static bool find_uio_device(const char * wanted_name, std::string * dev_path, si
             continue;
         }
 
-        std::string size_text;
-        if (!read_text_file("/sys/class/uio/" + uio + "/maps/map0/size", &size_text)) {
-            continue;
-        }
-        char * end = nullptr;
-        errno = 0;
-        const unsigned long long parsed = strtoull(size_text.c_str(), &end, 0);
-        if (errno != 0 || end == size_text.c_str() || parsed == 0ULL) {
+        size_t parsed = 0;
+        if (!parse_uio_map_size(uio, &parsed)) {
             continue;
         }
 
         *dev_path = "/dev/" + uio;
-        *map_size = (size_t) parsed;
+        *map_size = parsed;
         found = true;
         break;
     }
 
     closedir(dir);
+    if (!found) {
+        LOGE("UIO name=%s not found; set FPGA_DMA_UIO/FPGA_VPU_UIO/FPGA_DDR_UIO to /dev/uioX if names differ",
+             wanted_name);
+        log_uio_inventory_once();
+    }
     return found;
+}
+
+static bool find_uio_device_from_ref(const char * ref, std::string * dev_path, size_t * map_size, std::string * resolved_name) {
+    if (!ref || ref[0] == '\0') {
+        return false;
+    }
+
+    std::string text(ref);
+    std::string uio;
+    if (text.compare(0, 8, "/dev/uio") == 0) {
+        const size_t slash = text.find_last_of('/');
+        uio = slash == std::string::npos ? text : text.substr(slash + 1);
+        *dev_path = text;
+    } else if (text.compare(0, 3, "uio") == 0) {
+        uio = text;
+        *dev_path = "/dev/" + text;
+    } else {
+        if (!find_uio_device(ref, dev_path, map_size)) {
+            return false;
+        }
+        *resolved_name = text;
+        return true;
+    }
+
+    if (!parse_uio_map_size(uio, map_size)) {
+        LOGE("UIO override %s has no readable map0 size under /sys/class/uio/%s", ref, uio.c_str());
+        return false;
+    }
+    if (!read_text_file("/sys/class/uio/" + uio + "/name", resolved_name)) {
+        *resolved_name = "?";
+    }
+    return true;
 }
 
 static bool map_uio_region(
         const char * uio_name,
+        const char * env_name,
         size_t required_size,
         const char * tag,
         void ** map_base,
         size_t * map_size,
         std::string * source) {
     std::string dev_path;
+    std::string resolved_name;
     size_t uio_size = 0;
-    if (!find_uio_device(uio_name, &dev_path, &uio_size)) {
-        return false;
+    const char * override_ref = env_name ? getenv(env_name) : nullptr;
+    if (override_ref && override_ref[0] != '\0') {
+        if (!find_uio_device_from_ref(override_ref, &dev_path, &uio_size, &resolved_name)) {
+            LOGE("%s=%s could not be resolved for %s; trying /dev/mem fallback",
+                 env_name, override_ref, tag);
+            return false;
+        }
+        LOGDMA("using %s=%s for %s resolved_dev=%s resolved_name=%s",
+               env_name, override_ref, tag, dev_path.c_str(), resolved_name.c_str());
+    } else {
+        if (!find_uio_device(uio_name, &dev_path, &uio_size)) {
+            return false;
+        }
+        resolved_name = uio_name;
     }
     if (uio_size < required_size) {
         LOGE("UIO %s for %s is too small: size=0x%zx required=0x%zx; trying /dev/mem fallback",
-             uio_name, tag, uio_size, required_size);
+             dev_path.c_str(), tag, uio_size, required_size);
         return false;
     }
 
@@ -534,9 +641,9 @@ static bool map_uio_region(
 
     *map_base = ptr;
     *map_size = uio_size;
-    *source = dev_path + "(" + uio_name + ",O_SYNC)";
-    LOGDMA("mapped %s via UIO name=%s dev=%s virt=%p size=0x%zx",
-           tag, uio_name, dev_path.c_str(), ptr, uio_size);
+    *source = dev_path + "(" + resolved_name + ",O_SYNC)";
+    LOGDMA("mapped %s via UIO expected_name=%s resolved_name=%s dev=%s virt=%p size=0x%zx",
+           tag, uio_name, resolved_name.c_str(), dev_path.c_str(), ptr, uio_size);
     return true;
 }
 
@@ -546,7 +653,19 @@ static bool ensure_mem_fd(void) {
     }
     g_mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (g_mem_fd < 0) {
-        LOGE("open /dev/mem failed errno=%d (%s). Run with sudo.", errno, strerror(errno));
+        const int saved_errno = errno;
+        struct stat st;
+        if (stat("/dev/mem", &st) == 0) {
+            LOGE("/dev/mem mode=0%o uid=%u gid=%u process_uid=%u process_euid=%u",
+                 (unsigned int) (st.st_mode & 07777),
+                 (unsigned int) st.st_uid,
+                 (unsigned int) st.st_gid,
+                 (unsigned int) getuid(),
+                 (unsigned int) geteuid());
+        }
+        LOGE("open /dev/mem failed errno=%d (%s). If process_euid is 0, this is kernel/device policy, not a sudo problem.",
+             saved_errno, strerror(saved_errno));
+        LOGE("Use UIO mappings instead: set FPGA_DMA_UIO, FPGA_VPU_UIO, FPGA_DDR_UIO to /dev/uioX or to the UIO names shown above");
         return false;
     }
     return true;
@@ -578,6 +697,7 @@ static bool map_devmem_region(
 
 static bool map_region_prefer_uio(
         const char * uio_name,
+        const char * env_name,
         uint64_t phys,
         size_t devmem_size,
         size_t required_size,
@@ -585,28 +705,28 @@ static bool map_region_prefer_uio(
         void ** map_base,
         size_t * map_size,
         std::string * source) {
-    if (map_uio_region(uio_name, required_size, tag, map_base, map_size, source)) {
+    if (map_uio_region(uio_name, env_name, required_size, tag, map_base, map_size, source)) {
         return true;
     }
     return map_devmem_region(phys, devmem_size, tag, map_base, map_size, source);
 }
 
 static bool map_registers_dma_ddr(void) {
-    if (!map_region_prefer_uio("dma-controller", DMA_BASE_PHYS, DMA_MMAP_SIZE,
+    if (!map_region_prefer_uio("dma-controller", "FPGA_DMA_UIO", DMA_BASE_PHYS, DMA_MMAP_SIZE,
                                sizeof(dma_ctrl), "ZDMA", &g_dma_map_base,
                                &g_dma_map_size, &g_dma_map_source)) {
         return false;
     }
     g_dma = (volatile dma_ctrl *) g_dma_map_base;
 
-    if (!map_region_prefer_uio("MY_IP", REG_BASE_PHYS, VPU_DEV_MEM_MMAP,
+    if (!map_region_prefer_uio("MY_IP", "FPGA_VPU_UIO", REG_BASE_PHYS, VPU_DEV_MEM_MMAP,
                                VPU_REG_MMAP_MIN, "MY_IP/VPU", &g_vpu_map_base,
                                &g_vpu_map_size, &g_vpu_map_source)) {
         return false;
     }
     g_vpu = (volatile uint8_t *) g_vpu_map_base;
 
-    if (!map_region_prefer_uio("ddr_high", DDR_BASE_PHYS, DDR_DEV_MEM_MMAP,
+    if (!map_region_prefer_uio("ddr_high", "FPGA_DDR_UIO", DDR_BASE_PHYS, DDR_DEV_MEM_MMAP,
                                DDR_REQUIRED_BYTES, "ddr_high", &g_ddr_map_base,
                                &g_ddr_map_size, &g_ddr_map_source)) {
         return false;
