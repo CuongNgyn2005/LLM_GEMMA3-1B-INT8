@@ -483,7 +483,7 @@ static void log_uio_inventory_once(void) {
 
     DIR * dir = opendir("/sys/class/uio");
     if (!dir) {
-        LOGE("UIO inventory unavailable: /sys/class/uio cannot be opened errno=%d (%s)",
+        LOGI("UIO inventory unavailable: /sys/class/uio cannot be opened errno=%d (%s)",
              errno, strerror(errno));
         return;
     }
@@ -502,7 +502,7 @@ static void log_uio_inventory_once(void) {
         read_text_file("/sys/class/uio/" + uio + "/name", &name);
         read_text_file("/sys/class/uio/" + uio + "/maps/map0/addr", &addr);
         read_text_file("/sys/class/uio/" + uio + "/maps/map0/size", &size);
-        LOGE("UIO inventory dev=/dev/%s name=%s addr=%s size=%s",
+        LOGI("UIO inventory dev=/dev/%s name=%s addr=%s size=%s",
              uio.c_str(),
              name.empty() ? "?" : name.c_str(),
              addr.empty() ? "?" : addr.c_str(),
@@ -512,14 +512,14 @@ static void log_uio_inventory_once(void) {
     closedir(dir);
 
     if (!any) {
-        LOGE("UIO inventory: /sys/class/uio exists but contains no uio devices");
+        LOGI("UIO inventory: /sys/class/uio exists but contains no uio devices");
     }
 }
 
 static bool find_uio_device(const char * wanted_name, std::string * dev_path, size_t * map_size) {
     DIR * dir = opendir("/sys/class/uio");
     if (!dir) {
-        LOGE("UIO lookup for name=%s failed: /sys/class/uio cannot be opened errno=%d (%s)",
+        LOGI("UIO lookup for name=%s failed: /sys/class/uio cannot be opened errno=%d (%s)",
              wanted_name, errno, strerror(errno));
         return false;
     }
@@ -553,7 +553,7 @@ static bool find_uio_device(const char * wanted_name, std::string * dev_path, si
 
     closedir(dir);
     if (!found) {
-        LOGE("UIO name=%s not found; set FPGA_DMA_UIO/FPGA_VPU_UIO/FPGA_DDR_UIO to /dev/uioX if names differ",
+        LOGI("UIO name=%s not found; falling back to /dev/mem unless FPGA_DMA_UIO/FPGA_VPU_UIO/FPGA_DDR_UIO is set",
              wanted_name);
         log_uio_inventory_once();
     }
@@ -1589,6 +1589,15 @@ int fpga_init(void) {
             g_packed_q8_result_words = cap_result_words;
         }
     }
+    if (!g_packed_q8_supported && !caps_valid) {
+        LOGI("REG_CAPS returned 0x%08x; assuming legacy VPU register map and validating packed Q8 by self-test",
+             caps);
+        g_packed_q8_supported = 1;
+        g_packed_q8_max_blocks = std::min(VPU_PACKED_Q8_MAX_BLOCKS, g_vpu_max_beats / VPU_BLOCK_BEATS);
+        g_packed_q8_result_words =
+            (g_vpu_max_rows * g_packed_q8_max_blocks + VPU_RESULT_PACK_LANES - 1) /
+            VPU_RESULT_PACK_LANES;
+    }
     if (env_flag_enabled("FPGA_FORCE_PACKED_Q8") && !g_packed_q8_supported) {
         g_packed_q8_supported = 1;
         g_packed_q8_max_blocks = std::min(VPU_PACKED_Q8_MAX_BLOCKS, g_vpu_max_beats / VPU_BLOCK_BEATS);
@@ -1623,7 +1632,7 @@ int fpga_init(void) {
          g_abort_on_cpu_fallback ? 1 : 0);
 
     if (!g_packed_q8_supported) {
-        fpga_fatal("REG_CAPS does not expose packed_q8 capability; refusing CPU fallback");
+        fpga_fatal("REG_CAPS=0x%08x does not expose packed_q8 capability; refusing CPU fallback", caps);
     }
     if (!fpga_dma_basic_self_test()) {
         fpga_fatal("basic ZDMA-to-IP self-test failed; refusing CPU fallback");
