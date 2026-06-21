@@ -1,5 +1,6 @@
 #include "fpga_host.h"
 #include "ggml.h"
+#include "quants.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -23,7 +24,7 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "zcu104-gemma3-q8-direct-vpu-mmio-v2"
+#define FPGA_HOST_TRACE_VERSION "zcu104-gemma3-q8-pl-correctness-v6"
 
 #define MY_IP_BASE_ADDRESS 0x00000000A0000000LL
 #define REG_BASE_PHYS      0x00000000A0000000LL
@@ -48,7 +49,7 @@ static FILE * fpga_log_fp(void) {
 
         const time_t now = time(nullptr);
         fprintf(fp, "\n============================================================\n");
-        fprintf(fp, "[FPGA] direct VPU MMIO log started at %ld\n", (long) now);
+        fprintf(fp, "[FPGA] host log started at %ld\n", (long) now);
         fprintf(fp, "============================================================\n");
         fflush(fp);
     }
@@ -84,6 +85,7 @@ static void fpga_log_line(bool enabled, const char * tag, bool force_flush, cons
 
 #define LOGI(fmt, ...)     fpga_log_line(true, "INFO",    false, fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...)     fpga_log_line(true, "ERROR",   true,  fmt, ##__VA_ARGS__)
+#define LOGW(fmt, ...)     fpga_log_line(true, "WARNING", true,  fmt, ##__VA_ARGS__)
 #define LOGDMA(fmt, ...)   fpga_log_line(kLogDmaDetail && g_dma_timing_enabled, "DMA", true, fmt, ##__VA_ARGS__)
 #define LOGIP(fmt, ...)    fpga_log_line(kLogTileDetail && g_ip_timing_enabled, "IPTIME", true, fmt, ##__VA_ARGS__)
 #define LOGSTAGE(fmt, ...) fpga_log_line(kLogStageSummary, "STAGE",   true,  fmt, ##__VA_ARGS__)
@@ -91,6 +93,9 @@ static void fpga_log_line(bool enabled, const char * tag, bool force_flush, cons
 #define LOGTOKEN(fmt, ...) fpga_log_line(true, "TOKEN",   true,  fmt, ##__VA_ARGS__)
 #define LOGDATA(fmt, ...)  fpga_log_line(g_trace_data_enabled, "DATA", true, fmt, ##__VA_ARGS__)
 #define LOGSELF(fmt, ...)  fpga_log_line(true, "SELFTEST", true,  fmt, ##__VA_ARGS__)
+#define LOGRESULT(fmt, ...) fpga_log_line(kFpgaResultAudit, "RESULT", true, fmt, ##__VA_ARGS__)
+#define LOGLAYOUT(fmt, ...) fpga_log_line(kFpgaLayoutAudit, "LAYOUT", true, fmt, ##__VA_ARGS__)
+#define LOGMISMATCH(fmt, ...) fpga_log_line(true, "MISMATCH", true, fmt, ##__VA_ARGS__)
 
 static constexpr uint64_t VPU_BASE_PHYS      = MY_IP_BASE_ADDRESS;
 static constexpr size_t   VPU_REG_MMAP_MIN   = 0x00001000;
@@ -142,10 +147,24 @@ static constexpr bool     kLogTileDetail       = false;
 static constexpr bool     kLogPollStatus       = false;
 static constexpr bool     kLogDmaDetail        = false;
 static constexpr bool     kLogStageSummary     = true;
-static constexpr bool     kPreferZdmaPath      = false;
+static constexpr bool     kPreferZdmaPath      = true;
 static constexpr bool     FPGA_ENABLE_ACTIVATION_CACHE = false;
-static constexpr bool     FPGA_ENABLE_DEBUG_COMPARE    = true;
+static constexpr bool     FPGA_ENABLE_DEBUG_COMPARE    = false;
 static constexpr int      FPGA_DEBUG_COMPARE_LIMIT     = 10;
+static constexpr int64_t  FPGA_MAX_SAFE_OFFLOAD_N      = 65536;
+static constexpr bool     kFpgaResultAudit             = true;
+static constexpr int      kFpgaResultAuditMaxCalls     = 80;
+static constexpr bool     kFpgaLayoutAudit             = true;
+static constexpr int      kFpgaLayoutAuditMaxCalls     = 32;
+static constexpr bool     kForceAllMatmulCpu           = false;
+static constexpr bool     kFpgaOnlyFFN                 = false;
+static constexpr bool     kFpgaOnlyAttentionProjection = false;
+static constexpr bool     kDisableFpgaForPrefill       = false;
+static constexpr bool     kDisableFpgaForDecode        = false;
+static constexpr bool     kForceDirectVpuPathForAudit  = false;
+static constexpr bool     kAbortOnNonFiniteResult      = true;
+static constexpr bool     kSanitizeNonFiniteWeightScales = true;
+static constexpr int      kNonFiniteWeightScaleLogLimit  = 32;
 
 typedef uint32_t U32;
 
@@ -211,6 +230,8 @@ typedef struct {
     size_t    weight_bytes;
     size_t    result_bytes;
     long long vpu_runs;
+    long long nonfinite_weight_scales;
+    long long sanitized_weight_scales;
 } fpga_stage_totals_t;
 
 typedef struct {
@@ -227,6 +248,19 @@ typedef struct {
     size_t                     cached_nb1;
     bool                       activation_cache_valid;
 } fpga_scratch_t;
+
+typedef struct {
+    char      tensor[96];
+    char      phase[8];
+    int       layer;
+    long long vpu_runs;
+    double    total_ms;
+    double    prep_ms;
+    double    host_accum_ms;
+    double    ip_compute_ms;
+    double    transfer_in_ms;
+    double    transfer_out_ms;
+} fpga_top_entry_t;
 
 static int                 g_mem_fd        = -1;
 static volatile dma_ctrl * g_dma           = nullptr;
@@ -248,12 +282,42 @@ static long long           g_fpga_start_us = 0;
 static long long           g_fpga_count    = 0;
 static long long           g_fpga_vpu_runs = 0;
 static long long           g_reject_count  = 0;
+static long long           g_fpga_allowed_count = 0;
+static long long           g_cpu_fallback_count = 0;
+static long long           g_fpga_skipped_token_embd_count = 0;
+static long long           g_fpga_skipped_large_n_count = 0;
+static long long           g_fpga_skipped_not_allowlisted_count = 0;
+static long long           g_prefill_calls = 0;
+static long long           g_decode_calls = 0;
+static long long           g_prefill_cpu_fallback = 0;
+static long long           g_decode_cpu_fallback = 0;
+static long long           g_prefill_mismatch_count = 0;
+static long long           g_decode_mismatch_count = 0;
+static long long           g_nonfinite_result_count = 0;
+static long long           g_nonfinite_weight_scale_count = 0;
+static long long           g_sanitized_weight_scale_count = 0;
+static int                 g_nonfinite_weight_scale_log_count = 0;
+static long long           g_total_prep_us = 0;
+static long long           g_total_transfer_in_us = 0;
+static long long           g_total_ip_compute_us = 0;
+static long long           g_total_transfer_out_us = 0;
+static long long           g_total_host_accum_us = 0;
+static long long           g_total_stage_us = 0;
+static long long           g_prefill_total_us = 0;
+static long long           g_decode_total_us = 0;
 static long long           g_activation_cache_hits = 0;
 static long long           g_activation_cache_misses = 0;
 static long long           g_last_token_us = 0;
 static int                 g_last_token_seq = INT_MIN;
 static long long           g_token_matmuls = 0;
 static int                 g_debug_compare_count = 0;
+static int                 g_result_audit_count = 0;
+static int                 g_result_audit_first_count = 0;
+static int                 g_result_audit_layer0_count = 0;
+static int                 g_result_audit_last_layer_count = 0;
+static int                 g_result_audit_decode_count = 0;
+static int                 g_layout_audit_count = 0;
+static fpga_top_entry_t    g_top_slowest[10] = {};
 
 static int                 g_vpu_max_rows  = VPU_DEFAULT_ROWS;
 static int                 g_vpu_max_beats = VPU_DEFAULT_BEATS;
@@ -270,6 +334,8 @@ static bool                g_cleanup_done = false;
 static bool                g_atexit_registered = false;
 static bool                g_abort_on_cpu_fallback = true;
 static bool                g_ddr_msync_unsupported = false;
+static bool                g_use_zdma_path = false;
+static bool                g_zdma_selftest_passed = false;
 static int                 g_profile_every = FPGA_DEFAULT_PROFILE_EVERY;
 static int                 g_ip_status_every = FPGA_DEFAULT_STATUS_EVERY;
 static long long           g_dma_timeout_us = FPGA_DEFAULT_DMA_TIMEOUT_US;
@@ -280,6 +346,32 @@ static double              g_fpga_clock_mhz = 0.0;
 static int g_current_layer_id = 0;
 int        g_current_seq_pos  = 0;
 static int g_is_attention_op  = 0;
+
+enum fpga_tensor_category_t {
+    FPGA_TENSOR_UNKNOWN = -1,
+    FPGA_TENSOR_ATTN_Q = 0,
+    FPGA_TENSOR_ATTN_K,
+    FPGA_TENSOR_ATTN_V,
+    FPGA_TENSOR_ATTN_OUTPUT,
+    FPGA_TENSOR_FFN_GATE,
+    FPGA_TENSOR_FFN_UP,
+    FPGA_TENSOR_FFN_DOWN,
+    FPGA_TENSOR_CATEGORY_COUNT
+};
+
+enum fpga_skip_kind_t {
+    FPGA_SKIP_NONE = 0,
+    FPGA_SKIP_LOGITS_OUTPUT,
+    FPGA_SKIP_LARGE_N,
+    FPGA_SKIP_NOT_ALLOWLISTED
+};
+
+static bool g_debug_compare_seen_category[FPGA_TENSOR_CATEGORY_COUNT] = {};
+static bool g_debug_compare_seen_last_layer_ffn_down = false;
+static bool g_logged_skip_logits_output = false;
+static bool g_logged_skip_large_n = false;
+static bool g_logged_skip_not_allowlisted = false;
+static bool g_logged_skip_safe_mode = false;
 
 static long long now_us(void) {
     struct timeval tv;
@@ -449,12 +541,30 @@ static inline uint32_t vpu_mem_rd32(uint32_t off) {
     return *(volatile uint32_t *) (g_vpu + off);
 }
 
+static inline void ddr_mem_wr32(uint32_t off, uint32_t val) {
+    *(volatile uint32_t *) (g_ddr + off) = val;
+}
+
+static inline uint32_t ddr_mem_rd32(uint32_t off) {
+    return *(volatile uint32_t *) (g_ddr + off);
+}
+
 static void vpu_write_i8x16(uint32_t off, const int8_t * lanes) {
     if (!vpu_is_mapped() || (off & 0xFU) != 0U) {
         fpga_fatal("invalid VPU write16 off=0x%08x", off);
     }
     for (uint32_t lane_word = 0; lane_word < 4U; ++lane_word) {
         vpu_mem_wr32(off + lane_word * 4U, load_le32_from_i8(lanes + lane_word * 4U));
+    }
+    mmio_fence();
+}
+
+static void ddr_write_i8x16(uint32_t off, const int8_t * lanes) {
+    if (!ddr_range_fits(off, 16U) || (off & 0xFU) != 0U) {
+        fpga_fatal("invalid DDR write16 off=0x%08x", off);
+    }
+    for (uint32_t lane_word = 0; lane_word < 4U; ++lane_word) {
+        ddr_mem_wr32(off + lane_word * 4U, load_le32_from_i8(lanes + lane_word * 4U));
     }
     mmio_fence();
 }
@@ -469,12 +579,32 @@ static void vpu_read_i32x4(uint32_t off, int32_t out[4]) {
     mmio_fence();
 }
 
+static void ddr_read_i32x4(uint32_t off, int32_t out[4]) {
+    if (!ddr_range_fits(off, 16U) || (off & 0xFU) != 0U) {
+        fpga_fatal("invalid DDR read16 off=0x%08x", off);
+    }
+    for (uint32_t lane_word = 0; lane_word < 4U; ++lane_word) {
+        out[lane_word] = (int32_t) ddr_mem_rd32(off + lane_word * 4U);
+    }
+    mmio_fence();
+}
+
 static void vpu_clear_window(uint32_t off, size_t bytes) {
     if (!vpu_is_mapped() || (off & 0x3U) != 0U || (bytes & 0x3U) != 0U) {
         fpga_fatal("invalid VPU clear off=0x%08x bytes=%zu", off, bytes);
     }
     for (size_t byte = 0; byte < bytes; byte += 4U) {
         vpu_mem_wr32(off + (uint32_t) byte, 0U);
+    }
+    mmio_fence();
+}
+
+static void ddr_clear_window(uint32_t off, size_t bytes) {
+    if (!ddr_range_fits(off, bytes) || (off & 0x3U) != 0U || (bytes & 0x3U) != 0U) {
+        fpga_fatal("invalid DDR clear off=0x%08x bytes=%zu", off, bytes);
+    }
+    for (size_t byte = 0; byte < bytes; byte += 4U) {
+        ddr_mem_wr32(off + (uint32_t) byte, 0U);
     }
     mmio_fence();
 }
@@ -496,6 +626,217 @@ static void log_vpu_u32_words(const char * label, uint32_t off, size_t bytes) {
 
 static const char * tensor_name_or_unknown(const struct ggml_tensor * tensor) {
     return (tensor && tensor->name[0] != '\0') ? tensor->name : "?";
+}
+
+static bool str_starts_with(const char * s, const char * prefix) {
+    if (!s || !prefix) {
+        return false;
+    }
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+static bool str_ends_with(const char * s, const char * suffix) {
+    if (!s || !suffix) {
+        return false;
+    }
+    const size_t len = strlen(s);
+    const size_t suffix_len = strlen(suffix);
+    return len >= suffix_len && strcmp(s + len - suffix_len, suffix) == 0;
+}
+
+static bool is_logits_or_output_projection_tensor(const char * name) {
+    return name &&
+           (strcmp(name, "token_embd.weight") == 0 ||
+            strcmp(name, "output.weight") == 0 ||
+            strcmp(name, "lm_head.weight") == 0 ||
+            strcmp(name, "tok_embeddings.weight") == 0);
+}
+
+static fpga_tensor_category_t fpga_tensor_category(const char * name) {
+    if (!name || !str_starts_with(name, "blk.")) {
+        return FPGA_TENSOR_UNKNOWN;
+    }
+    if (str_ends_with(name, ".attn_q.weight")) {
+        return FPGA_TENSOR_ATTN_Q;
+    }
+    if (str_ends_with(name, ".attn_k.weight")) {
+        return FPGA_TENSOR_ATTN_K;
+    }
+    if (str_ends_with(name, ".attn_v.weight")) {
+        return FPGA_TENSOR_ATTN_V;
+    }
+    if (str_ends_with(name, ".attn_output.weight")) {
+        return FPGA_TENSOR_ATTN_OUTPUT;
+    }
+    if (str_ends_with(name, ".ffn_gate.weight")) {
+        return FPGA_TENSOR_FFN_GATE;
+    }
+    if (str_ends_with(name, ".ffn_up.weight")) {
+        return FPGA_TENSOR_FFN_UP;
+    }
+    if (str_ends_with(name, ".ffn_down.weight")) {
+        return FPGA_TENSOR_FFN_DOWN;
+    }
+    return FPGA_TENSOR_UNKNOWN;
+}
+
+static const char * fpga_tensor_category_name(fpga_tensor_category_t category) {
+    switch (category) {
+        case FPGA_TENSOR_ATTN_Q:      return "attn_q";
+        case FPGA_TENSOR_ATTN_K:      return "attn_k";
+        case FPGA_TENSOR_ATTN_V:      return "attn_v";
+        case FPGA_TENSOR_ATTN_OUTPUT: return "attn_output";
+        case FPGA_TENSOR_FFN_GATE:    return "ffn_gate";
+        case FPGA_TENSOR_FFN_UP:      return "ffn_up";
+        case FPGA_TENSOR_FFN_DOWN:    return "ffn_down";
+        default:                      return "unknown";
+    }
+}
+
+static bool fpga_tensor_category_is_ffn(fpga_tensor_category_t category) {
+    return category == FPGA_TENSOR_FFN_GATE ||
+           category == FPGA_TENSOR_FFN_UP ||
+           category == FPGA_TENSOR_FFN_DOWN;
+}
+
+static bool fpga_tensor_category_is_attention_projection(fpga_tensor_category_t category) {
+    return category == FPGA_TENSOR_ATTN_Q ||
+           category == FPGA_TENSOR_ATTN_K ||
+           category == FPGA_TENSOR_ATTN_V ||
+           category == FPGA_TENSOR_ATTN_OUTPUT;
+}
+
+static bool fpga_debug_safe_mode_allows(
+        fpga_tensor_category_t category,
+        int64_t m,
+        const char ** reason) {
+    if (reason) {
+        *reason = nullptr;
+    }
+    if (kForceAllMatmulCpu) {
+        if (reason) {
+            *reason = "debug_safe_mode_all_matmul_cpu";
+        }
+        return false;
+    }
+    if (kFpgaOnlyFFN && !fpga_tensor_category_is_ffn(category)) {
+        if (reason) {
+            *reason = "debug_safe_mode_only_ffn";
+        }
+        return false;
+    }
+    if (kFpgaOnlyAttentionProjection && !fpga_tensor_category_is_attention_projection(category)) {
+        if (reason) {
+            *reason = "debug_safe_mode_only_attention_projection";
+        }
+        return false;
+    }
+    if (kDisableFpgaForPrefill && m > 1) {
+        if (reason) {
+            *reason = "debug_safe_mode_prefill_cpu_baseline";
+        }
+        return false;
+    }
+    if (kDisableFpgaForDecode && m == 1) {
+        if (reason) {
+            *reason = "debug_safe_mode_decode_cpu_baseline";
+        }
+        return false;
+    }
+    return true;
+}
+
+static bool fpga_tensor_allowed(
+        const char * tensor_name,
+        int64_t n,
+        const char ** reason,
+        fpga_skip_kind_t * kind) {
+    if (reason) {
+        *reason = nullptr;
+    }
+    if (kind) {
+        *kind = FPGA_SKIP_NONE;
+    }
+
+    if (is_logits_or_output_projection_tensor(tensor_name)) {
+        if (reason) {
+            *reason = "logits/output_projection_cpu_baseline";
+        }
+        if (kind) {
+            *kind = FPGA_SKIP_LOGITS_OUTPUT;
+        }
+        return false;
+    }
+
+    if (n > FPGA_MAX_SAFE_OFFLOAD_N) {
+        if (reason) {
+            *reason = "N_too_large_for_current_VPU";
+        }
+        if (kind) {
+            *kind = FPGA_SKIP_LARGE_N;
+        }
+        return false;
+    }
+
+    if (fpga_tensor_category(tensor_name) != FPGA_TENSOR_UNKNOWN) {
+        return true;
+    }
+
+    if (reason) {
+        *reason = "not_transformer_block_allowlist";
+    }
+    if (kind) {
+        *kind = FPGA_SKIP_NOT_ALLOWLISTED;
+    }
+    return false;
+}
+
+static void log_fpga_tensor_skip_once(
+        const char * tensor_name,
+        int64_t k,
+        int64_t n,
+        int64_t m,
+        const char * reason,
+        fpga_skip_kind_t kind) {
+    bool should_log = false;
+    switch (kind) {
+        case FPGA_SKIP_LOGITS_OUTPUT:
+            g_fpga_skipped_token_embd_count++;
+            should_log = !g_logged_skip_logits_output;
+            g_logged_skip_logits_output = true;
+            break;
+        case FPGA_SKIP_LARGE_N:
+            g_fpga_skipped_large_n_count++;
+            should_log = !g_logged_skip_large_n;
+            g_logged_skip_large_n = true;
+            break;
+        case FPGA_SKIP_NOT_ALLOWLISTED:
+            g_fpga_skipped_not_allowlisted_count++;
+            should_log = !g_logged_skip_not_allowlisted;
+            g_logged_skip_not_allowlisted = true;
+            break;
+        case FPGA_SKIP_NONE:
+        default:
+            break;
+    }
+
+    if (should_log) {
+        LOGI("skip tensor=%s shape=K%lld_N%lld_M%lld reason=%s action=cpu_baseline",
+             tensor_name ? tensor_name : "?",
+             (long long) k,
+             (long long) n,
+             (long long) m,
+             reason ? reason : "unknown");
+    }
+}
+
+static void record_cpu_fallback(int64_t m) {
+    g_cpu_fallback_count++;
+    if (m == 1) {
+        g_decode_cpu_fallback++;
+    } else {
+        g_prefill_cpu_fallback++;
+    }
 }
 
 static int infer_layer_id_from_name(const char * name, int fallback) {
@@ -526,6 +867,49 @@ static const char * decode_or_prefill(int64_t m) {
     return m == 1 ? "decode" : "prefill";
 }
 
+static void record_top_stage(
+        const char * tensor_name,
+        int layer_id,
+        const char * phase,
+        long long vpu_runs,
+        double total_ms,
+        double prep_ms,
+        double transfer_in_ms,
+        double ip_compute_ms,
+        double transfer_out_ms,
+        double host_accum_ms) {
+    int slot = -1;
+    for (int i = 0; i < 10; ++i) {
+        if (g_top_slowest[i].total_ms <= 0.0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0 && total_ms > g_top_slowest[9].total_ms) {
+        slot = 9;
+    }
+    if (slot < 0) {
+        return;
+    }
+
+    fpga_top_entry_t entry = {};
+    snprintf(entry.tensor, sizeof(entry.tensor), "%s", tensor_name ? tensor_name : "?");
+    snprintf(entry.phase, sizeof(entry.phase), "%s", phase ? phase : "?");
+    entry.layer = layer_id;
+    entry.vpu_runs = vpu_runs;
+    entry.total_ms = total_ms;
+    entry.prep_ms = prep_ms;
+    entry.transfer_in_ms = transfer_in_ms;
+    entry.ip_compute_ms = ip_compute_ms;
+    entry.transfer_out_ms = transfer_out_ms;
+    entry.host_accum_ms = host_accum_ms;
+
+    g_top_slowest[slot] = entry;
+    for (int i = slot; i > 0 && g_top_slowest[i].total_ms > g_top_slowest[i - 1].total_ms; --i) {
+        std::swap(g_top_slowest[i], g_top_slowest[i - 1]);
+    }
+}
+
 static bool read_text_file(const std::string & path, std::string * out) {
     FILE * fp = fopen(path.c_str(), "r");
     if (!fp) {
@@ -541,6 +925,125 @@ static bool read_text_file(const std::string & path, std::string * out) {
     while (!out->empty() && (out->back() == '\n' || out->back() == '\r' || out->back() == ' ' || out->back() == '\t')) {
         out->pop_back();
     }
+    return true;
+}
+
+typedef struct {
+    std::string uio;
+    std::string dev_path;
+    std::string name;
+    uint64_t    addr;
+    size_t      size;
+} uio_region_t;
+
+static bool parse_u64_text(const std::string & text, uint64_t * out) {
+    char * end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = strtoull(text.c_str(), &end, 0);
+    if (errno != 0 || end == text.c_str()) {
+        return false;
+    }
+    *out = (uint64_t) parsed;
+    return true;
+}
+
+static bool read_uio_region(const std::string & uio, uio_region_t * info) {
+    std::string name;
+    std::string addr_text;
+    std::string size_text;
+    if (!read_text_file("/sys/class/uio/" + uio + "/name", &name) ||
+        !read_text_file("/sys/class/uio/" + uio + "/maps/map0/addr", &addr_text) ||
+        !read_text_file("/sys/class/uio/" + uio + "/maps/map0/size", &size_text)) {
+        return false;
+    }
+
+    uint64_t addr = 0;
+    uint64_t size = 0;
+    if (!parse_u64_text(addr_text, &addr) || !parse_u64_text(size_text, &size) || size == 0) {
+        return false;
+    }
+
+    info->uio = uio;
+    info->dev_path = "/dev/" + uio;
+    info->name = name;
+    info->addr = addr;
+    info->size = (size_t) size;
+    return true;
+}
+
+static bool find_uio_by_name_and_addr(
+        const char * name0,
+        const char * name1,
+        uint64_t required_addr,
+        bool require_addr,
+        uio_region_t * out) {
+    DIR * dir = opendir("/sys/class/uio");
+    if (!dir) {
+        return false;
+    }
+
+    bool found = false;
+    struct dirent * ent = nullptr;
+    while ((ent = readdir(dir)) != nullptr) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+
+        uio_region_t info;
+        if (!read_uio_region(ent->d_name, &info)) {
+            continue;
+        }
+
+        const bool name_ok =
+            (name0 && info.name == name0) ||
+            (name1 && info.name == name1);
+        const bool addr_ok = info.addr == required_addr;
+        if ((name_ok && (!require_addr || addr_ok)) || (!name0 && !name1 && addr_ok)) {
+            *out = info;
+            found = true;
+            break;
+        }
+    }
+
+    closedir(dir);
+    return found;
+}
+
+static bool map_uio_checked(
+        const uio_region_t & info,
+        size_t required_size,
+        const char * tag,
+        void ** map_base,
+        size_t * map_size,
+        std::string * source) {
+    if (info.size < required_size) {
+        LOGE("%s UIO %s name=%s addr=0x%llx too small: size=0x%zx required=0x%zx",
+             tag, info.dev_path.c_str(), info.name.c_str(),
+             (unsigned long long) info.addr, info.size, required_size);
+        return false;
+    }
+
+    int fd = open(info.dev_path.c_str(), O_RDWR | O_SYNC);
+    if (fd < 0) {
+        LOGE("open %s for %s failed errno=%d (%s)", info.dev_path.c_str(), tag, errno, strerror(errno));
+        return false;
+    }
+
+    void * ptr = mmap(nullptr, info.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    const int saved_errno = errno;
+    close(fd);
+    if (ptr == MAP_FAILED) {
+        LOGE("mmap %s for %s size=0x%zx failed errno=%d (%s)",
+             info.dev_path.c_str(), tag, info.size, saved_errno, strerror(saved_errno));
+        return false;
+    }
+
+    *map_base = ptr;
+    *map_size = info.size;
+    *source = info.dev_path + "(" + info.name + ",O_SYNC)";
+    LOGI("mapped %s via UIO dev=%s name=%s addr=0x%llx virt=0x%llx size=0x%zx",
+         tag, info.dev_path.c_str(), info.name.c_str(),
+         (unsigned long long) info.addr, fpga_ptr_addr((volatile void *) ptr), info.size);
     return true;
 }
 
@@ -713,6 +1216,62 @@ static bool map_vpu_only(void) {
     return true;
 }
 
+static bool map_zdma_ddr_checked(void) {
+    if (dma_is_mapped() && ddr_is_mapped()) {
+        return true;
+    }
+
+    uio_region_t dma_info;
+    if (!find_uio_by_name_and_addr("dma", "dma-controller", DMA_BASE_PHYS, true, &dma_info)) {
+        if (!find_uio_by_name_and_addr(nullptr, nullptr, DMA_BASE_PHYS, true, &dma_info)) {
+            LOGI("ZDMA UIO not found at phys=0x%llx with name dma/dma-controller or addr match; keeping direct_vpu_mmio",
+                 (unsigned long long) DMA_BASE_PHYS);
+            return false;
+        }
+        LOGI("ZDMA UIO selected by physical address match dev=%s name=%s addr=0x%llx",
+             dma_info.dev_path.c_str(), dma_info.name.c_str(), (unsigned long long) dma_info.addr);
+    }
+    if (dma_info.addr != DMA_BASE_PHYS) {
+        LOGE("ZDMA runtime addr mismatch dev=%s name=%s addr=0x%llx expected=0x%llx",
+             dma_info.dev_path.c_str(), dma_info.name.c_str(),
+             (unsigned long long) dma_info.addr, (unsigned long long) DMA_BASE_PHYS);
+        return false;
+    }
+    if (!map_uio_checked(dma_info, sizeof(dma_ctrl), "ZDMA", &g_dma_map_base,
+                         &g_dma_map_size, &g_dma_map_source)) {
+        return false;
+    }
+    g_dma = (volatile dma_ctrl *) g_dma_map_base;
+
+    uio_region_t ddr_info;
+    if (!find_uio_by_name_and_addr("ddr_high", nullptr, DDR_BASE_PHYS, true, &ddr_info)) {
+        LOGI("ddr_high UIO not found at phys=0x%llx; keeping direct_vpu_mmio",
+             (unsigned long long) DDR_BASE_PHYS);
+        return false;
+    }
+    if (ddr_info.addr != DDR_BASE_PHYS) {
+        LOGE("ddr_high runtime addr mismatch dev=%s addr=0x%llx expected=0x%llx",
+             ddr_info.dev_path.c_str(),
+             (unsigned long long) ddr_info.addr, (unsigned long long) DDR_BASE_PHYS);
+        return false;
+    }
+    if (ddr_info.size < DDR_REQUIRED_BYTES) {
+        LOGE("ddr_high too small dev=%s size=0x%zx required=0x%zx",
+             ddr_info.dev_path.c_str(), ddr_info.size, DDR_REQUIRED_BYTES);
+        return false;
+    }
+    if (!map_uio_checked(ddr_info, DDR_REQUIRED_BYTES, "ddr_high", &g_ddr_map_base,
+                         &g_ddr_map_size, &g_ddr_map_source)) {
+        return false;
+    }
+    g_ddr = (uint8_t *) g_ddr_map_base;
+
+    LOGI("ZDMA runtime checks passed dma_dev=%s dma_addr=0x%llx ddr_dev=%s ddr_addr=0x%llx ddr_size=0x%zx",
+         dma_info.dev_path.c_str(), (unsigned long long) dma_info.addr,
+         ddr_info.dev_path.c_str(), (unsigned long long) ddr_info.addr, ddr_info.size);
+    return true;
+}
+
 static bool msync_ddr_range(uint32_t off, size_t bytes, bool invalidate, const char * tag) {
     if (!ddr_range_fits(off, bytes)) {
         LOGE("DDR msync range overflow tag=%s off=0x%08x bytes=%zu mapped_size=0x%zx",
@@ -836,7 +1395,7 @@ static void zdma_clear_descriptors(void) {
     return true;
 }
 
-static bool fpga_dma_copy(uint64_t src_phys, uint64_t dst_phys, size_t bytes, const char * tag) {
+static bool dma_copy_bytes(uint64_t src_phys, uint64_t dst_phys, size_t bytes, const char * tag) {
     if (!dma_is_mapped()) {
         LOGE("ZDMA is not mapped for tag=%s", tag ? tag : "?");
         return false;
@@ -912,15 +1471,15 @@ static bool fpga_dma_copy(uint64_t src_phys, uint64_t dst_phys, size_t bytes, co
     return true;
 }
 
-[[maybe_unused]] static bool fpga_dma_write_to_ip(uint32_t offset, size_t bytes, const char * tag) {
-    return fpga_dma_copy(DDR_BASE_PHYS + (uint64_t) offset,
+static bool dma_write_ip_bytes(uint32_t offset, size_t bytes, const char * tag) {
+    return dma_copy_bytes(DDR_BASE_PHYS + (uint64_t) offset,
                          LMM_BASE_PHYS + (uint64_t) offset,
                          bytes,
                          tag);
 }
 
-[[maybe_unused]] static bool fpga_dma_read_from_ip(uint32_t offset, size_t bytes, const char * tag) {
-    return fpga_dma_copy(LMM_BASE_PHYS + (uint64_t) offset,
+static bool dma_read_ip_bytes(uint32_t offset, size_t bytes, const char * tag) {
+    return dma_copy_bytes(LMM_BASE_PHYS + (uint64_t) offset,
                          DDR_BASE_PHYS + (uint64_t) offset,
                          bytes,
                          tag);
@@ -968,60 +1527,11 @@ static bool wait_vpu_done(uint32_t * final_status) {
 }
 
 static inline float fp16_to_fp32(uint16_t h) {
-    const uint32_t s = (uint32_t) ((h >> 15) & 1U);
-    const uint32_t e = (uint32_t) ((h >> 10) & 0x1FU);
-    const uint32_t m = (uint32_t) (h & 0x03FFU);
-    uint32_t b;
-
-    if (e == 0U) {
-        if (m == 0U) {
-            b = s << 31;
-        } else {
-            uint32_t mant = m;
-            uint32_t exp = 113U;
-            while ((mant & 0x0400U) == 0U) {
-                mant <<= 1;
-                exp--;
-            }
-            mant &= 0x03FFU;
-            b = (s << 31) | (exp << 23) | (mant << 13);
-        }
-    } else if (e == 31U) {
-        b = (s << 31) | 0x7F800000U | (m << 13);
-    } else {
-        b = (s << 31) | ((e + 112U) << 23) | (m << 13);
-    }
-
-    union {
-        uint32_t i;
-        float    f;
-    } u;
-    u.i = b;
-    return u.f;
+    return ggml_fp16_to_fp32((ggml_fp16_t) h);
 }
 
 static inline uint16_t fp32_to_fp16(float f) {
-    union {
-        float    f;
-        uint32_t i;
-    } u;
-    u.f = f;
-
-    const uint32_t sign = (u.i >> 16) & 0x8000U;
-    int32_t exp = (int32_t) ((u.i >> 23) & 0xFFU) - 127 + 15;
-    uint32_t mant = u.i & 0x007FFFFFU;
-
-    if (exp <= 0) {
-        if (exp < -10) {
-            return (uint16_t) sign;
-        }
-        mant = (mant | 0x00800000U) >> (1 - exp);
-        return (uint16_t) (sign | ((mant + 0x00001000U) >> 13));
-    }
-    if (exp >= 31) {
-        return (uint16_t) (sign | 0x7C00U);
-    }
-    return (uint16_t) (sign | ((uint32_t) exp << 10) | ((mant + 0x00001000U) >> 13));
+    return (uint16_t) ggml_fp32_to_fp16(f);
 }
 
 static void quantize_q8_0_block(const float * x, ptrdiff_t stride_bytes, block_q8_0_t * y) {
@@ -1049,6 +1559,10 @@ static void quantize_activation_vector_to(
         block_q8_0_t * out) {
     const int64_t nb = k / VPU_QK8_0;
     const char * base = (const char *) src1->data + m * src1->nb[1];
+    if (src1->nb[0] == (int64_t) sizeof(float)) {
+        quantize_row_q8_0((const float *) base, out, k);
+        return;
+    }
     for (int64_t ib = 0; ib < nb; ++ib) {
         const float * block_base = (const float *) (base + ib * VPU_QK8_0 * src1->nb[0]);
         quantize_q8_0_block(block_base, src1->nb[0], &out[(size_t) ib]);
@@ -1102,7 +1616,7 @@ static const block_q8_0_t * weight_block(
         int64_t row,
         int64_t block) {
     const char * row_base = (const char *) src0->data + row * src0->nb[1];
-    return (const block_q8_0_t *) row_base + block;
+    return (const block_q8_0_t *) (row_base + block * src0->nb[0]);
 }
 
 static void store_dst_value(
@@ -1152,6 +1666,327 @@ static void format_float_samples(const float * values, int count, char * out, si
     }
 }
 
+static void format_i32_samples(const int32_t * values, int count, char * out, size_t out_size) {
+    if (out_size == 0) {
+        return;
+    }
+    size_t pos = 0;
+    int written = snprintf(out + pos, out_size - pos, "[");
+    if (written < 0) {
+        out[0] = '\0';
+        return;
+    }
+    pos += (size_t) written;
+    for (int i = 0; i < count && pos < out_size; ++i) {
+        written = snprintf(out + pos, out_size - pos, "%s%d", i == 0 ? "" : ",", values[i]);
+        if (written < 0) {
+            break;
+        }
+        pos += (size_t) written;
+    }
+    if (pos < out_size) {
+        snprintf(out + pos, out_size - pos, "]");
+    } else {
+        out[out_size - 1] = '\0';
+    }
+}
+
+static void format_i8_samples(const int8_t * values, int count, char * out, size_t out_size) {
+    if (out_size == 0) {
+        return;
+    }
+    size_t pos = 0;
+    int written = snprintf(out + pos, out_size - pos, "[");
+    if (written < 0) {
+        out[0] = '\0';
+        return;
+    }
+    pos += (size_t) written;
+    for (int i = 0; i < count && pos < out_size; ++i) {
+        written = snprintf(out + pos, out_size - pos, "%s%d", i == 0 ? "" : ",", (int) values[i]);
+        if (written < 0) {
+            break;
+        }
+        const size_t remaining = out_size - pos;
+        if ((size_t) written >= remaining) {
+            pos = out_size - 1;
+            break;
+        }
+        pos += (size_t) written;
+    }
+    if (pos < out_size) {
+        snprintf(out + pos, out_size - pos, "]");
+    } else {
+        out[out_size - 1] = '\0';
+    }
+}
+
+static void log_nonfinite_weight_scale(
+        const struct ggml_tensor * src0,
+        const block_q8_0_t * wb,
+        const char * tensor_name,
+        int layer_id,
+        int64_t row,
+        int local_row,
+        int64_t block,
+        int group_block,
+        float weight_scale) {
+    const char * data = (const char *) src0->data;
+    const char * ptr = (const char *) wb;
+    const int64_t total_blocks = src0->ne[0] / VPU_QK8_0;
+    const long long data_off = (long long) (ptr - data);
+    const uint16_t prev_bits = block > 0 ? weight_block(src0, row, block - 1)->d : 0U;
+    const uint16_t next_bits = (block + 1 < total_blocks) ? weight_block(src0, row, block + 1)->d : 0U;
+    char qs_buf[160];
+    format_i8_samples(wb->qs, std::min(8, VPU_QK8_0), qs_buf, sizeof(qs_buf));
+
+    fpga_log_line(true, "NONFINITE_WEIGHT", true,
+        "tensor=%s layer=%d row=%lld local_row=%d block=%lld group_block=%d d_bits=0x%04x d=%.9g prev_d_bits=0x%04x next_d_bits=0x%04x data_off=%lld src0_ne=[%lld,%lld,%lld,%lld] src0_nb=[%lld,%lld,%lld,%lld] q8_blocks=%lld qs_first8=%s",
+        tensor_name ? tensor_name : "?",
+        layer_id,
+        (long long) row,
+        local_row,
+        (long long) block,
+        group_block,
+        (unsigned) wb->d,
+        weight_scale,
+        (unsigned) prev_bits,
+        (unsigned) next_bits,
+        data_off,
+        (long long) src0->ne[0], (long long) src0->ne[1],
+        (long long) src0->ne[2], (long long) src0->ne[3],
+        (long long) src0->nb[0], (long long) src0->nb[1],
+        (long long) src0->nb[2], (long long) src0->nb[3],
+        (long long) total_blocks,
+        qs_buf);
+}
+
+static void log_src1_stats_for_col(
+        const struct ggml_tensor * src1,
+        int64_t col,
+        int64_t k) {
+    const char * base = (const char *) src1->data + col * src1->nb[1];
+    float min_v = INFINITY;
+    float max_v = -INFINITY;
+    long long nan_count = 0;
+    long long inf_count = 0;
+    long long finite_count = 0;
+    int64_t first_bad = -1;
+    float first8[8] = {};
+    const int sample_count = (int) std::min<int64_t>(8, k);
+
+    for (int64_t i = 0; i < k; ++i) {
+        const float v = *(const float *) (base + i * src1->nb[0]);
+        if (i < sample_count) {
+            first8[i] = v;
+        }
+        if (std::isnan(v)) {
+            if (first_bad < 0) {
+                first_bad = i;
+            }
+            nan_count++;
+            continue;
+        }
+        if (std::isinf(v)) {
+            if (first_bad < 0) {
+                first_bad = i;
+            }
+            inf_count++;
+            continue;
+        }
+        finite_count++;
+        min_v = std::min(min_v, v);
+        max_v = std::max(max_v, v);
+    }
+
+    if (finite_count == 0) {
+        min_v = NAN;
+        max_v = NAN;
+    }
+
+    char first_buf[160];
+    format_float_samples(first8, sample_count, first_buf, sizeof(first_buf));
+    fpga_log_line(true, "NONFINITE_SRC1", true,
+        "first_bad_src1=%lld src1_min=%.6g src1_max=%.6g src1_nan=%lld src1_inf=%lld first8=%s",
+        (long long) first_bad,
+        min_v,
+        max_v,
+        nan_count,
+        inf_count,
+        first_buf);
+}
+
+static uint64_t checksum_update_float(uint64_t checksum, float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    checksum ^= (uint64_t) bits;
+    checksum *= 1099511628211ULL;
+    return checksum;
+}
+
+static bool should_audit_result(int layer_id, int64_t m) {
+    if (!kFpgaResultAudit || g_result_audit_count >= kFpgaResultAuditMaxCalls) {
+        return false;
+    }
+    if (g_result_audit_first_count < 16) {
+        g_result_audit_first_count++;
+        return true;
+    }
+    if (layer_id == 0 && g_result_audit_layer0_count < 16) {
+        g_result_audit_layer0_count++;
+        return true;
+    }
+    if (layer_id >= 25 && g_result_audit_last_layer_count < 16) {
+        g_result_audit_last_layer_count++;
+        return true;
+    }
+    if (m == 1 && g_result_audit_decode_count < 32) {
+        g_result_audit_decode_count++;
+        return true;
+    }
+    return false;
+}
+
+static bool log_result_audit(
+        long long call_id,
+        const struct ggml_tensor * dst,
+        int64_t k,
+        int64_t n,
+        int64_t m,
+        const char * tensor_name,
+        int layer_id) {
+    if (!should_audit_result(layer_id, m)) {
+        return true;
+    }
+    g_result_audit_count++;
+
+    const int64_t total = n * m;
+    if (total <= 0) {
+        LOGE("RESULT audit skipped empty tensor=%s layer=%d shape=K%lld_N%lld_M%lld",
+             tensor_name ? tensor_name : "?",
+             layer_id,
+             (long long) k,
+             (long long) n,
+             (long long) m);
+        return false;
+    }
+
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    float min_v = INFINITY;
+    float max_v = -INFINITY;
+    long long nan_count = 0;
+    long long inf_count = 0;
+    long long finite_count = 0;
+    float first8[8] = {};
+    float last8[8] = {};
+    const int first_count = (int) std::min<int64_t>(8, total);
+    const int last_count = first_count;
+    uint64_t checksum = 1469598103934665603ULL;
+
+    for (int64_t idx = 0; idx < total; ++idx) {
+        const int64_t row = idx / m;
+        const int64_t col = idx - row * m;
+        const float v = load_dst_value(dst, row, col);
+        checksum = checksum_update_float(checksum, v);
+        if (idx < first_count) {
+            first8[idx] = v;
+        }
+        if (idx >= total - last_count) {
+            last8[idx - (total - last_count)] = v;
+        }
+        if (std::isnan(v)) {
+            nan_count++;
+            continue;
+        }
+        if (std::isinf(v)) {
+            inf_count++;
+            continue;
+        }
+        finite_count++;
+        min_v = std::min(min_v, v);
+        max_v = std::max(max_v, v);
+        sum += (double) v;
+        sum_sq += (double) v * (double) v;
+    }
+
+    if (finite_count == 0) {
+        min_v = NAN;
+        max_v = NAN;
+    }
+    const double mean = finite_count > 0 ? sum / (double) finite_count : NAN;
+    const double l2 = std::sqrt(sum_sq);
+    char first_buf[160];
+    char last_buf[160];
+    format_float_samples(first8, first_count, first_buf, sizeof(first_buf));
+    format_float_samples(last8, last_count, last_buf, sizeof(last_buf));
+
+    LOGRESULT("call=%lld tensor=%s layer=%d phase=%s shape=K%lld_N%lld_M%lld path=%s dst_min=%.6g dst_max=%.6g dst_mean=%.6g dst_l2=%.6g nan=%lld inf=%lld first8=%s last8=%s checksum=0x%016llx",
+              call_id,
+              tensor_name ? tensor_name : "?",
+              layer_id,
+              decode_or_prefill(m),
+              (long long) k,
+              (long long) n,
+              (long long) m,
+              g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio",
+              min_v,
+              max_v,
+              mean,
+              l2,
+              nan_count,
+              inf_count,
+              first_buf,
+              last_buf,
+              (unsigned long long) checksum);
+
+    if (nan_count > 0 || inf_count > 0) {
+        g_nonfinite_result_count++;
+        LOGE("RESULT audit found non-finite values tensor=%s layer=%d nan=%lld inf=%lld",
+             tensor_name ? tensor_name : "?",
+             layer_id,
+             nan_count,
+             inf_count);
+        return false;
+    } else if (max_v > 1.0e4f || min_v < -1.0e4f) {
+        LOGW("RESULT audit large magnitude tensor=%s layer=%d dst_min=%.6g dst_max=%.6g",
+             tensor_name ? tensor_name : "?",
+             layer_id,
+             min_v,
+             max_v);
+    }
+    return true;
+}
+
+static bool should_audit_layout(int layer_id, int64_t m) {
+    if (!kFpgaLayoutAudit || g_layout_audit_count >= kFpgaLayoutAuditMaxCalls) {
+        return false;
+    }
+    return g_layout_audit_count < 8 || layer_id == 0 || layer_id >= 25 || m == 1;
+}
+
+static void log_layout_audit(
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst,
+        const char * tensor_name,
+        int layer_id) {
+    const int64_t m = src1 ? src1->ne[1] : 0;
+    if (!should_audit_layout(layer_id, m)) {
+        return;
+    }
+    g_layout_audit_count++;
+    LOGLAYOUT("tensor=%s layer=%d src0_ne=[%lld,%lld,%lld,%lld] src0_nb=[%zu,%zu,%zu,%zu] src1_ne=[%lld,%lld,%lld,%lld] src1_nb=[%zu,%zu,%zu,%zu] dst_ne=[%lld,%lld,%lld,%lld] dst_nb=[%zu,%zu,%zu,%zu]",
+              tensor_name ? tensor_name : "?",
+              layer_id,
+              (long long) src0->ne[0], (long long) src0->ne[1], (long long) src0->ne[2], (long long) src0->ne[3],
+              (size_t) src0->nb[0], (size_t) src0->nb[1], (size_t) src0->nb[2], (size_t) src0->nb[3],
+              (long long) src1->ne[0], (long long) src1->ne[1], (long long) src1->ne[2], (long long) src1->ne[3],
+              (size_t) src1->nb[0], (size_t) src1->nb[1], (size_t) src1->nb[2], (size_t) src1->nb[3],
+              (long long) dst->ne[0], (long long) dst->ne[1], (long long) dst->ne[2], (long long) dst->ne[3],
+              (size_t) dst->nb[0], (size_t) dst->nb[1], (size_t) dst->nb[2], (size_t) dst->nb[3]);
+}
+
 static void compute_host_reference_from_quantized_activation(
         const struct ggml_tensor * src0,
         int64_t k,
@@ -1164,24 +1999,15 @@ static void compute_host_reference_from_quantized_activation(
     for (int64_t col = 0; col < m; ++col) {
         for (int64_t row = 0; row < n; ++row) {
             float acc = 0.0f;
-            for (int64_t ib = 0; ib < nb; ++ib) {
-                const block_q8_0_t * wb = weight_block(src0, row, ib);
-                const block_q8_0_t * ab = &g_scratch.act_blocks_all[(size_t) (col * nb + ib)];
-                int32_t dot = 0;
-                for (int i = 0; i < VPU_QK8_0; ++i) {
-                    dot += (int32_t) ab->qs[i] * (int32_t) wb->qs[i];
-                }
-                acc +=
-                    (float) dot *
-                    g_scratch.act_scales[(size_t) (col * nb + ib)] *
-                    fp16_to_fp32(wb->d);
-            }
+            const block_q8_0_t * wb = weight_block(src0, row, 0);
+            const block_q8_0_t * ab = &g_scratch.act_blocks_all[(size_t) (col * nb)];
+            ggml_vec_dot_q8_0_q8_0((int) k, &acc, 0, wb, 0, ab, 0, 1);
             ref[(size_t) (row * m + col)] = acc;
         }
     }
 }
 
-static bool debug_compare_and_repair_dst(
+static bool debug_compare_fpga_dst(
         const struct ggml_tensor * src0,
         const struct ggml_tensor * dst,
         int64_t k,
@@ -1189,10 +2015,34 @@ static bool debug_compare_and_repair_dst(
         int64_t m,
         const char * tensor_name,
         int layer_id) {
-    if (!FPGA_ENABLE_DEBUG_COMPARE || g_debug_compare_count >= FPGA_DEBUG_COMPARE_LIMIT) {
+    if (!FPGA_ENABLE_DEBUG_COMPARE) {
         return true;
     }
+
+    const fpga_tensor_category_t category = fpga_tensor_category(tensor_name);
+    const bool valid_category =
+        category >= 0 && category < FPGA_TENSOR_CATEGORY_COUNT;
+    const bool need_category_check =
+        valid_category && !g_debug_compare_seen_category[(int) category];
+    const bool need_last_layer_check =
+        category == FPGA_TENSOR_FFN_DOWN &&
+        layer_id >= 25 &&
+        !g_debug_compare_seen_last_layer_ffn_down;
+
+    if (!need_category_check && !need_last_layer_check) {
+        return true;
+    }
+    if (g_debug_compare_count >= FPGA_DEBUG_COMPARE_LIMIT) {
+        return true;
+    }
+
     g_debug_compare_count++;
+    if (need_category_check) {
+        g_debug_compare_seen_category[(int) category] = true;
+    }
+    if (need_last_layer_check) {
+        g_debug_compare_seen_last_layer_ffn_down = true;
+    }
 
     std::vector<float> ref;
     compute_host_reference_from_quantized_activation(src0, k, n, m, ref);
@@ -1222,8 +2072,9 @@ static bool debug_compare_and_repair_dst(
     }
 
     if (first_bad < 0) {
-        LOGI("debug compare pass tensor=%s layer=%d check=%d/%d max_abs=%.6g",
+        LOGI("debug compare pass tensor=%s category=%s layer=%d check=%d/%d reference=ggml_vec_dot_q8_0_q8_0 max_abs=%.6g",
              tensor_name ? tensor_name : "?",
+             fpga_tensor_category_name(category),
              layer_id,
              g_debug_compare_count,
              FPGA_DEBUG_COMPARE_LIMIT,
@@ -1236,33 +2087,56 @@ static bool debug_compare_and_repair_dst(
     format_float_samples(first_ref, sample_count, ref_buf, sizeof(ref_buf));
     format_float_samples(first_fpga, sample_count, fpga_buf, sizeof(fpga_buf));
 
-    LOGE("debug compare mismatch tensor=%s layer=%d shape=K%lld_N%lld_M%lld check=%d/%d max_abs=%.6g first_bad=%lld ref_first8=%s fpga_first8=%s; repairing dst with host reference",
+    LOGMISMATCH("tensor=%s category=%s layer=%d shape=K%lld_N%lld_M%lld check=%d/%d max_abs=%.6g first_bad=%lld cpu_vecdot_first8=%s fpga_first8=%s action=abort_no_cpu_substitution",
+                tensor_name ? tensor_name : "?",
+                fpga_tensor_category_name(category),
+                layer_id,
+                (long long) k,
+                (long long) n,
+                (long long) m,
+                g_debug_compare_count,
+                FPGA_DEBUG_COMPARE_LIMIT,
+                max_abs,
+                (long long) first_bad,
+                ref_buf,
+                fpga_buf);
+    LOGE("debug compare mismatch tensor=%s category=%s layer=%d; FPGA result will not be replaced with CPU reference",
          tensor_name ? tensor_name : "?",
-         layer_id,
-         (long long) k,
-         (long long) n,
-         (long long) m,
-         g_debug_compare_count,
-         FPGA_DEBUG_COMPARE_LIMIT,
-         max_abs,
-         (long long) first_bad,
-         ref_buf,
-         fpga_buf);
-
-    for (int64_t row = 0; row < n; ++row) {
-        for (int64_t col = 0; col < m; ++col) {
-            store_dst_value(dst, row, col, ref[(size_t) (row * m + col)]);
-        }
-    }
+         fpga_tensor_category_name(category),
+         layer_id);
     return false;
 }
 
-static void write_i8x16_to_vpu(uint32_t off, const int8_t * lanes) {
+[[maybe_unused]] static void write_i8x16_to_vpu(uint32_t off, const int8_t * lanes) {
     vpu_write_i8x16(off, lanes);
 }
 
-static void read_result_i32x4_from_vpu(uint32_t result_word, int32_t out[4]) {
+static void write_i8x16_to_stage(uint32_t off, const int8_t * lanes) {
+    if (g_use_zdma_path) {
+        ddr_write_i8x16(off, lanes);
+    } else {
+        vpu_write_i8x16(off, lanes);
+    }
+}
+
+[[maybe_unused]] static void read_result_i32x4_from_vpu(uint32_t result_word, int32_t out[4]) {
     vpu_read_i32x4(result_word_offset(result_word), out);
+}
+
+static void read_result_i32x4_from_stage(uint32_t result_word, int32_t out[4]) {
+    if (g_use_zdma_path) {
+        ddr_read_i32x4(result_word_offset(result_word), out);
+    } else {
+        vpu_read_i32x4(result_word_offset(result_word), out);
+    }
+}
+
+static void clear_stage_window(uint32_t off, size_t bytes) {
+    if (g_use_zdma_path) {
+        ddr_clear_window(off, bytes);
+    } else {
+        vpu_clear_window(off, bytes);
+    }
 }
 
 static bool run_vpu_window_transfer(
@@ -1288,6 +2162,41 @@ static bool run_vpu_window_transfer(
              act_bytes, weight_bytes, result_bytes);
         return false;
     }
+    if (g_use_zdma_path &&
+        (!ddr_range_fits(ACT_BASE, act_bytes) ||
+         !ddr_range_fits(WEIGHT_BASE, weight_bytes) ||
+         !ddr_range_fits(RESULT_BASE, result_bytes))) {
+        LOGE("ZDMA DDR staging range overflow act=%zu weight_span=%zu result=%zu ddr_size=0x%zx",
+             act_bytes, weight_bytes, result_bytes, g_ddr_map_size);
+        return false;
+    }
+
+    vpu_clear_window(RESULT_BASE, align_up_size(result_bytes, 16U));
+    if (g_use_zdma_path) {
+        ddr_clear_window(RESULT_BASE, align_up_size(result_bytes, 16U));
+    }
+
+    if (g_use_zdma_path) {
+        const long long act0 = now_us();
+        if (!dma_write_ip_bytes(ACT_BASE, act_bytes, "ACT")) {
+            return false;
+        }
+        const long long act1 = now_us();
+
+        const long long weight0 = now_us();
+        if (!dma_write_ip_bytes(WEIGHT_BASE, weight_bytes, "WEIGHT")) {
+            return false;
+        }
+        const long long weight1 = now_us();
+
+        if (totals) {
+            totals->dma_act_us += act1 - act0;
+            totals->dma_weight_us += weight1 - weight0;
+            totals->activation_bytes += act_bytes;
+            totals->weight_bytes += weight_bytes;
+        }
+    }
+
     mmio_fence();
     const long long ip0 = now_us();
     vpu_wr32(REG_CTRL, CTRL_START);
@@ -1313,6 +2222,18 @@ static bool run_vpu_window_transfer(
         totals->vpu_runs++;
     }
 
+    if (g_use_zdma_path) {
+        const long long result0 = now_us();
+        if (!dma_read_ip_bytes(RESULT_BASE, result_bytes, "RESULT")) {
+            return false;
+        }
+        const long long result1 = now_us();
+        if (totals) {
+            totals->dma_result_us += result1 - result0;
+            totals->result_bytes += result_bytes;
+        }
+    }
+
     LOGIP("tensor=%s layer=%d shape=K%lldxN%lldxM%lld tile=%u rows=%d col_beats=%d mode=0x%x ip_ms=%.3f status=0x%08x progress=0x%08x",
           tensor_name ? tensor_name : "?",
           layer_id,
@@ -1334,12 +2255,12 @@ static bool fpga_dma_basic_self_test(void) {
     for (int i = 0; i < VPU_QK8_0; ++i) {
         ones[i] = 1;
     }
-    vpu_clear_window(ACT_BASE, VPU_BLOCK_BEATS * 16U);
-    vpu_clear_window(WEIGHT_BASE, VPU_BLOCK_BEATS * 16U);
-    vpu_clear_window(RESULT_BASE, 16U);
+    clear_stage_window(ACT_BASE, VPU_BLOCK_BEATS * 16U);
+    clear_stage_window(WEIGHT_BASE, VPU_BLOCK_BEATS * 16U);
+    clear_stage_window(RESULT_BASE, 16U);
     for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
-        write_i8x16_to_vpu(act_word_offset(beat), ones + beat * VPU_NUM_LANES);
-        write_i8x16_to_vpu(weight_word_offset(0, beat), ones + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(act_word_offset(beat), ones + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(0, beat), ones + beat * VPU_NUM_LANES);
     }
 
     fpga_stage_totals_t totals = {};
@@ -1352,8 +2273,8 @@ static bool fpga_dma_basic_self_test(void) {
     }
 
     int32_t lanes[4] = {};
-    read_result_i32x4_from_vpu(0, lanes);
-    LOGI("basic direct-VPU self-test result=%d expected=32", lanes[0]);
+    read_result_i32x4_from_stage(0, lanes);
+    LOGI("basic %s self-test result=%d expected=32", g_use_zdma_path ? "ZDMA" : "direct-VPU", lanes[0]);
     return lanes[0] == 32;
 }
 
@@ -1383,17 +2304,17 @@ static bool fpga_dma_packed_self_test(void) {
     const size_t weight_span_bytes =
         (size_t) ((rows - 1) * g_vpu_max_beats + group_beats) * 16U;
 
-    vpu_clear_window(ACT_BASE, (size_t) group_beats * 16U);
-    vpu_clear_window(WEIGHT_BASE, weight_span_bytes);
-    vpu_clear_window(RESULT_BASE, 16U);
+    clear_stage_window(ACT_BASE, (size_t) group_beats * 16U);
+    clear_stage_window(WEIGHT_BASE, weight_span_bytes);
+    clear_stage_window(RESULT_BASE, 16U);
 
     for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
-        write_i8x16_to_vpu(act_word_offset(beat), act0 + beat * VPU_NUM_LANES);
-        write_i8x16_to_vpu(act_word_offset(VPU_BLOCK_BEATS + beat), act1 + beat * VPU_NUM_LANES);
-        write_i8x16_to_vpu(weight_word_offset(0, beat), w_row0_block0 + beat * VPU_NUM_LANES);
-        write_i8x16_to_vpu(weight_word_offset(0, VPU_BLOCK_BEATS + beat), w_row0_block1 + beat * VPU_NUM_LANES);
-        write_i8x16_to_vpu(weight_word_offset(1, beat), w_row1_block0 + beat * VPU_NUM_LANES);
-        write_i8x16_to_vpu(weight_word_offset(1, VPU_BLOCK_BEATS + beat), w_row1_block1 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(act_word_offset(beat), act0 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(act_word_offset(VPU_BLOCK_BEATS + beat), act1 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(0, beat), w_row0_block0 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(0, VPU_BLOCK_BEATS + beat), w_row0_block1 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(1, beat), w_row1_block0 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(1, VPU_BLOCK_BEATS + beat), w_row1_block1 + beat * VPU_NUM_LANES);
     }
 
     fpga_stage_totals_t totals = {};
@@ -1406,8 +2327,9 @@ static bool fpga_dma_packed_self_test(void) {
     }
 
     int32_t lanes[4] = {};
-    read_result_i32x4_from_vpu(0, lanes);
-    LOGI("packed direct-VPU self-test results=[%d,%d,%d,%d] expected=[32,64,-32,192]",
+    read_result_i32x4_from_stage(0, lanes);
+    LOGI("packed %s self-test results=[%d,%d,%d,%d] expected=[32,64,-32,192]",
+         g_use_zdma_path ? "ZDMA" : "direct-VPU",
          lanes[0], lanes[1], lanes[2], lanes[3]);
     const bool pass = lanes[0] == 32 && lanes[1] == 64 && lanes[2] == -32 && lanes[3] == 192;
     if (!pass) {
@@ -1450,6 +2372,14 @@ static bool fpga_validate_tensors(
     }
     if (k % VPU_QK8_0 != 0) {
         *reason = "unsupported DMA-to-IP tiling case: K is not divisible by 32";
+        return false;
+    }
+    if (src0->nb[0] != (int64_t) sizeof(block_q8_0_t)) {
+        *reason = "unsupported DMA-to-IP tiling case: Q8_0 block stride mismatch";
+        return false;
+    }
+    if (src0->nb[1] < (k / VPU_QK8_0) * src0->nb[0]) {
+        *reason = "unsupported DMA-to-IP tiling case: Q8_0 row stride too small";
         return false;
     }
     if (src0->ne[2] != 1 || src0->ne[3] != 1 ||
@@ -1502,22 +2432,22 @@ static bool fpga_dma_multi_group_self_test(void) {
             w_row1[i] = -1;
         }
 
-        vpu_clear_window(ACT_BASE, (size_t) group_beats * 16U);
-        vpu_clear_window(WEIGHT_BASE, weight_span_bytes);
-        vpu_clear_window(RESULT_BASE, 16U * (size_t) g_packed_q8_result_words);
+        clear_stage_window(ACT_BASE, (size_t) group_beats * 16U);
+        clear_stage_window(WEIGHT_BASE, weight_span_bytes);
+        clear_stage_window(RESULT_BASE, 16U * (size_t) g_packed_q8_result_words);
 
         for (int gb = 0; gb < group_blocks; ++gb) {
             for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
                 const uint32_t act_word =
                     (uint32_t) gb * (uint32_t) VPU_BLOCK_BEATS + (uint32_t) beat;
-                write_i8x16_to_vpu(act_word_offset((int) act_word), act + beat * VPU_NUM_LANES);
+                write_i8x16_to_stage(act_word_offset((int) act_word), act + beat * VPU_NUM_LANES);
 
                 const uint32_t row0_word =
                     (uint32_t) gb * (uint32_t) VPU_BLOCK_BEATS + (uint32_t) beat;
                 const uint32_t row1_word =
                     (uint32_t) g_vpu_max_beats + row0_word;
-                write_i8x16_to_vpu(WEIGHT_BASE + row0_word * 16U, w_row0 + beat * VPU_NUM_LANES);
-                write_i8x16_to_vpu(WEIGHT_BASE + row1_word * 16U, w_row1 + beat * VPU_NUM_LANES);
+                write_i8x16_to_stage(WEIGHT_BASE + row0_word * 16U, w_row0 + beat * VPU_NUM_LANES);
+                write_i8x16_to_stage(WEIGHT_BASE + row1_word * 16U, w_row1 + beat * VPU_NUM_LANES);
             }
         }
 
@@ -1539,7 +2469,7 @@ static bool fpga_dma_multi_group_self_test(void) {
 
         int32_t lanes[VPU_RESULT_PACK_LANES] = {};
         for (uint32_t word = 0; word < result_words; ++word) {
-            read_result_i32x4_from_vpu(word, lanes);
+            read_result_i32x4_from_stage(word, lanes);
             for (int lane = 0; lane < VPU_RESULT_PACK_LANES; ++lane) {
                 const uint32_t idx = word * (uint32_t) VPU_RESULT_PACK_LANES + (uint32_t) lane;
                 if (idx < result_values) {
@@ -1554,7 +2484,8 @@ static bool fpga_dma_multi_group_self_test(void) {
 
     const int32_t expected0 = 32 * total_blocks;
     const int32_t expected1 = -32 * total_blocks;
-    LOGI("multi-group direct-VPU self-test results=[%d,%d] expected=[%d,%d] blocks=%d max_group_blocks=%d",
+    LOGI("multi-group %s self-test results=[%d,%d] expected=[%d,%d] blocks=%d max_group_blocks=%d",
+         g_use_zdma_path ? "ZDMA" : "direct-VPU",
          accum[0], accum[1], expected0, expected1, total_blocks, g_packed_q8_max_blocks);
     return accum[0] == expected0 && accum[1] == expected1;
 }
@@ -1614,7 +2545,38 @@ static bool fpga_dma_run_q8_group(
     for (int row = 0; row < rows; ++row) {
         for (int gb = 0; gb < group_blocks; ++gb) {
             const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block0 + gb);
-            weight_scales[(size_t) row * (size_t) group_blocks + (size_t) gb] = fp16_to_fp32(wb->d);
+            float weight_scale = fp16_to_fp32(wb->d);
+            if (!std::isfinite(weight_scale)) {
+                g_nonfinite_weight_scale_count++;
+                if (totals) {
+                    totals->nonfinite_weight_scales++;
+                }
+                if (g_nonfinite_weight_scale_log_count < kNonFiniteWeightScaleLogLimit) {
+                    log_nonfinite_weight_scale(
+                        src0,
+                        wb,
+                        tensor_name,
+                        layer_id,
+                        row0 + row,
+                        row,
+                        k_block0 + gb,
+                        gb,
+                        weight_scale);
+                    g_nonfinite_weight_scale_log_count++;
+                    if (g_nonfinite_weight_scale_log_count == kNonFiniteWeightScaleLogLimit) {
+                        LOGW("non-finite Q8_0 weight scale log limit reached; further bad scales will be counted in summary only");
+                    }
+                }
+                if (!kSanitizeNonFiniteWeightScales) {
+                    return false;
+                }
+                weight_scale = 0.0f;
+                g_sanitized_weight_scale_count++;
+                if (totals) {
+                    totals->sanitized_weight_scales++;
+                }
+            }
+            weight_scales[(size_t) row * (size_t) group_blocks + (size_t) gb] = weight_scale;
         }
     }
     if (totals) {
@@ -1629,7 +2591,7 @@ static bool fpga_dma_run_q8_group(
                 const uint32_t word_index = (uint32_t) row * (uint32_t) g_vpu_max_beats +
                                             (uint32_t) gb * (uint32_t) VPU_BLOCK_BEATS +
                                             (uint32_t) beat;
-                write_i8x16_to_vpu(WEIGHT_BASE + word_index * 16U, wb->qs + beat * VPU_NUM_LANES);
+                write_i8x16_to_stage(WEIGHT_BASE + word_index * 16U, wb->qs + beat * VPU_NUM_LANES);
             }
         }
     }
@@ -1638,14 +2600,18 @@ static bool fpga_dma_run_q8_group(
         const block_q8_0_t & act = act_group[gb];
         for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
             const uint32_t word_index = (uint32_t) gb * (uint32_t) VPU_BLOCK_BEATS + (uint32_t) beat;
-            write_i8x16_to_vpu(ACT_BASE + word_index * 16U, act.qs + beat * VPU_NUM_LANES);
+            write_i8x16_to_stage(ACT_BASE + word_index * 16U, act.qs + beat * VPU_NUM_LANES);
         }
     }
     if (totals) {
         const long long transfer_in_us = now_us() - transfer_in0;
-        totals->dma_act_us += transfer_in_us;
-        totals->activation_bytes += act_bytes;
-        totals->weight_bytes += weight_span_bytes;
+        if (g_use_zdma_path) {
+            totals->prep_us += transfer_in_us;
+        } else {
+            totals->dma_act_us += transfer_in_us;
+            totals->activation_bytes += act_bytes;
+            totals->weight_bytes += weight_span_bytes;
+        }
     }
 
     if (!run_vpu_window_transfer(rows, group_beats, VPU_MODE_PACKED_Q8,
@@ -1658,7 +2624,7 @@ static bool fpga_dma_run_q8_group(
     partial.resize((size_t) result_values);
     int32_t lanes[VPU_RESULT_PACK_LANES] = {};
     for (uint32_t word = 0; word < result_words; ++word) {
-        read_result_i32x4_from_vpu(word, lanes);
+        read_result_i32x4_from_stage(word, lanes);
         for (int lane = 0; lane < VPU_RESULT_PACK_LANES; ++lane) {
             const uint32_t idx = word * (uint32_t) VPU_RESULT_PACK_LANES + (uint32_t) lane;
             if (idx < result_values) {
@@ -1667,8 +2633,13 @@ static bool fpga_dma_run_q8_group(
         }
     }
     if (totals) {
-        totals->dma_result_us += now_us() - transfer_out0;
-        totals->result_bytes += result_bytes;
+        const long long result_read_us = now_us() - transfer_out0;
+        if (g_use_zdma_path) {
+            totals->host_accum_us += result_read_us;
+        } else {
+            totals->dma_result_us += result_read_us;
+            totals->result_bytes += result_bytes;
+        }
     }
     return true;
 }
@@ -1721,7 +2692,7 @@ static bool fpga_hw_q8_0_matmul_dma_to_ip(
             const int group_blocks = packed_q8_group_blocks_for_rows(rows, remaining_blocks);
             const int group_beats = group_blocks * VPU_BLOCK_BEATS;
 
-            LOGTILE("tensor=%s layer=%d row0=%lld rows=%d k_block0=%lld group_blocks=%d group_beats=%d tile_id=%u partial_accum=1 transfer=direct_vpu_mmio",
+            LOGTILE("tensor=%s layer=%d row0=%lld rows=%d k_block0=%lld group_blocks=%d group_beats=%d tile_id=%u partial_accum=1 transfer=%s",
                      tensor_name ? tensor_name : "?",
                      layer_id,
                      (long long) row0,
@@ -1729,7 +2700,8 @@ static bool fpga_hw_q8_0_matmul_dma_to_ip(
                      (long long) ib0,
                      group_blocks,
                      group_beats,
-                     tile_id);
+                     tile_id,
+                     g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio");
 
             for (int64_t col = 0; col < m; ++col) {
                 const block_q8_0_t * act_group =
@@ -1746,10 +2718,64 @@ static bool fpga_hw_q8_0_matmul_dma_to_ip(
                     for (int gb = 0; gb < group_blocks; ++gb) {
                         const int64_t ib = ib0 + gb;
                         const int32_t raw = partial[(size_t) row * (size_t) group_blocks + (size_t) gb];
-                        accum_col[(size_t) row] +=
-                            (float) raw *
-                            act_scales[(size_t) (col * nb + ib)] *
+                        const float act_scale = act_scales[(size_t) (col * nb + ib)];
+                        const float weight_scale =
                             weight_scales[(size_t) row * (size_t) group_blocks + (size_t) gb];
+                        const float scale_product = act_scale * weight_scale;
+                        const float accum_before = accum_col[(size_t) row];
+                        const float accum_after = accum_before + (float) raw * scale_product;
+                        if (!std::isfinite(accum_after)) {
+                            char raw_buf[160];
+                            const int raw_count = std::min<int>((int) partial.size(), 8);
+                            format_i32_samples(partial.data(), raw_count, raw_buf, sizeof(raw_buf));
+                            if (!std::isfinite(weight_scale)) {
+                                log_nonfinite_weight_scale(
+                                    src0,
+                                    weight_block(src0, row0 + row, ib),
+                                    tensor_name,
+                                    layer_id,
+                                    row0 + row,
+                                    row,
+                                    ib,
+                                    gb,
+                                    weight_scale);
+                            }
+                            fpga_log_line(true, "NONFINITE", true,
+                                "tensor=%s layer=%d phase=%s row=%lld col=%lld local_row=%d k_block=%lld group_block=%d value=%.6g",
+                                tensor_name ? tensor_name : "?",
+                                layer_id,
+                                decode_or_prefill(m),
+                                (long long) (row0 + row),
+                                (long long) col,
+                                row,
+                                (long long) ib,
+                                gb,
+                                accum_after);
+                            log_src1_stats_for_col(src1, col, k);
+                            fpga_log_line(true, "NONFINITE_SCALE", true,
+                                "row=%lld block=%lld act_scale=%.9g weight_scale=%.9g scale_product=%.9g act_scale_finite=%d weight_scale_finite=%d",
+                                (long long) (row0 + row),
+                                (long long) ib,
+                                act_scale,
+                                weight_scale,
+                                scale_product,
+                                std::isfinite(act_scale) ? 1 : 0,
+                                std::isfinite(weight_scale) ? 1 : 0);
+                            fpga_log_line(true, "NONFINITE_RAW", true,
+                                "raw_partial=%d raw_first8=%s group_blocks=%d rows=%d result_values=%zu",
+                                raw,
+                                raw_buf,
+                                group_blocks,
+                                rows,
+                                partial.size());
+                            fpga_log_line(true, "NONFINITE_ACCUM", true,
+                                "accum_before=%.9g accum_after=%.9g contribution=%.9g",
+                                accum_before,
+                                accum_after,
+                                (float) raw * scale_product);
+                            return false;
+                        }
+                        accum_col[(size_t) row] = accum_after;
                     }
                 }
                 if (totals) {
@@ -1846,14 +2872,17 @@ int fpga_init(void) {
     }
 
     LOGI("host trace version: %s", FPGA_HOST_TRACE_VERSION);
-    LOGI("runtime path request: FPGA_PATH=%s selected=direct_vpu_mmio", path ? path : "direct(default)");
-    LOGI("bases my_ip=0x%llx reg=0x%llx lmm=0x%llx dma_disabled=1 ddr_disabled=1",
+    LOGI("runtime path request: FPGA_PATH=%s baseline=direct_vpu_mmio prefer_zdma=%d force_direct_audit=%d",
+         path ? path : "auto(default)", kPreferZdmaPath ? 1 : 0, kForceDirectVpuPathForAudit ? 1 : 0);
+    LOGI("bases my_ip=0x%llx reg=0x%llx lmm=0x%llx dma=0x%llx ddr=0x%llx",
            (unsigned long long) MY_IP_BASE_ADDRESS,
            (unsigned long long) REG_BASE_PHYS,
-           (unsigned long long) LMM_BASE_PHYS);
+           (unsigned long long) LMM_BASE_PHYS,
+           (unsigned long long) DMA_BASE_PHYS,
+           (unsigned long long) DDR_BASE_PHYS);
     LOGI("mapping vpu=%s virt=0x%llx size=0x%zx",
          g_vpu_map_source.c_str(), fpga_ptr_addr(g_vpu), g_vpu_map_size);
-    LOGI("VPU windows act=0x%08x weight=0x%08x result=0x%08x data_movement=direct_mmio no_ddr_high=1 no_zdma=1",
+    LOGI("VPU windows act=0x%08x weight=0x%08x result=0x%08x data_movement=direct_mmio_baseline",
          ACT_BASE, WEIGHT_BASE, RESULT_BASE);
     LOGI("VPU limits rows=%d col_beats=%d cols=%d raw_limits=0x%08x caps=0x%08x packed_q8=%d max_group_blocks=%d result_words=%d",
          g_vpu_max_rows, g_vpu_max_beats, g_vpu_max_cols, limits, caps,
@@ -1861,14 +2890,24 @@ int fpga_init(void) {
     if (g_vpu_max_beats == 256) {
         LOGI("warning: MAX_COL_BEATS=256 detected; direct VPU path will run, but this large BRAM setting is still suspicious for timing/resource use");
     }
-    LOGI("cache coherency: DDR/ZDMA disabled for this correctness pass; direct VPU MMIO only");
-    LOGI("ZDMA path not enabled: FPGA_Driver.c provides static DDR/ZDMA addresses, but DDR reserved-memory safety must be confirmed on the running Linux image first");
     LOGI("fallback policy: FPGA_ABORT_ON_CPU_FALLBACK=%d default_no_cpu_matmul_fallback=1",
          g_abort_on_cpu_fallback ? 1 : 0);
+    LOGI("tensor allowlist: blk.*.{attn_q,attn_k,attn_v,attn_output,ffn_gate,ffn_up,ffn_down}.weight; logits/output and N>%lld use CPU baseline",
+         (long long) FPGA_MAX_SAFE_OFFLOAD_N);
+    LOGI("debug safe mode force_all_cpu=%d only_ffn=%d only_attention_projection=%d prefill_cpu=%d decode_cpu=%d debug_compare=%d result_audit=%d abort_on_nonfinite=%d",
+         kForceAllMatmulCpu ? 1 : 0,
+         kFpgaOnlyFFN ? 1 : 0,
+         kFpgaOnlyAttentionProjection ? 1 : 0,
+         kDisableFpgaForPrefill ? 1 : 0,
+         kDisableFpgaForDecode ? 1 : 0,
+         FPGA_ENABLE_DEBUG_COMPARE ? 1 : 0,
+         kFpgaResultAudit ? 1 : 0,
+         kAbortOnNonFiniteResult ? 1 : 0);
 
     if (!g_packed_q8_supported) {
         fpga_fatal("packed_q8 capability unavailable in REG_CAPS=0x%08x; refusing CPU fallback", caps);
     }
+    g_use_zdma_path = false;
     if (!fpga_dma_basic_self_test()) {
         fpga_fatal("basic direct-VPU self-test failed; refusing CPU fallback");
     }
@@ -1878,6 +2917,38 @@ int fpga_init(void) {
     if (!fpga_dma_multi_group_self_test()) {
         fpga_fatal("multi-group Q8 direct-VPU self-test failed; refusing CPU fallback");
     }
+    LOGI("direct_vpu_mmio self-tests passed");
+
+    const bool force_direct = kForceDirectVpuPathForAudit || (path && strcmp(path, "mmio") == 0);
+    if (kPreferZdmaPath && !force_direct) {
+        if (map_zdma_ddr_checked() && fpga_dma_init()) {
+            g_ddr_msync_unsupported = false;
+            g_use_zdma_path = true;
+            const bool zdma_ok =
+                fpga_dma_basic_self_test() &&
+                fpga_dma_packed_self_test() &&
+                fpga_dma_multi_group_self_test();
+            if (zdma_ok) {
+                g_zdma_selftest_passed = true;
+                LOGI("ZDMA self-tests passed; selected path=zdma_ddr_to_ip");
+            } else {
+                g_use_zdma_path = false;
+                g_zdma_selftest_passed = false;
+                LOGE("ZDMA self-test failed; falling back to direct_vpu_mmio for model execution");
+            }
+        } else {
+            g_use_zdma_path = false;
+            g_zdma_selftest_passed = false;
+            LOGI("ZDMA path unavailable or runtime checks failed; selected path=direct_vpu_mmio");
+        }
+    } else {
+        g_use_zdma_path = false;
+        g_zdma_selftest_passed = false;
+        LOGI("ZDMA path not requested; selected path=direct_vpu_mmio");
+    }
+    LOGI("active data path=%s zdma_selftest=%s",
+         g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio",
+         g_zdma_selftest_passed ? "PASS" : "N/A");
 
     return 0;
 }
@@ -1914,13 +2985,58 @@ void fpga_cleanup(void) {
     }
 
     const long long elapsed_us = g_fpga_start_us > 0 ? now_us() - g_fpga_start_us : 0;
-    LOGI("cleanup complete fpga_calls=%lld vpu_runs=%lld rejects=%lld elapsed_s=%.3f activation_cache_hits=%lld misses=%lld",
+    fpga_log_line(true, "SUMMARY", true,
+         "calls=%lld fpga_handled=%lld cpu_fallback=%lld skipped_token_embd=%lld skipped_large_n=%lld skipped_not_allowlisted=%lld rejects=%lld prefill_calls=%lld decode_calls=%lld prefill_cpu_fallback=%lld decode_cpu_fallback=%lld mismatches=%lld prefill_mismatches=%lld decode_mismatches=%lld nonfinite_results=%lld nonfinite_weight_scales=%lld sanitized_weight_scales=%lld vpu_runs=%lld path=%s elapsed_s=%.3f activation_cache_hits=%lld misses=%lld",
+         g_fpga_count + g_cpu_fallback_count,
          g_fpga_count,
-         g_fpga_vpu_runs,
+         g_cpu_fallback_count,
+         g_fpga_skipped_token_embd_count,
+         g_fpga_skipped_large_n_count,
+         g_fpga_skipped_not_allowlisted_count,
          g_reject_count,
+         g_prefill_calls,
+         g_decode_calls,
+         g_prefill_cpu_fallback,
+         g_decode_cpu_fallback,
+         g_prefill_mismatch_count + g_decode_mismatch_count,
+         g_prefill_mismatch_count,
+         g_decode_mismatch_count,
+         g_nonfinite_result_count,
+         g_nonfinite_weight_scale_count,
+         g_sanitized_weight_scale_count,
+         g_fpga_vpu_runs,
+         g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio",
          elapsed_us > 0 ? (double) elapsed_us / 1000000.0 : 0.0,
          g_activation_cache_hits,
          g_activation_cache_misses);
+    fpga_log_line(true, "SUMMARY_TIME", true,
+         "prep_ms=%.3f transfer_in_ms=%.3f ip_compute_ms=%.3f transfer_out_ms=%.3f host_accum_ms=%.3f total_ms=%.3f prefill_total_ms=%.3f decode_total_ms=%.3f",
+         (double) g_total_prep_us / 1000.0,
+         (double) g_total_transfer_in_us / 1000.0,
+         (double) g_total_ip_compute_us / 1000.0,
+         (double) g_total_transfer_out_us / 1000.0,
+         (double) g_total_host_accum_us / 1000.0,
+         (double) g_total_stage_us / 1000.0,
+         (double) g_prefill_total_us / 1000.0,
+         (double) g_decode_total_us / 1000.0);
+    for (int i = 0; i < 10; ++i) {
+        if (g_top_slowest[i].total_ms <= 0.0) {
+            break;
+        }
+        fpga_log_line(true, "SUMMARY_TOP", true,
+             "rank=%d tensor=%s layer=%d phase=%s total_ms=%.3f prep_ms=%.3f transfer_in_ms=%.3f ip_compute_ms=%.3f transfer_out_ms=%.3f host_accum_ms=%.3f vpu_runs=%lld",
+             i + 1,
+             g_top_slowest[i].tensor,
+             g_top_slowest[i].layer,
+             g_top_slowest[i].phase,
+             g_top_slowest[i].total_ms,
+             g_top_slowest[i].prep_ms,
+             g_top_slowest[i].transfer_in_ms,
+             g_top_slowest[i].ip_compute_ms,
+             g_top_slowest[i].transfer_out_ms,
+             g_top_slowest[i].host_accum_ms,
+             g_top_slowest[i].vpu_runs);
+    }
     fflush(fpga_log_fp());
     pthread_mutex_unlock(&g_mutex);
 }
@@ -1992,8 +3108,53 @@ extern "C" int fpga_try_matmul_extended(
         int is_attention) {
     const char * tensor_name = tensor_name_or_unknown(src0);
     const int effective_layer_id = infer_layer_id_from_name(tensor_name, layer_id);
+    const int64_t early_k = src0 ? src0->ne[0] : 0;
+    const int64_t early_n = src0 ? src0->ne[1] : 0;
+    const int64_t early_m = src1 ? src1->ne[1] : 0;
+
+    const char * skip_reason = nullptr;
+    fpga_skip_kind_t skip_kind = FPGA_SKIP_NONE;
+    if (!fpga_tensor_allowed(tensor_name, early_n, &skip_reason, &skip_kind)) {
+        if (ith == 0) {
+            pthread_mutex_lock(&g_mutex);
+            record_cpu_fallback(early_m);
+            log_fpga_tensor_skip_once(
+                tensor_name,
+                early_k,
+                early_n,
+                early_m,
+                skip_reason,
+                skip_kind);
+            pthread_mutex_unlock(&g_mutex);
+        }
+        return 0;
+    }
+    const fpga_tensor_category_t early_category = fpga_tensor_category(tensor_name);
+    const char * safe_mode_reason = nullptr;
+    if (!fpga_debug_safe_mode_allows(early_category, early_m, &safe_mode_reason)) {
+        if (ith == 0) {
+            pthread_mutex_lock(&g_mutex);
+            record_cpu_fallback(early_m);
+            if (!g_logged_skip_safe_mode) {
+                LOGI("skip tensor=%s shape=K%lld_N%lld_M%lld reason=%s action=cpu_baseline",
+                     tensor_name,
+                     (long long) early_k,
+                     (long long) early_n,
+                     (long long) early_m,
+                     safe_mode_reason ? safe_mode_reason : "debug_safe_mode");
+                g_logged_skip_safe_mode = true;
+            }
+            pthread_mutex_unlock(&g_mutex);
+        }
+        return 0;
+    }
 
     if (is_attention) {
+        if (ith == 0) {
+            pthread_mutex_lock(&g_mutex);
+            record_cpu_fallback(early_m);
+            pthread_mutex_unlock(&g_mutex);
+        }
         return 0;
     }
 
@@ -2005,6 +3166,7 @@ extern "C" int fpga_try_matmul_extended(
             const int64_t m = src1 ? src1->ne[1] : 0;
             pthread_mutex_lock(&g_mutex);
             g_reject_count++;
+            record_cpu_fallback(m);
             LOGE("matmul rejected tensor=%s layer=%d shape=K%lld_N%lld_M%lld reason=%s action=%s",
                  tensor_name,
                  effective_layer_id,
@@ -2038,6 +3200,7 @@ extern "C" int fpga_try_matmul_extended(
 
     pthread_mutex_lock(&g_mutex);
     log_token_boundary_if_needed(seq_pos);
+    g_fpga_allowed_count++;
 
     const int64_t k = src0->ne[0];
     const int64_t n = src0->ne[1];
@@ -2051,7 +3214,8 @@ extern "C" int fpga_try_matmul_extended(
     fpga_stage_totals_t totals = {};
 
     const long long t0 = now_us();
-    LOGTILE("tensor=%s layer=%d seq=%d phase=%s shape=K%lld_N%lld_M%lld path=direct_vpu_mmio row_tiles=%lld group_tiles_per_rowtile~=%lld q8_blocks=%lld max_group_blocks=%d vpu_runs=%lld",
+    log_layout_audit(src0, src1, dst, tensor_name, effective_layer_id);
+    LOGTILE("tensor=%s layer=%d seq=%d phase=%s shape=K%lld_N%lld_M%lld path=%s row_tiles=%lld group_tiles_per_rowtile~=%lld q8_blocks=%lld max_group_blocks=%d vpu_runs=%lld",
              tensor_name,
              effective_layer_id,
              seq_pos,
@@ -2059,6 +3223,7 @@ extern "C" int fpga_try_matmul_extended(
              (long long) k,
              (long long) n,
              (long long) m,
+             g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio",
              row_tiles,
              (q8_blocks + max_group_blocks - 1) / max_group_blocks,
              (long long) q8_blocks,
@@ -2073,7 +3238,20 @@ extern "C" int fpga_try_matmul_extended(
                    tensor_name, effective_layer_id, (long long) k, (long long) n, (long long) m);
     }
     const bool compare_ok =
-        debug_compare_and_repair_dst(src0, dst, k, n, m, tensor_name, effective_layer_id);
+        debug_compare_fpga_dst(src0, dst, k, n, m, tensor_name, effective_layer_id);
+    if (!compare_ok) {
+        pthread_mutex_unlock(&g_mutex);
+        fpga_fatal("FPGA debug compare mismatch tensor=%s layer=%d phase=%s; refusing CPU substitution",
+                   tensor_name, effective_layer_id, decode_or_prefill(m));
+    }
+    const bool finite_ok =
+        log_result_audit(g_fpga_count + 1, dst, k, n, m, tensor_name, effective_layer_id);
+    if (!finite_ok && kAbortOnNonFiniteResult) {
+        pthread_mutex_unlock(&g_mutex);
+        fpga_fatal("FPGA produced non-finite result tensor=%s layer=%d phase=%s; refusing to let model consume bad dst",
+                   tensor_name, effective_layer_id, decode_or_prefill(m));
+    }
+    const bool weight_scale_ok = totals.nonfinite_weight_scales == 0;
 
     g_fpga_count++;
     g_token_matmuls++;
@@ -2084,6 +3262,29 @@ extern "C" int fpga_try_matmul_extended(
     const double ip_ms = (double) totals.ip_compute_us / 1000.0;
     const double transfer_out_ms = (double) totals.dma_result_us / 1000.0;
     const double host_accum_ms = (double) totals.host_accum_us / 1000.0;
+
+    const long long transfer_in_us = totals.dma_act_us + totals.dma_weight_us;
+    const long long transfer_out_us = totals.dma_result_us;
+    const long long total_stage_us = t1 - t0;
+    g_total_prep_us += totals.prep_us;
+    g_total_transfer_in_us += transfer_in_us;
+    g_total_ip_compute_us += totals.ip_compute_us;
+    g_total_transfer_out_us += transfer_out_us;
+    g_total_host_accum_us += totals.host_accum_us;
+    g_total_stage_us += total_stage_us;
+    if (m == 1) {
+        g_decode_calls++;
+        g_decode_total_us += total_stage_us;
+        if (!compare_ok || !finite_ok || !weight_scale_ok) {
+            g_decode_mismatch_count++;
+        }
+    } else {
+        g_prefill_calls++;
+        g_prefill_total_us += total_stage_us;
+        if (!compare_ok || !finite_ok || !weight_scale_ok) {
+            g_prefill_mismatch_count++;
+        }
+    }
 
     const char * dominant = "prep";
     double dominant_ms = prep_ms;
@@ -2109,14 +3310,31 @@ extern "C" int fpga_try_matmul_extended(
     const double gmac_s = total_ms > 0.0 ? (double) macs / (total_ms * 1000000.0) : 0.0;
     const long long group_tiles =
         (q8_blocks + max_group_blocks - 1) / std::max(1, max_group_blocks);
+    const char * phase = decode_or_prefill(m);
 
-    LOGSTAGE("tensor=%s layer=%d phase=%s shape=K%lld_N%lld_M%lld path=direct_vpu_mmio row_tiles=%lld group_tiles=%lld vpu_runs=%lld prep_ms=%.3f transfer_in_ms=%.3f ip_compute_ms=%.3f transfer_out_ms=%.3f host_accum_ms=%.3f total_ms=%.3f dominant=%s effective_GMAC/s=%.3f status=OK bytes=%zu",
+    record_top_stage(
+        tensor_name,
+        effective_layer_id,
+        phase,
+        totals.vpu_runs,
+        total_ms,
+        prep_ms,
+        transfer_in_ms,
+        ip_ms,
+        transfer_out_ms,
+        host_accum_ms);
+
+    const char * stage_status = weight_scale_ok ? "OK" : "WEIGHT_SCALE_SANITIZED";
+    const char * correctness = (compare_ok && finite_ok && weight_scale_ok) ? "PASS" : "FAIL";
+
+    LOGSTAGE("tensor=%s layer=%d phase=%s shape=K%lld_N%lld_M%lld path=%s row_tiles=%lld group_tiles=%lld vpu_runs=%lld prep_ms=%.3f transfer_in_ms=%.3f ip_compute_ms=%.3f transfer_out_ms=%.3f host_accum_ms=%.3f total_ms=%.3f dominant=%s effective_GMAC/s=%.3f status=%s correctness=%s nonfinite_weight_scales=%lld sanitized_weight_scales=%lld bytes=%zu",
              tensor_name,
              effective_layer_id,
-             decode_or_prefill(m),
+             phase,
              (long long) k,
              (long long) n,
              (long long) m,
+             g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio",
              row_tiles,
              group_tiles,
              totals.vpu_runs,
@@ -2128,12 +3346,11 @@ extern "C" int fpga_try_matmul_extended(
              total_ms,
              dominant,
              gmac_s,
+             stage_status,
+             correctness,
+             totals.nonfinite_weight_scales,
+             totals.sanitized_weight_scales,
              effective_bytes);
-    if (!compare_ok) {
-        LOGE("tensor=%s layer=%d used host reference repair after FPGA compare mismatch",
-             tensor_name, effective_layer_id);
-    }
-
     if (g_status_stderr && (g_fpga_count == 1 || (g_profile_every > 0 && (g_fpga_count % g_profile_every) == 0))) {
         fprintf(stderr,
                 "[FPGA][STAGE] tensor=%s layer=%d K=%lld N=%lld M=%lld total_ms=%.3f dma_in_ms=%.3f ip_ms=%.3f dma_out_ms=%.3f\n",
