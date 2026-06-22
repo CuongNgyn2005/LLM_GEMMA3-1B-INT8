@@ -1,0 +1,229 @@
+Hiện tại VPU đang dùng 1 cổng (128-bit, 16 DSP). Quá trình nạp Weight (Trọng số) và Tensor/Activation (Dữ liệu kích hoạt) từ RAM (DDR) lên BRAM diễn ra tuần tự, sau đó IP mới tính toán.
+- Ý tưởng: Nhận dữ liệu từ 2 Cổng AXI4 ( tổng 256 bít), gộp chung llạitinhs toán bằng 32 DSP trong cùng 1 chu kì xung clock 
+
+Tăng tốc độ truyền tải: Bằng cách dùng 2 khối DMA cắm vào 2 cổng AXI HP của ZCU104, băng thông hút dữ liệu từ DDR lên BRAM tăng gấp đôi. Thời gian IP phải "chờ" dữ liệu giảm đi chính xác một nửa.
+
+Tăng thông lượng tính toán: Ở pha tính toán, 32 DSP sẽ tính 32 phần tử INT8 trong 1 nhịp clock. Thời gian thực thi của cụm RTL giảm đi một nửa.
+
+Kết luận: Cả thời gian Nạp (Memory-bound) và thời gian Tính (Compute-bound) đều giảm 50%. Tốc độ tổng thể của toàn hệ thống tăng GẤP ĐÔI.
+
+FILE: MY_IP: 
+/ ... existing code ...
+    parameter integer RESULT_FIFO_DEPTH      = 8,
+    parameter integer MAX_ROWS               = 256,
+    parameter integer MAX_COL_BEATS          = 32
+) (
+    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
+// ... existing code ...
+    output wire  s00_axi_rvalid,
+    input wire  s00_axi_rready,
+
+    // =========================================================
+    // THÊM: KHAI BÁO CÁC CỔNG GIAO TIẾP CHO AXI PORT 1 (BANK 1)
+    // Chỉ cần các kênh AW, W, B (Phục vụ cho việc ghi dữ liệu)
+    // =========================================================
+    input wire  s01_axi_aclk,
+    input wire  s01_axi_aresetn,
+    input wire [C_S00_AXI_ADDR_WIDTH-1 : 0] s01_axi_awaddr,
+    input wire [7 : 0] s01_axi_awlen,
+    input wire  s01_axi_awvalid,
+    output wire  s01_axi_awready,
+    input wire [C_S00_AXI_DATA_WIDTH-1 : 0] s01_axi_wdata,
+    input wire [(C_S00_AXI_DATA_WIDTH/8)-1 : 0] s01_axi_wstrb,
+    input wire  s01_axi_wlast,
+    input wire  s01_axi_wvalid,
+    output wire  s01_axi_wready,
+    output wire [1 : 0] s01_axi_bresp,
+    output wire  s01_axi_bvalid,
+    input wire  s01_axi_bready
+);
+
+// ... existing code ...
+    // =========================================================
+    // THÊM: LOGIC GIAO THỨC AXI WRITE CHO PORT 1
+    // (Copy logic của AW, W, B từ s00 và đổi tên thành s01)
+    // =========================================================
+    reg s01_axi_awready_reg;
+    reg s01_axi_wready_reg;
+    reg s01_axi_bvalid_reg;
+    
+    assign s01_axi_awready = s01_axi_awready_reg;
+    assign s01_axi_wready  = s01_axi_wready_reg;
+    assign s01_axi_bresp   = 2'b00; // OKAY
+    assign s01_axi_bvalid  = s01_axi_bvalid_reg;
+
+    always @(posedge s01_axi_aclk) begin
+        if (s01_axi_aresetn == 1'b0) begin
+            s01_axi_awready_reg <= 1'b0;
+            s01_axi_wready_reg  <= 1'b0;
+            s01_axi_bvalid_reg  <= 1'b0;
+        end else begin
+            // Handshake AW
+            if (~s01_axi_awready_reg && s01_axi_awvalid && s01_axi_wvalid)
+                s01_axi_awready_reg <= 1'b1;
+            else
+                s01_axi_awready_reg <= 1'b0;
+                
+            // Handshake W
+            if (~s01_axi_wready_reg && s01_axi_wvalid && s01_axi_awvalid)
+                s01_axi_wready_reg <= 1'b1;
+            else
+                s01_axi_wready_reg <= 1'b0;
+                
+            // Handshake B
+            if (s01_axi_awready_reg && s01_axi_awvalid && s01_axi_wready_reg && s01_axi_wvalid)
+                s01_axi_bvalid_reg <= 1'b1;
+            else if (s01_axi_bready && s01_axi_bvalid_reg)
+                s01_axi_bvalid_reg <= 1'b0;
+        end
+    end
+    
+    wire map_wr_en_1 = s01_axi_wready_reg && s01_axi_wvalid;
+
+    AXI4_Mapping #(
+        .AXI_DATA_WIDTH          (C_S00_AXI_DATA_WIDTH),
+        .AXI_ADDR_WIDTH          (C_S00_AXI_ADDR_WIDTH),
+        .NUM_LANES               (32), // <--- CẬP NHẬT LÊN 32 LANES DSP
+        .ACT_WIDTH               (ACT_WIDTH),
+// ... existing code ...
+        .map_wr_addr    (awaddr_r),
+        .map_wr_data    (s00_axi_wdata),
+        .map_wr_strb    (s00_axi_wstrb),
+
+        // TRUYỀN DỮ LIỆU CỦA PORT 1 XUỐNG BỘ PHÂN LUỒNG MAPPING
+        .map_wr_en_1    (map_wr_en_1),
+        .map_wr_addr_1  (s01_axi_awaddr),
+        .map_wr_data_1  (s01_axi_wdata),
+        .map_wr_strb_1  (s01_axi_wstrb),
+
+        .map_rd_en      (r_fire),
+// ... existing code ...
+
+
+FILE AXI4_MAPPING; 
+/ ... existing code ...
+    parameter integer AXI_DATA_WIDTH           = 128,
+    parameter integer AXI_ADDR_WIDTH           = 40,
+    parameter [AXI_ADDR_WIDTH-1:0] VPU_BASE_ADDR = 40'h00A0_0000_00,
+    parameter integer ENABLE_BASE_TRANSLATION  = 1,
+
+    parameter integer NUM_LANES                = 32, // <--- CẬP NHẬT LÊN 32
+    parameter integer ACT_WIDTH                = 8,
+// ... existing code ...
+    input  wire [AXI_ADDR_WIDTH-1:0]     map_wr_addr,
+    input  wire [AXI_DATA_WIDTH-1:0]     map_wr_data,
+    input  wire [(AXI_DATA_WIDTH/8)-1:0] map_wr_strb,
+
+    // CÁC PORT CHO PHÉP MAP DỮ LIỆU TỪ BANK 1
+    input  wire                          map_wr_en_1,
+    input  wire [AXI_ADDR_WIDTH-1:0]     map_wr_addr_1,
+    input  wire [AXI_DATA_WIDTH-1:0]     map_wr_data_1,
+    input  wire [(AXI_DATA_WIDTH/8)-1:0] map_wr_strb_1,
+
+    input  wire                          map_rd_en,
+// ... existing code ...
+    wire [1:0]  core_wr_region;
+    
+    // TẠO BỘ DECODER MỚI CHO ĐỊA CHỈ PORT 1
+    wire [1:0]  core_wr_region_1; 
+    wire [31:0] local_addr_1 = ENABLE_BASE_TRANSLATION ?
+                             (map_wr_addr_1 - VPU_BASE_ADDR) :
+                             map_wr_addr_1[31:0];
+
+    assign core_wr_region_1 = (local_addr_1 >= 32'h0001_0000 && local_addr_1 < 32'h0002_0000) ? 2'd1 :
+                              (local_addr_1 >= 32'h0010_0000 && local_addr_1 < 32'h0020_0000) ? 2'd2 : 2'd0; 
+                              // Không cần map Result FIFO cho Bank 1 vì kết quả chỉ đọc ra từ Port 0
+
+    // Registers
+    reg [31:0] cfg_rows_reg;
+// ... existing code ...
+        .mm_wr_addr        (core_wr_addr),
+        .mm_wr_data        (core_wr_data),
+        .mm_wr_strb        (core_wr_strb),
+
+        // CẤP TÍN HIỆU GHI CHO BANK 1 XUỐNG TẦNG MATRIX
+        .mm_wr_en_1        (map_wr_en_1),
+        .mm_wr_region_1    (core_wr_region_1),
+        .mm_wr_addr_1      (local_addr_1),
+        .mm_wr_data_1      (map_wr_data_1),
+        .mm_wr_strb_1      (map_wr_strb_1),
+
+        .result_pop        (core_result_pop),
+// ... existing code ...
+
+
+
+
+FILE MATRIX_VECTOR_MUL
+// ... existing code ...
+module Matrix_Vector_Multiplication #(
+    parameter integer NUM_LANES          = 32, // <--- TĂNG SỐ LƯỢNG DSP
+    parameter integer ACT_WIDTH          = 8,
+// ... existing code ...
+    input  wire [AXI_DATA_WIDTH-1:0]    mm_wr_data,
+    input  wire [(AXI_DATA_WIDTH/8)-1:0] mm_wr_strb,
+
+    // CÁC TÍN HIỆU TỪ MAPPING LAYER CHO BANK 1
+    input  wire                         mm_wr_en_1,
+    input  wire [1:0]                   mm_wr_region_1,
+    input  wire [31:0]                  mm_wr_addr_1,
+    input  wire [AXI_DATA_WIDTH-1:0]    mm_wr_data_1,
+    input  wire [(AXI_DATA_WIDTH/8)-1:0] mm_wr_strb_1,
+
+    input  wire                         result_pop,
+// ... existing code ...
+    .doutb  (act_dout_0)
+);
+
+// THÊM: KHỐI BRAM CHO ACTIVATION BANK 1
+wire [AXI_DATA_WIDTH-1:0] act_dout_1;
+Dual_Port_BRAM #(
+    .AWIDTH (ACT_ADDR_WIDTH),
+    .DWIDTH (AXI_DATA_WIDTH)
+) u_act_bram_1 (
+    .clka   (CLK),
+    .ena    (1'b1),
+    .wea    (mm_wr_en_1 && mm_wr_region_1 == REGION_ACT ? mm_wr_strb_1 : {(AXI_DATA_WIDTH/8){1'b0}}),
+    .addra  (mm_wr_addr_1[ACT_ADDR_WIDTH-1:0]),
+    .dina   (mm_wr_data_1),
+    .douta  (),
+    .clkb   (CLK),
+    .enb    (1'b1),
+    .web    ({(AXI_DATA_WIDTH/8){1'b0}}),
+    .addrb  (act_read_addr),
+    .dinb   ({AXI_DATA_WIDTH{1'b0}}),
+    .doutb  (act_dout_1)
+);
+
+// GHÉP 2 BANK THÀNH BUS 256-BIT CHO ACTIVATION
+wire [ACT_BEAT_WIDTH-1:0] combined_act_data = {act_dout_1, act_dout_0};
+
+
+Dual_Port_BRAM #(
+    .AWIDTH (WEIGHT_ADDR_WIDTH),
+    .DWIDTH (AXI_DATA_WIDTH)
+) u_weight_bram_0 (
+// ... existing code ...
+    .dinb   ({AXI_DATA_WIDTH{1'b0}}),
+    .doutb  (weight_dout_0)
+);
+
+// THÊM: KHỐI BRAM CHO WEIGHT BANK 1
+wire [AXI_DATA_WIDTH-1:0] weight_dout_1;
+Dual_Port_BRAM #(
+    .AWIDTH (WEIGHT_ADDR_WIDTH),
+    .DWIDTH (AXI_DATA_WIDTH)
+) u_weight_bram_1 (
+    .clka   (CLK),
+    .ena    (1'b1),
+    .wea    (mm_wr_en_1 && mm_wr_region_1 == REGION_WEIGHT ? mm_wr_strb_1 : {(AXI_DATA_WIDTH/8){1'b0}}),
+    .addra  (mm_wr_addr_1[WEIGHT_ADDR_WIDTH-1:0]),
+    .dina   (mm_wr_data_1),
+    .douta  (),
+    .clkb   (CLK),
+    .enb    (1'b1),
+    .web    ({(AXI_DATA_WIDTH/8){1'b0}}),
+    .addrb  (weight_read_addr),
+    .dinb   ({AXI_DATA_WIDTH{1'b0}}),
+    .doutb  (weight_dout_1)
+);
