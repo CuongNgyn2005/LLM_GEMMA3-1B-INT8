@@ -21,11 +21,10 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <string>
-#include <thread>
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "zcu104-gemma3-q8-zdma-dual-port-s01-b000-v1"
+#define FPGA_HOST_TRACE_VERSION "zcu104-gemma3-q8-pl-correctness-v6"
 
 #define MY_IP_BASE_ADDRESS 0x00000000A0000000LL
 #define REG_BASE_PHYS      0x00000000A0000000LL
@@ -126,25 +125,16 @@ static constexpr uint32_t WEIGHT_BASE        = 0x00100000;
 static constexpr uint32_t WEIGHT_END         = 0x00200000;
 static constexpr uint32_t RESULT_BASE        = 0x00200000;
 static constexpr uint32_t RESULT_END         = 0x00210000;
-static constexpr uint32_t S01_STAGE_BASE     = 0x00400000;
-static constexpr size_t   DDR_REQUIRED_BYTES = S01_STAGE_BASE + WEIGHT_END;
-// Keep s01 in the low M_AXI_HPM1_FPD window from the reference SoC address map.
-// Avoid the high 0x30_0000_0000 aperture because it can hang or bus-error on ZCU104.
-static constexpr uint64_t S01_AXI_APERTURE_BASE_PHYS = 0x00000000B0000000ULL;
-static constexpr uint64_t S01_AXI_APERTURE_HIGH_PHYS = 0x00000000BFFFFFFFULL;
-static constexpr uint64_t S01_AXI_DMA_BASE_PHYS = S01_AXI_APERTURE_BASE_PHYS;
+static constexpr size_t   DDR_REQUIRED_BYTES = RESULT_END;
 
-static constexpr int      VPU_PORT_LANES     = 16;
-static constexpr int      VPU_SINGLE_PORT_LANES = 16;
-static constexpr int      VPU_DUAL_PORT_LANES   = 32;
+static constexpr int      VPU_NUM_LANES      = 16;
 static constexpr int      VPU_QK8_0          = 32;
-static constexpr int      VPU_SINGLE_BLOCK_BEATS = VPU_QK8_0 / VPU_SINGLE_PORT_LANES;
-static constexpr int      VPU_DUAL_BLOCK_BEATS   = VPU_QK8_0 / VPU_DUAL_PORT_LANES;
+static constexpr int      VPU_BLOCK_BEATS    = VPU_QK8_0 / VPU_NUM_LANES;
 static constexpr int      VPU_RESULT_PACK_LANES = 4;
 static constexpr int      VPU_PACKED_Q8_MAX_BLOCKS = 16;
 static constexpr int      VPU_DEFAULT_ROWS   = 256;
 static constexpr int      VPU_DEFAULT_BEATS  = 32;
-static constexpr int      VPU_DEFAULT_COLS   = VPU_DEFAULT_BEATS * VPU_DUAL_PORT_LANES;
+static constexpr int      VPU_DEFAULT_COLS   = VPU_DEFAULT_BEATS * VPU_NUM_LANES;
 static constexpr uint32_t VPU_MODE_PACKED_Q8 = 0x00000001;
 static constexpr uint32_t VPU_FP16_ONE       = 0x00003C00;
 
@@ -175,10 +165,6 @@ static constexpr bool     kForceDirectVpuPathForAudit  = false;
 static constexpr bool     kAbortOnNonFiniteResult      = true;
 static constexpr bool     kSanitizeNonFiniteWeightScales = true;
 static constexpr int      kNonFiniteWeightScaleLogLimit  = 32;
-static constexpr int      FPGA_DEFAULT_HOST_WORKERS       = 0;
-static constexpr int64_t  FPGA_PARALLEL_QUANT_MIN_ITEMS   = 1;
-static constexpr int64_t  FPGA_PARALLEL_ACCUM_MIN_ROWS    = 64;
-static constexpr int64_t  FPGA_PARALLEL_STORE_MIN_ITEMS   = 1024;
 
 typedef uint32_t U32;
 
@@ -336,8 +322,6 @@ static fpga_top_entry_t    g_top_slowest[10] = {};
 static int                 g_vpu_max_rows  = VPU_DEFAULT_ROWS;
 static int                 g_vpu_max_beats = VPU_DEFAULT_BEATS;
 static int                 g_vpu_max_cols  = VPU_DEFAULT_COLS;
-static int                 g_vpu_active_lanes = VPU_DUAL_PORT_LANES;
-static int                 g_vpu_block_beats = VPU_DUAL_BLOCK_BEATS;
 static int                 g_packed_q8_supported = 0;
 static int                 g_packed_q8_max_blocks = 1;
 static int                 g_packed_q8_result_words = VPU_DEFAULT_ROWS;
@@ -352,15 +336,12 @@ static bool                g_abort_on_cpu_fallback = true;
 static bool                g_ddr_msync_unsupported = false;
 static bool                g_use_zdma_path = false;
 static bool                g_zdma_selftest_passed = false;
-static bool                g_dual_port_enabled = true;
 static int                 g_profile_every = FPGA_DEFAULT_PROFILE_EVERY;
 static int                 g_ip_status_every = FPGA_DEFAULT_STATUS_EVERY;
-static int                 g_host_workers = FPGA_DEFAULT_HOST_WORKERS;
 static long long           g_dma_timeout_us = FPGA_DEFAULT_DMA_TIMEOUT_US;
 static long long           g_ip_timeout_us = FPGA_DEFAULT_IP_TIMEOUT_US;
 static long long           g_large_matrix_min_macs = FPGA_DEFAULT_LARGE_MATRIX_MIN_MACS;
 static double              g_fpga_clock_mhz = 0.0;
-static uint64_t            g_s01_dma_base_phys = S01_AXI_DMA_BASE_PHYS;
 
 static int g_current_layer_id = 0;
 int        g_current_seq_pos  = 0;
@@ -454,20 +435,6 @@ static long long env_int64_value(const char * name, long long fallback, long lon
     return std::max(min_value, std::min(parsed, max_value));
 }
 
-static uint64_t env_u64_value(const char * name, uint64_t fallback, uint64_t min_value, uint64_t max_value) {
-    const char * value = getenv(name);
-    if (!value || value[0] == '\0') {
-        return fallback;
-    }
-    char * end = nullptr;
-    errno = 0;
-    const unsigned long long parsed = strtoull(value, &end, 0);
-    if (errno != 0 || end == value) {
-        return fallback;
-    }
-    return std::max<uint64_t>(min_value, std::min<uint64_t>((uint64_t) parsed, max_value));
-}
-
 static double env_double_value(const char * name, double fallback, double min_value, double max_value) {
     const char * value = getenv(name);
     if (!value || value[0] == '\0') {
@@ -480,55 +447,6 @@ static double env_double_value(const char * name, double fallback, double min_va
         return fallback;
     }
     return std::max(min_value, std::min(parsed, max_value));
-}
-
-static int fpga_effective_host_workers(int64_t item_count, int64_t min_items_per_worker) {
-    if (item_count <= 1) {
-        return 1;
-    }
-
-    const int64_t useful_workers =
-        std::max<int64_t>(1, item_count / std::max<int64_t>(1, min_items_per_worker));
-    unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) {
-        hw = 2;
-    }
-
-    const int configured = g_host_workers > 0 ?
-        g_host_workers :
-        std::min<int>(4, (int) hw);
-    return (int) std::max<int64_t>(1, std::min<int64_t>(configured, useful_workers));
-}
-
-template <typename Fn>
-static void fpga_parallel_for_i64(int64_t begin, int64_t end, int64_t min_items_per_worker, const Fn & fn) {
-    const int64_t count = end - begin;
-    const int workers = fpga_effective_host_workers(count, min_items_per_worker);
-    if (workers <= 1) {
-        for (int64_t i = begin; i < end; ++i) {
-            fn(i);
-        }
-        return;
-    }
-
-    std::vector<std::thread> threads;
-    threads.reserve((size_t) workers);
-    const int64_t chunk = (count + workers - 1) / workers;
-    for (int worker = 0; worker < workers; ++worker) {
-        const int64_t start = begin + (int64_t) worker * chunk;
-        const int64_t stop = std::min(end, start + chunk);
-        if (start >= stop) {
-            break;
-        }
-        threads.emplace_back([start, stop, &fn]() {
-            for (int64_t i = start; i < stop; ++i) {
-                fn(i);
-            }
-        });
-    }
-    for (std::thread & thread : threads) {
-        thread.join();
-    }
 }
 
 static void fpga_fatal(const char * fmt, ...) {
@@ -584,23 +502,6 @@ static bool range_fits(uint32_t off, size_t bytes, uint32_t begin, uint32_t end)
 
 static bool ddr_range_fits(uint32_t off, size_t bytes) {
     return ddr_is_mapped() && bytes > 0 && (uint64_t) off + (uint64_t) bytes <= (uint64_t) g_ddr_map_size;
-}
-
-static inline bool input_window_fits(uint32_t off, size_t bytes) {
-    return range_fits(off, bytes, ACT_BASE, ACT_END) ||
-           range_fits(off, bytes, WEIGHT_BASE, WEIGHT_END);
-}
-
-static inline bool fpga_dual_input_active(void) {
-    return g_dual_port_enabled && g_use_zdma_path;
-}
-
-static inline uint32_t ddr_stage_offset_for_port(int port, uint32_t off) {
-    return port == 1 ? (S01_STAGE_BASE + off) : off;
-}
-
-static bool ddr_stage_range_fits_for_port(int port, uint32_t off, size_t bytes) {
-    return ddr_range_fits(ddr_stage_offset_for_port(port, off), bytes);
 }
 
 [[maybe_unused]] static uint8_t * ddr_ptr(uint32_t off, size_t bytes) {
@@ -1323,7 +1224,7 @@ static bool map_zdma_ddr_checked(void) {
     uio_region_t dma_info;
     if (!find_uio_by_name_and_addr("dma", "dma-controller", DMA_BASE_PHYS, true, &dma_info)) {
         if (!find_uio_by_name_and_addr(nullptr, nullptr, DMA_BASE_PHYS, true, &dma_info)) {
-            LOGE("ZDMA UIO not found at phys=0x%llx with name dma/dma-controller or addr match; ZDMA data path is required",
+            LOGI("ZDMA UIO not found at phys=0x%llx with name dma/dma-controller or addr match; keeping direct_vpu_mmio",
                  (unsigned long long) DMA_BASE_PHYS);
             return false;
         }
@@ -1344,7 +1245,7 @@ static bool map_zdma_ddr_checked(void) {
 
     uio_region_t ddr_info;
     if (!find_uio_by_name_and_addr("ddr_high", nullptr, DDR_BASE_PHYS, true, &ddr_info)) {
-        LOGE("ddr_high UIO not found at phys=0x%llx; ZDMA data path is required",
+        LOGI("ddr_high UIO not found at phys=0x%llx; keeping direct_vpu_mmio",
              (unsigned long long) DDR_BASE_PHYS);
         return false;
     }
@@ -1577,20 +1478,6 @@ static bool dma_write_ip_bytes(uint32_t offset, size_t bytes, const char * tag) 
                          tag);
 }
 
-static bool dma_write_ip_port_bytes(int port, uint32_t offset, size_t bytes, const char * tag) {
-    if (port == 0) {
-        return dma_write_ip_bytes(offset, bytes, tag);
-    }
-    if (port != 1) {
-        LOGE("invalid DMA input port=%d tag=%s", port, tag ? tag : "?");
-        return false;
-    }
-    return dma_copy_bytes(DDR_BASE_PHYS + (uint64_t) ddr_stage_offset_for_port(1, offset),
-                         g_s01_dma_base_phys + (uint64_t) offset,
-                         bytes,
-                         tag);
-}
-
 static bool dma_read_ip_bytes(uint32_t offset, size_t bytes, const char * tag) {
     return dma_copy_bytes(LMM_BASE_PHYS + (uint64_t) offset,
                          DDR_BASE_PHYS + (uint64_t) offset,
@@ -1599,7 +1486,7 @@ static bool dma_read_ip_bytes(uint32_t offset, size_t bytes, const char * tag) {
 }
 
 static void configure_vpu(int rows, int col_beats, uint32_t mode) {
-    const int cols = col_beats * g_vpu_active_lanes;
+    const int cols = col_beats * VPU_NUM_LANES;
     vpu_wr32(REG_ROWS, (uint32_t) rows);
     vpu_wr32(REG_COLS, (uint32_t) cols);
     vpu_wr32(REG_COL_BEATS, (uint32_t) col_beats);
@@ -1706,13 +1593,13 @@ static void ensure_quantized_activation_matrix(
     const int64_t nb = k / VPU_QK8_0;
     act_blocks_all.resize((size_t) (m * nb));
     act_scales.resize((size_t) (m * nb));
-    fpga_parallel_for_i64(0, m, FPGA_PARALLEL_QUANT_MIN_ITEMS, [&](int64_t col) {
+    for (int64_t col = 0; col < m; ++col) {
         block_q8_0_t * col_blocks = &act_blocks_all[(size_t) (col * nb)];
         quantize_activation_vector_to(src1, col, k, col_blocks);
         for (int64_t ib = 0; ib < nb; ++ib) {
             act_scales[(size_t) (col * nb + ib)] = fp16_to_fp32(col_blocks[(size_t) ib].d);
         }
-    });
+    }
 
     g_scratch.cached_src1 = src1;
     g_scratch.cached_src1_data = src1->data;
@@ -2224,30 +2111,11 @@ static bool debug_compare_fpga_dst(
     vpu_write_i8x16(off, lanes);
 }
 
-static void write_i8x16_to_stage_port(int port, uint32_t off, const int8_t * lanes) {
-    if (g_use_zdma_path) {
-        ddr_write_i8x16(ddr_stage_offset_for_port(port, off), lanes);
-    } else {
-        if (port != 0) {
-            fpga_fatal("direct-MMIO cannot feed s01 port; use ZDMA dual-port path");
-        }
-        vpu_write_i8x16(off, lanes);
-    }
-}
-
 static void write_i8x16_to_stage(uint32_t off, const int8_t * lanes) {
-    write_i8x16_to_stage_port(0, off, lanes);
-}
-
-static void write_q8_block_word_to_stage(uint32_t off, const int8_t * q8_block, int beat) {
-    if (g_dual_port_enabled) {
-        if (beat != 0) {
-            fpga_fatal("dual-port Q8 block uses one logical beat, got beat=%d", beat);
-        }
-        write_i8x16_to_stage_port(0, off, q8_block);
-        write_i8x16_to_stage_port(1, off, q8_block + VPU_PORT_LANES);
+    if (g_use_zdma_path) {
+        ddr_write_i8x16(off, lanes);
     } else {
-        write_i8x16_to_stage_port(0, off, q8_block + beat * VPU_PORT_LANES);
+        vpu_write_i8x16(off, lanes);
     }
 }
 
@@ -2266,9 +2134,6 @@ static void read_result_i32x4_from_stage(uint32_t result_word, int32_t out[4]) {
 static void clear_stage_window(uint32_t off, size_t bytes) {
     if (g_use_zdma_path) {
         ddr_clear_window(off, bytes);
-        if (fpga_dual_input_active() && input_window_fits(off, bytes)) {
-            ddr_clear_window(ddr_stage_offset_for_port(1, off), bytes);
-        }
     } else {
         vpu_clear_window(off, bytes);
     }
@@ -2287,7 +2152,6 @@ static bool run_vpu_window_transfer(
         int64_t n,
         int64_t m,
         uint16_t tile_id,
-        bool transfer_weight_to_ip,
         fpga_stage_totals_t * totals) {
     vpu_wr32(REG_CTRL, CTRL_CLEAR_DONE);
     configure_vpu(rows, col_beats, mode);
@@ -2301,53 +2165,35 @@ static bool run_vpu_window_transfer(
     if (g_use_zdma_path &&
         (!ddr_range_fits(ACT_BASE, act_bytes) ||
          !ddr_range_fits(WEIGHT_BASE, weight_bytes) ||
-         !ddr_range_fits(RESULT_BASE, result_bytes) ||
-         (fpga_dual_input_active() &&
-          (!ddr_stage_range_fits_for_port(1, ACT_BASE, act_bytes) ||
-           !ddr_stage_range_fits_for_port(1, WEIGHT_BASE, weight_bytes))))) {
-        LOGE("ZDMA DDR staging range overflow act=%zu weight_span=%zu result=%zu dual=%d ddr_size=0x%zx",
-             act_bytes, weight_bytes, result_bytes, fpga_dual_input_active() ? 1 : 0, g_ddr_map_size);
+         !ddr_range_fits(RESULT_BASE, result_bytes))) {
+        LOGE("ZDMA DDR staging range overflow act=%zu weight_span=%zu result=%zu ddr_size=0x%zx",
+             act_bytes, weight_bytes, result_bytes, g_ddr_map_size);
         return false;
     }
 
+    vpu_clear_window(RESULT_BASE, align_up_size(result_bytes, 16U));
     if (g_use_zdma_path) {
         ddr_clear_window(RESULT_BASE, align_up_size(result_bytes, 16U));
-    } else {
-        vpu_clear_window(RESULT_BASE, align_up_size(result_bytes, 16U));
     }
 
     if (g_use_zdma_path) {
         const long long act0 = now_us();
-        if (!dma_write_ip_port_bytes(0, ACT_BASE, act_bytes, "ACT.s00")) {
-            return false;
-        }
-        if (fpga_dual_input_active() &&
-            !dma_write_ip_port_bytes(1, ACT_BASE, act_bytes, "ACT.s01")) {
+        if (!dma_write_ip_bytes(ACT_BASE, act_bytes, "ACT")) {
             return false;
         }
         const long long act1 = now_us();
 
         const long long weight0 = now_us();
-        long long weight1 = weight0;
-        if (transfer_weight_to_ip) {
-            if (!dma_write_ip_port_bytes(0, WEIGHT_BASE, weight_bytes, "WEIGHT.s00")) {
-                return false;
-            }
-            if (fpga_dual_input_active() &&
-                !dma_write_ip_port_bytes(1, WEIGHT_BASE, weight_bytes, "WEIGHT.s01")) {
-                return false;
-            }
-            weight1 = now_us();
+        if (!dma_write_ip_bytes(WEIGHT_BASE, weight_bytes, "WEIGHT")) {
+            return false;
         }
+        const long long weight1 = now_us();
 
         if (totals) {
-            const size_t input_port_count = fpga_dual_input_active() ? 2U : 1U;
             totals->dma_act_us += act1 - act0;
             totals->dma_weight_us += weight1 - weight0;
-            totals->activation_bytes += act_bytes * input_port_count;
-            if (transfer_weight_to_ip) {
-                totals->weight_bytes += weight_bytes * input_port_count;
-            }
+            totals->activation_bytes += act_bytes;
+            totals->weight_bytes += weight_bytes;
         }
     }
 
@@ -2409,20 +2255,20 @@ static bool fpga_dma_basic_self_test(void) {
     for (int i = 0; i < VPU_QK8_0; ++i) {
         ones[i] = 1;
     }
-    clear_stage_window(ACT_BASE, (size_t) g_vpu_block_beats * 16U);
-    clear_stage_window(WEIGHT_BASE, (size_t) g_vpu_block_beats * 16U);
+    clear_stage_window(ACT_BASE, VPU_BLOCK_BEATS * 16U);
+    clear_stage_window(WEIGHT_BASE, VPU_BLOCK_BEATS * 16U);
     clear_stage_window(RESULT_BASE, 16U);
-    for (int beat = 0; beat < g_vpu_block_beats; ++beat) {
-        write_q8_block_word_to_stage(act_word_offset(beat), ones, beat);
-        write_q8_block_word_to_stage(weight_word_offset(0, beat), ones, beat);
+    for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
+        write_i8x16_to_stage(act_word_offset(beat), ones + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(0, beat), ones + beat * VPU_NUM_LANES);
     }
 
     fpga_stage_totals_t totals = {};
-    if (!run_vpu_window_transfer(1, g_vpu_block_beats, 0,
-                                 (size_t) g_vpu_block_beats * 16U,
-                                 (size_t) g_vpu_block_beats * 16U,
+    if (!run_vpu_window_transfer(1, VPU_BLOCK_BEATS, 0,
+                                 VPU_QK8_0,
+                                 VPU_QK8_0,
                                  16U,
-                                 "selftest.basic", -1, 32, 1, 1, 0, true, &totals)) {
+                                 "selftest.basic", -1, 32, 1, 1, 0, &totals)) {
         return false;
     }
 
@@ -2450,11 +2296,11 @@ static bool fpga_dma_packed_self_test(void) {
 
     const int rows = 2;
     const int group_blocks = 2;
-    const int group_beats = group_blocks * g_vpu_block_beats;
+    const int group_beats = group_blocks * VPU_BLOCK_BEATS;
     const uint32_t row0_block0_off = weight_word_offset(0, 0);
-    const uint32_t row0_block1_off = weight_word_offset(0, g_vpu_block_beats);
+    const uint32_t row0_block1_off = weight_word_offset(0, VPU_BLOCK_BEATS);
     const uint32_t row1_block0_off = weight_word_offset(1, 0);
-    const uint32_t row1_block1_off = weight_word_offset(1, g_vpu_block_beats);
+    const uint32_t row1_block1_off = weight_word_offset(1, VPU_BLOCK_BEATS);
     const size_t weight_span_bytes =
         (size_t) ((rows - 1) * g_vpu_max_beats + group_beats) * 16U;
 
@@ -2462,13 +2308,13 @@ static bool fpga_dma_packed_self_test(void) {
     clear_stage_window(WEIGHT_BASE, weight_span_bytes);
     clear_stage_window(RESULT_BASE, 16U);
 
-    for (int beat = 0; beat < g_vpu_block_beats; ++beat) {
-        write_q8_block_word_to_stage(act_word_offset(beat), act0, beat);
-        write_q8_block_word_to_stage(act_word_offset(g_vpu_block_beats + beat), act1, beat);
-        write_q8_block_word_to_stage(weight_word_offset(0, beat), w_row0_block0, beat);
-        write_q8_block_word_to_stage(weight_word_offset(0, g_vpu_block_beats + beat), w_row0_block1, beat);
-        write_q8_block_word_to_stage(weight_word_offset(1, beat), w_row1_block0, beat);
-        write_q8_block_word_to_stage(weight_word_offset(1, g_vpu_block_beats + beat), w_row1_block1, beat);
+    for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
+        write_i8x16_to_stage(act_word_offset(beat), act0 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(act_word_offset(VPU_BLOCK_BEATS + beat), act1 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(0, beat), w_row0_block0 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(0, VPU_BLOCK_BEATS + beat), w_row0_block1 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(1, beat), w_row1_block0 + beat * VPU_NUM_LANES);
+        write_i8x16_to_stage(weight_word_offset(1, VPU_BLOCK_BEATS + beat), w_row1_block1 + beat * VPU_NUM_LANES);
     }
 
     fpga_stage_totals_t totals = {};
@@ -2476,7 +2322,7 @@ static bool fpga_dma_packed_self_test(void) {
                                  4U * 16U,
                                  weight_span_bytes,
                                  16U,
-                                 "selftest.packed", -1, 64, 2, 1, 1, true, &totals)) {
+                                 "selftest.packed", -1, 64, 2, 1, 1, &totals)) {
         return false;
     }
 
@@ -2554,7 +2400,7 @@ static bool fpga_validate_tensors(
 }
 
 static int packed_q8_group_blocks_for_rows(int rows, int remaining_blocks) {
-    const int beat_limited_blocks = std::max(1, g_vpu_max_beats / g_vpu_block_beats);
+    const int beat_limited_blocks = std::max(1, g_vpu_max_beats / VPU_BLOCK_BEATS);
     const int result_limited_blocks =
         std::max(1, (g_packed_q8_result_words * VPU_RESULT_PACK_LANES) / std::max(1, rows));
     int blocks = std::min(g_packed_q8_max_blocks, beat_limited_blocks);
@@ -2573,7 +2419,7 @@ static bool fpga_dma_multi_group_self_test(void) {
     while (processed_blocks < total_blocks) {
         const int group_blocks =
             packed_q8_group_blocks_for_rows(rows, total_blocks - processed_blocks);
-        const int group_beats = group_blocks * g_vpu_block_beats;
+        const int group_beats = group_blocks * VPU_BLOCK_BEATS;
         const size_t weight_span_bytes =
             (size_t) ((rows - 1) * g_vpu_max_beats + group_beats) * 16U;
 
@@ -2591,17 +2437,17 @@ static bool fpga_dma_multi_group_self_test(void) {
         clear_stage_window(RESULT_BASE, 16U * (size_t) g_packed_q8_result_words);
 
         for (int gb = 0; gb < group_blocks; ++gb) {
-            for (int beat = 0; beat < g_vpu_block_beats; ++beat) {
+            for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
                 const uint32_t act_word =
-                    (uint32_t) gb * (uint32_t) g_vpu_block_beats + (uint32_t) beat;
-                write_q8_block_word_to_stage(act_word_offset((int) act_word), act, beat);
+                    (uint32_t) gb * (uint32_t) VPU_BLOCK_BEATS + (uint32_t) beat;
+                write_i8x16_to_stage(act_word_offset((int) act_word), act + beat * VPU_NUM_LANES);
 
                 const uint32_t row0_word =
-                    (uint32_t) gb * (uint32_t) g_vpu_block_beats + (uint32_t) beat;
+                    (uint32_t) gb * (uint32_t) VPU_BLOCK_BEATS + (uint32_t) beat;
                 const uint32_t row1_word =
                     (uint32_t) g_vpu_max_beats + row0_word;
-                write_q8_block_word_to_stage(WEIGHT_BASE + row0_word * 16U, w_row0, beat);
-                write_q8_block_word_to_stage(WEIGHT_BASE + row1_word * 16U, w_row1, beat);
+                write_i8x16_to_stage(WEIGHT_BASE + row0_word * 16U, w_row0 + beat * VPU_NUM_LANES);
+                write_i8x16_to_stage(WEIGHT_BASE + row1_word * 16U, w_row1 + beat * VPU_NUM_LANES);
             }
         }
 
@@ -2617,7 +2463,7 @@ static bool fpga_dma_multi_group_self_test(void) {
                                      (size_t) result_words * 16U,
                                      "selftest.multi_group", -1,
                                      (int64_t) total_blocks * VPU_QK8_0,
-                                     rows, 1, tile_id++, true, &totals)) {
+                                     rows, 1, tile_id++, &totals)) {
             return false;
         }
 
@@ -2659,16 +2505,14 @@ static bool fpga_dma_run_q8_group(
         int layer_id,
         int64_t k,
         int64_t n,
-        int64_t m,
-        bool load_weights,
-        bool transfer_weight_to_ip) {
+        int64_t m) {
     if (rows <= 0 || rows > g_vpu_max_rows || group_blocks <= 0) {
             LOGE("unsupported direct-VPU tiling case: rows=%d max_rows=%d group_blocks=%d",
              rows, g_vpu_max_rows, group_blocks);
         return false;
     }
 
-    const int group_beats = group_blocks * g_vpu_block_beats;
+    const int group_beats = group_blocks * VPU_BLOCK_BEATS;
     if (group_beats > g_vpu_max_beats) {
         LOGE("unsupported direct-VPU tiling case: group_beats=%d max_beats=%d",
              group_beats, g_vpu_max_beats);
@@ -2696,74 +2540,67 @@ static bool fpga_dma_run_q8_group(
     }
 
     const long long prep0 = now_us();
-    if (load_weights) {
-        weight_scales.resize((size_t) rows * (size_t) group_blocks);
-        for (int row = 0; row < rows; ++row) {
-            for (int gb = 0; gb < group_blocks; ++gb) {
-                const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block0 + gb);
-                float weight_scale = fp16_to_fp32(wb->d);
-                if (!std::isfinite(weight_scale)) {
-                    g_nonfinite_weight_scale_count++;
-                    if (totals) {
-                        totals->nonfinite_weight_scales++;
-                    }
-                    if (g_nonfinite_weight_scale_log_count < kNonFiniteWeightScaleLogLimit) {
-                        log_nonfinite_weight_scale(
-                            src0,
-                            wb,
-                            tensor_name,
-                            layer_id,
-                            row0 + row,
-                            row,
-                            k_block0 + gb,
-                            gb,
-                            weight_scale);
-                        g_nonfinite_weight_scale_log_count++;
-                        if (g_nonfinite_weight_scale_log_count == kNonFiniteWeightScaleLogLimit) {
-                            LOGW("non-finite Q8_0 weight scale log limit reached; further bad scales will be counted in summary only");
-                        }
-                    }
-                    if (!kSanitizeNonFiniteWeightScales) {
-                        return false;
-                    }
-                    weight_scale = 0.0f;
-                    g_sanitized_weight_scale_count++;
-                    if (totals) {
-                        totals->sanitized_weight_scales++;
+    vpu_clear_window(RESULT_BASE, align_up_size(result_bytes, 16U));
+    weight_scales.resize((size_t) rows * (size_t) group_blocks);
+    for (int row = 0; row < rows; ++row) {
+        for (int gb = 0; gb < group_blocks; ++gb) {
+            const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block0 + gb);
+            float weight_scale = fp16_to_fp32(wb->d);
+            if (!std::isfinite(weight_scale)) {
+                g_nonfinite_weight_scale_count++;
+                if (totals) {
+                    totals->nonfinite_weight_scales++;
+                }
+                if (g_nonfinite_weight_scale_log_count < kNonFiniteWeightScaleLogLimit) {
+                    log_nonfinite_weight_scale(
+                        src0,
+                        wb,
+                        tensor_name,
+                        layer_id,
+                        row0 + row,
+                        row,
+                        k_block0 + gb,
+                        gb,
+                        weight_scale);
+                    g_nonfinite_weight_scale_log_count++;
+                    if (g_nonfinite_weight_scale_log_count == kNonFiniteWeightScaleLogLimit) {
+                        LOGW("non-finite Q8_0 weight scale log limit reached; further bad scales will be counted in summary only");
                     }
                 }
-                weight_scales[(size_t) row * (size_t) group_blocks + (size_t) gb] = weight_scale;
+                if (!kSanitizeNonFiniteWeightScales) {
+                    return false;
+                }
+                weight_scale = 0.0f;
+                g_sanitized_weight_scale_count++;
+                if (totals) {
+                    totals->sanitized_weight_scales++;
+                }
             }
+            weight_scales[(size_t) row * (size_t) group_blocks + (size_t) gb] = weight_scale;
         }
-    } else if (weight_scales.size() < (size_t) rows * (size_t) group_blocks) {
-        LOGE("internal host tiling error: weight scales unavailable for reused group rows=%d group_blocks=%d",
-             rows, group_blocks);
-        return false;
     }
     if (totals) {
         totals->prep_us += now_us() - prep0;
     }
 
     const long long transfer_in0 = now_us();
-    if (load_weights) {
-        for (int row = 0; row < rows; ++row) {
-            for (int gb = 0; gb < group_blocks; ++gb) {
-                const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block0 + gb);
-                for (int beat = 0; beat < g_vpu_block_beats; ++beat) {
-                    const uint32_t word_index = (uint32_t) row * (uint32_t) g_vpu_max_beats +
-                                                (uint32_t) gb * (uint32_t) g_vpu_block_beats +
-                                                (uint32_t) beat;
-                    write_q8_block_word_to_stage(WEIGHT_BASE + word_index * 16U, wb->qs, beat);
-                }
+    for (int row = 0; row < rows; ++row) {
+        for (int gb = 0; gb < group_blocks; ++gb) {
+            const block_q8_0_t * wb = weight_block(src0, row0 + row, k_block0 + gb);
+            for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
+                const uint32_t word_index = (uint32_t) row * (uint32_t) g_vpu_max_beats +
+                                            (uint32_t) gb * (uint32_t) VPU_BLOCK_BEATS +
+                                            (uint32_t) beat;
+                write_i8x16_to_stage(WEIGHT_BASE + word_index * 16U, wb->qs + beat * VPU_NUM_LANES);
             }
         }
     }
 
     for (int gb = 0; gb < group_blocks; ++gb) {
         const block_q8_0_t & act = act_group[gb];
-        for (int beat = 0; beat < g_vpu_block_beats; ++beat) {
-            const uint32_t word_index = (uint32_t) gb * (uint32_t) g_vpu_block_beats + (uint32_t) beat;
-            write_q8_block_word_to_stage(ACT_BASE + word_index * 16U, act.qs, beat);
+        for (int beat = 0; beat < VPU_BLOCK_BEATS; ++beat) {
+            const uint32_t word_index = (uint32_t) gb * (uint32_t) VPU_BLOCK_BEATS + (uint32_t) beat;
+            write_i8x16_to_stage(ACT_BASE + word_index * 16U, act.qs + beat * VPU_NUM_LANES);
         }
     }
     if (totals) {
@@ -2773,16 +2610,13 @@ static bool fpga_dma_run_q8_group(
         } else {
             totals->dma_act_us += transfer_in_us;
             totals->activation_bytes += act_bytes;
-            if (load_weights) {
-                totals->weight_bytes += weight_span_bytes;
-            }
+            totals->weight_bytes += weight_span_bytes;
         }
     }
 
     if (!run_vpu_window_transfer(rows, group_beats, VPU_MODE_PACKED_Q8,
                                  act_bytes, weight_span_bytes, result_bytes,
-                                 tensor_name, layer_id, k, n, m, tile_id,
-                                 transfer_weight_to_ip, totals)) {
+                                 tensor_name, layer_id, k, n, m, tile_id, totals)) {
         return false;
     }
 
@@ -2856,7 +2690,7 @@ static bool fpga_hw_q8_0_matmul_dma_to_ip(
         for (int64_t ib0 = 0; ib0 < nb;) {
             const int remaining_blocks = (int) (nb - ib0);
             const int group_blocks = packed_q8_group_blocks_for_rows(rows, remaining_blocks);
-            const int group_beats = group_blocks * g_vpu_block_beats;
+            const int group_beats = group_blocks * VPU_BLOCK_BEATS;
 
             LOGTILE("tensor=%s layer=%d row0=%lld rows=%d k_block0=%lld group_blocks=%d group_beats=%d tile_id=%u partial_accum=1 transfer=%s",
                      tensor_name ? tensor_name : "?",
@@ -2869,25 +2703,18 @@ static bool fpga_hw_q8_0_matmul_dma_to_ip(
                      tile_id,
                      g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio");
 
-            bool weights_loaded_for_group = false;
-            std::vector<int> bad_group_for_row((size_t) rows);
             for (int64_t col = 0; col < m; ++col) {
                 const block_q8_0_t * act_group =
                     &act_blocks_all[(size_t) (col * nb + ib0)];
-                const bool load_weights = !weights_loaded_for_group;
                 if (!fpga_dma_run_q8_group(src0, act_group, row0, rows, ib0, group_blocks,
                                            partial, weight_scales, totals, tile_id++,
-                                           tensor_name, layer_id, k, n, m,
-                                           load_weights, load_weights)) {
+                                           tensor_name, layer_id, k, n, m)) {
                     return false;
                 }
-                weights_loaded_for_group = true;
 
                 const long long accum0 = now_us();
                 float * accum_col = &accum[(size_t) (col * rows)];
-                std::fill(bad_group_for_row.begin(), bad_group_for_row.end(), -1);
-                fpga_parallel_for_i64(0, rows, FPGA_PARALLEL_ACCUM_MIN_ROWS, [&](int64_t row_i) {
-                    const int row = (int) row_i;
+                for (int row = 0; row < rows; ++row) {
                     for (int gb = 0; gb < group_blocks; ++gb) {
                         const int64_t ib = ib0 + gb;
                         const int32_t raw = partial[(size_t) row * (size_t) group_blocks + (size_t) gb];
@@ -2898,80 +2725,58 @@ static bool fpga_hw_q8_0_matmul_dma_to_ip(
                         const float accum_before = accum_col[(size_t) row];
                         const float accum_after = accum_before + (float) raw * scale_product;
                         if (!std::isfinite(accum_after)) {
-                            bad_group_for_row[(size_t) row] = gb;
-                            break;
+                            char raw_buf[160];
+                            const int raw_count = std::min<int>((int) partial.size(), 8);
+                            format_i32_samples(partial.data(), raw_count, raw_buf, sizeof(raw_buf));
+                            if (!std::isfinite(weight_scale)) {
+                                log_nonfinite_weight_scale(
+                                    src0,
+                                    weight_block(src0, row0 + row, ib),
+                                    tensor_name,
+                                    layer_id,
+                                    row0 + row,
+                                    row,
+                                    ib,
+                                    gb,
+                                    weight_scale);
+                            }
+                            fpga_log_line(true, "NONFINITE", true,
+                                "tensor=%s layer=%d phase=%s row=%lld col=%lld local_row=%d k_block=%lld group_block=%d value=%.6g",
+                                tensor_name ? tensor_name : "?",
+                                layer_id,
+                                decode_or_prefill(m),
+                                (long long) (row0 + row),
+                                (long long) col,
+                                row,
+                                (long long) ib,
+                                gb,
+                                accum_after);
+                            log_src1_stats_for_col(src1, col, k);
+                            fpga_log_line(true, "NONFINITE_SCALE", true,
+                                "row=%lld block=%lld act_scale=%.9g weight_scale=%.9g scale_product=%.9g act_scale_finite=%d weight_scale_finite=%d",
+                                (long long) (row0 + row),
+                                (long long) ib,
+                                act_scale,
+                                weight_scale,
+                                scale_product,
+                                std::isfinite(act_scale) ? 1 : 0,
+                                std::isfinite(weight_scale) ? 1 : 0);
+                            fpga_log_line(true, "NONFINITE_RAW", true,
+                                "raw_partial=%d raw_first8=%s group_blocks=%d rows=%d result_values=%zu",
+                                raw,
+                                raw_buf,
+                                group_blocks,
+                                rows,
+                                partial.size());
+                            fpga_log_line(true, "NONFINITE_ACCUM", true,
+                                "accum_before=%.9g accum_after=%.9g contribution=%.9g",
+                                accum_before,
+                                accum_after,
+                                (float) raw * scale_product);
+                            return false;
                         }
                         accum_col[(size_t) row] = accum_after;
                     }
-                });
-
-                int bad_row = -1;
-                int bad_gb = -1;
-                for (int row = 0; row < rows; ++row) {
-                    if (bad_group_for_row[(size_t) row] >= 0) {
-                        bad_row = row;
-                        bad_gb = bad_group_for_row[(size_t) row];
-                        break;
-                    }
-                }
-                if (bad_row >= 0) {
-                    const int64_t ib = ib0 + bad_gb;
-                    const int32_t raw = partial[(size_t) bad_row * (size_t) group_blocks + (size_t) bad_gb];
-                    const float act_scale = act_scales[(size_t) (col * nb + ib)];
-                    const float weight_scale =
-                        weight_scales[(size_t) bad_row * (size_t) group_blocks + (size_t) bad_gb];
-                    const float scale_product = act_scale * weight_scale;
-                    const float accum_before = accum_col[(size_t) bad_row];
-                    const float accum_after = accum_before + (float) raw * scale_product;
-                    char raw_buf[160];
-                    const int raw_count = std::min<int>((int) partial.size(), 8);
-                    format_i32_samples(partial.data(), raw_count, raw_buf, sizeof(raw_buf));
-                    if (!std::isfinite(weight_scale)) {
-                        log_nonfinite_weight_scale(
-                            src0,
-                            weight_block(src0, row0 + bad_row, ib),
-                            tensor_name,
-                            layer_id,
-                            row0 + bad_row,
-                            bad_row,
-                            ib,
-                            bad_gb,
-                            weight_scale);
-                    }
-                    fpga_log_line(true, "NONFINITE", true,
-                        "tensor=%s layer=%d phase=%s row=%lld col=%lld local_row=%d k_block=%lld group_block=%d value=%.6g",
-                        tensor_name ? tensor_name : "?",
-                        layer_id,
-                        decode_or_prefill(m),
-                        (long long) (row0 + bad_row),
-                        (long long) col,
-                        bad_row,
-                        (long long) ib,
-                        bad_gb,
-                        accum_after);
-                    log_src1_stats_for_col(src1, col, k);
-                    fpga_log_line(true, "NONFINITE_SCALE", true,
-                        "row=%lld block=%lld act_scale=%.9g weight_scale=%.9g scale_product=%.9g act_scale_finite=%d weight_scale_finite=%d",
-                        (long long) (row0 + bad_row),
-                        (long long) ib,
-                        act_scale,
-                        weight_scale,
-                        scale_product,
-                        std::isfinite(act_scale) ? 1 : 0,
-                        std::isfinite(weight_scale) ? 1 : 0);
-                    fpga_log_line(true, "NONFINITE_RAW", true,
-                        "raw_partial=%d raw_first8=%s group_blocks=%d rows=%d result_values=%zu",
-                        raw,
-                        raw_buf,
-                        group_blocks,
-                        rows,
-                        partial.size());
-                    fpga_log_line(true, "NONFINITE_ACCUM", true,
-                        "accum_before=%.9g accum_after=%.9g contribution=%.9g",
-                        accum_before,
-                        accum_after,
-                        (float) raw * scale_product);
-                    return false;
                 }
                 if (totals) {
                     totals->host_accum_us += now_us() - accum0;
@@ -2981,12 +2786,12 @@ static bool fpga_hw_q8_0_matmul_dma_to_ip(
         }
 
         const long long store0 = now_us();
-        fpga_parallel_for_i64(0, m * rows, FPGA_PARALLEL_STORE_MIN_ITEMS, [&](int64_t idx) {
-            const int64_t col = idx / rows;
-            const int row = (int) (idx - col * rows);
+        for (int64_t col = 0; col < m; ++col) {
             const float * accum_col = &accum[(size_t) (col * rows)];
-            store_dst_value(dst, row0 + row, col, accum_col[(size_t) row]);
-        });
+            for (int row = 0; row < rows; ++row) {
+                store_dst_value(dst, row0 + row, col, accum_col[(size_t) row]);
+            }
+        }
         if (totals) {
             totals->host_accum_us += now_us() - store0;
         }
@@ -2995,13 +2800,13 @@ static bool fpga_hw_q8_0_matmul_dma_to_ip(
 }
 
 int fpga_init(void) {
-    if (vpu_is_mapped() && dma_is_mapped() && ddr_is_mapped() && g_use_zdma_path) {
+    if (vpu_is_mapped()) {
         return 0;
     }
 
     const char * path = getenv("FPGA_PATH");
-    if (path && strcmp(path, "dma") != 0 && strcmp(path, "auto") != 0) {
-        fpga_fatal("FPGA_PATH=%s is not allowed in Zynq ZDMA data build; set FPGA_PATH=dma/auto or leave it unset", path);
+    if (path && strcmp(path, "dma") != 0 && strcmp(path, "auto") != 0 && strcmp(path, "mmio") != 0) {
+        fpga_fatal("FPGA_PATH=%s is not allowed in direct-VPU correctness build; set FPGA_PATH=dma/mmio/auto or leave it unset", path);
     }
     if (env_flag_enabled("FPGA_DISABLE")) {
         fpga_fatal("FPGA_DISABLE is set, but this build must not silently fall back to CPU");
@@ -3014,34 +2819,12 @@ int fpga_init(void) {
     g_log_flush_every = 256;
     g_profile_every = env_int_value("FPGA_PROFILE_EVERY", FPGA_DEFAULT_PROFILE_EVERY, 0, 1000000);
     g_ip_status_every = kLogPollStatus ? FPGA_DEFAULT_STATUS_EVERY : 0;
-    g_host_workers = env_int_value("FPGA_HOST_WORKERS", FPGA_DEFAULT_HOST_WORKERS, 0, 256);
     g_dma_timeout_us = env_int64_value("FPGA_DMA_TIMEOUT_US", FPGA_DEFAULT_DMA_TIMEOUT_US, 1000, LLONG_MAX);
     g_ip_timeout_us = env_int64_value("FPGA_IP_TIMEOUT_US", FPGA_DEFAULT_IP_TIMEOUT_US, 1000, LLONG_MAX);
     g_large_matrix_min_macs = env_int64_value(
         "FPGA_LARGE_MATRIX_MIN_MACS", FPGA_DEFAULT_LARGE_MATRIX_MIN_MACS, 0, LLONG_MAX);
     g_fpga_clock_mhz = env_double_value("FPGA_CLOCK_MHZ", 0.0, 0.0, 10000.0);
     g_abort_on_cpu_fallback = !env_flag_disabled("FPGA_ABORT_ON_CPU_FALLBACK");
-    g_dual_port_enabled = !env_flag_enabled("FPGA_DISABLE_DUAL_PORT");
-    g_s01_dma_base_phys = env_u64_value(
-        "FPGA_S01_DMA_BASE",
-        S01_AXI_DMA_BASE_PHYS,
-        S01_AXI_APERTURE_BASE_PHYS,
-        S01_AXI_APERTURE_HIGH_PHYS);
-    if (g_dual_port_enabled) {
-        if (g_s01_dma_base_phys < S01_AXI_APERTURE_BASE_PHYS ||
-            g_s01_dma_base_phys + (uint64_t) WEIGHT_END - 1ULL > S01_AXI_APERTURE_HIGH_PHYS) {
-            fpga_fatal("FPGA_S01_DMA_BASE=0x%llx is outside s01 aperture 0x%llx..0x%llx",
-                       (unsigned long long) g_s01_dma_base_phys,
-                       (unsigned long long) S01_AXI_APERTURE_BASE_PHYS,
-                       (unsigned long long) S01_AXI_APERTURE_HIGH_PHYS);
-        }
-        g_vpu_active_lanes = VPU_DUAL_PORT_LANES;
-        g_vpu_block_beats = VPU_DUAL_BLOCK_BEATS;
-    } else {
-        g_vpu_active_lanes = VPU_SINGLE_PORT_LANES;
-        g_vpu_block_beats = VPU_SINGLE_BLOCK_BEATS;
-    }
-    g_vpu_max_cols = g_vpu_max_beats * g_vpu_active_lanes;
 
     if (!map_vpu_only()) {
         fpga_fatal("direct VPU FPGA init failed; refusing CPU fallback");
@@ -3064,7 +2847,7 @@ int fpga_init(void) {
     }
     if (limit_beats > 0 && limit_beats <= VPU_DEFAULT_BEATS) {
         g_vpu_max_beats = limit_beats;
-        g_vpu_max_cols = g_vpu_max_beats * g_vpu_active_lanes;
+        g_vpu_max_cols = g_vpu_max_beats * VPU_NUM_LANES;
     }
 
     const bool caps_valid = caps != 0U && caps != 0xFFFFFFFFU;
@@ -3073,14 +2856,14 @@ int fpga_init(void) {
         const int cap_result_words = (int) ((caps >> 16) & 0xFFFFU);
         if (cap_blocks > 0 && cap_result_words > 0) {
             g_packed_q8_supported = 1;
-            g_packed_q8_max_blocks = std::min(cap_blocks, g_vpu_max_beats / g_vpu_block_beats);
+            g_packed_q8_max_blocks = std::min(cap_blocks, g_vpu_max_beats / VPU_BLOCK_BEATS);
             g_packed_q8_result_words = cap_result_words;
         }
     }
 
     if (!g_packed_q8_supported && !caps_valid) {
         g_packed_q8_supported = 1;
-        g_packed_q8_max_blocks = std::min(VPU_PACKED_Q8_MAX_BLOCKS, g_vpu_max_beats / g_vpu_block_beats);
+        g_packed_q8_max_blocks = std::min(VPU_PACKED_Q8_MAX_BLOCKS, g_vpu_max_beats / VPU_BLOCK_BEATS);
         g_packed_q8_result_words =
             (g_vpu_max_rows * g_packed_q8_max_blocks + VPU_RESULT_PACK_LANES - 1) /
             VPU_RESULT_PACK_LANES;
@@ -3089,30 +2872,21 @@ int fpga_init(void) {
     }
 
     LOGI("host trace version: %s", FPGA_HOST_TRACE_VERSION);
-    LOGI("runtime path request: FPGA_PATH=%s diagnostic=direct_vpu_mmio require_zdma=%d model_data_path=zdma_ddr_to_ip dual_port=%d",
-         path ? path : "dma(default)", kPreferZdmaPath ? 1 : 0, g_dual_port_enabled ? 1 : 0);
-    LOGI("bases my_ip=0x%llx reg=0x%llx s00_lmm=0x%llx s01_aperture=0x%llx..0x%llx s01_dma_base=0x%llx dma=0x%llx ddr=0x%llx",
+    LOGI("runtime path request: FPGA_PATH=%s baseline=direct_vpu_mmio prefer_zdma=%d force_direct_audit=%d",
+         path ? path : "auto(default)", kPreferZdmaPath ? 1 : 0, kForceDirectVpuPathForAudit ? 1 : 0);
+    LOGI("bases my_ip=0x%llx reg=0x%llx lmm=0x%llx dma=0x%llx ddr=0x%llx",
            (unsigned long long) MY_IP_BASE_ADDRESS,
            (unsigned long long) REG_BASE_PHYS,
            (unsigned long long) LMM_BASE_PHYS,
-           (unsigned long long) S01_AXI_APERTURE_BASE_PHYS,
-           (unsigned long long) S01_AXI_APERTURE_HIGH_PHYS,
-           (unsigned long long) g_s01_dma_base_phys,
            (unsigned long long) DMA_BASE_PHYS,
            (unsigned long long) DDR_BASE_PHYS);
     LOGI("mapping vpu=%s virt=0x%llx size=0x%zx",
          g_vpu_map_source.c_str(), fpga_ptr_addr(g_vpu), g_vpu_map_size);
-    LOGI("VPU windows act=0x%08x weight=0x%08x result=0x%08x s01_ddr_stage_base=0x%08x data_movement=zdma_ddr_to_ip",
-         ACT_BASE, WEIGHT_BASE, RESULT_BASE, S01_STAGE_BASE);
+    LOGI("VPU windows act=0x%08x weight=0x%08x result=0x%08x data_movement=direct_mmio_baseline",
+         ACT_BASE, WEIGHT_BASE, RESULT_BASE);
     LOGI("VPU limits rows=%d col_beats=%d cols=%d raw_limits=0x%08x caps=0x%08x packed_q8=%d max_group_blocks=%d result_words=%d",
          g_vpu_max_rows, g_vpu_max_beats, g_vpu_max_cols, limits, caps,
          g_packed_q8_supported, g_packed_q8_max_blocks, g_packed_q8_result_words);
-    LOGI("host lane packing: active_lanes=%d port_lanes=%d q8_block_beats=%d input_ports=%d s01_dma_base=0x%llx",
-         g_vpu_active_lanes,
-         VPU_PORT_LANES,
-         g_vpu_block_beats,
-         g_dual_port_enabled ? 2 : 1,
-         (unsigned long long) g_s01_dma_base_phys);
     if (g_vpu_max_beats == 256) {
         LOGI("warning: MAX_COL_BEATS=256 detected; direct VPU path will run, but this large BRAM setting is still suspicious for timing/resource use");
     }
@@ -3129,51 +2903,49 @@ int fpga_init(void) {
          FPGA_ENABLE_DEBUG_COMPARE ? 1 : 0,
          kFpgaResultAudit ? 1 : 0,
          kAbortOnNonFiniteResult ? 1 : 0);
-    LOGI("host parallelism: FPGA_HOST_WORKERS=%d effective_auto_cap=%d quant_min_items=%lld accum_min_rows=%lld store_min_items=%lld",
-         g_host_workers,
-         g_host_workers > 0 ? g_host_workers : 4,
-         (long long) FPGA_PARALLEL_QUANT_MIN_ITEMS,
-         (long long) FPGA_PARALLEL_ACCUM_MIN_ROWS,
-         (long long) FPGA_PARALLEL_STORE_MIN_ITEMS);
 
     if (!g_packed_q8_supported) {
         fpga_fatal("packed_q8 capability unavailable in REG_CAPS=0x%08x; refusing CPU fallback", caps);
     }
-    if (g_dual_port_enabled) {
-        LOGI("direct_vpu_mmio data self-tests skipped: dual-port packing requires s01_axi, which is only driven by ZDMA in this host");
+    g_use_zdma_path = false;
+    if (!fpga_dma_basic_self_test()) {
+        fpga_fatal("basic direct-VPU self-test failed; refusing CPU fallback");
+    }
+    if (!fpga_dma_packed_self_test()) {
+        fpga_fatal("packed Q8 direct-VPU self-test failed; refusing CPU fallback");
+    }
+    if (!fpga_dma_multi_group_self_test()) {
+        fpga_fatal("multi-group Q8 direct-VPU self-test failed; refusing CPU fallback");
+    }
+    LOGI("direct_vpu_mmio self-tests passed");
+
+    const bool force_direct = kForceDirectVpuPathForAudit || (path && strcmp(path, "mmio") == 0);
+    if (kPreferZdmaPath && !force_direct) {
+        if (map_zdma_ddr_checked() && fpga_dma_init()) {
+            g_ddr_msync_unsupported = false;
+            g_use_zdma_path = true;
+            const bool zdma_ok =
+                fpga_dma_basic_self_test() &&
+                fpga_dma_packed_self_test() &&
+                fpga_dma_multi_group_self_test();
+            if (zdma_ok) {
+                g_zdma_selftest_passed = true;
+                LOGI("ZDMA self-tests passed; selected path=zdma_ddr_to_ip");
+            } else {
+                g_use_zdma_path = false;
+                g_zdma_selftest_passed = false;
+                LOGE("ZDMA self-test failed; falling back to direct_vpu_mmio for model execution");
+            }
+        } else {
+            g_use_zdma_path = false;
+            g_zdma_selftest_passed = false;
+            LOGI("ZDMA path unavailable or runtime checks failed; selected path=direct_vpu_mmio");
+        }
     } else {
         g_use_zdma_path = false;
-        if (!fpga_dma_basic_self_test()) {
-            fpga_fatal("basic direct-VPU self-test failed; refusing CPU fallback");
-        }
-        if (!fpga_dma_packed_self_test()) {
-            fpga_fatal("packed Q8 direct-VPU self-test failed; refusing CPU fallback");
-        }
-        if (!fpga_dma_multi_group_self_test()) {
-            fpga_fatal("multi-group Q8 direct-VPU self-test failed; refusing CPU fallback");
-        }
-        LOGI("direct_vpu_mmio self-tests passed");
-    }
-
-    if (!map_zdma_ddr_checked()) {
-        fpga_fatal("ZDMA/DDR staging init failed; model data path must use ZDMA");
-    }
-    if (!fpga_dma_init()) {
-        fpga_fatal("ZDMA controller init failed; model data path must use ZDMA");
-    }
-    g_ddr_msync_unsupported = false;
-    g_use_zdma_path = true;
-    const bool zdma_ok =
-        fpga_dma_basic_self_test() &&
-        fpga_dma_packed_self_test() &&
-        fpga_dma_multi_group_self_test();
-    if (!zdma_ok) {
-        g_use_zdma_path = false;
         g_zdma_selftest_passed = false;
-        fpga_fatal("ZDMA self-test failed; refusing direct-MMIO model fallback");
+        LOGI("ZDMA path not requested; selected path=direct_vpu_mmio");
     }
-    g_zdma_selftest_passed = true;
-    LOGI("ZDMA self-tests passed; selected model path=zdma_ddr_to_ip");
     LOGI("active data path=%s zdma_selftest=%s",
          g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio",
          g_zdma_selftest_passed ? "PASS" : "N/A");
@@ -3412,11 +3184,11 @@ extern "C" int fpga_try_matmul_extended(
         return 0;
     }
 
-    if (!vpu_is_mapped() || !dma_is_mapped() || !ddr_is_mapped() || !g_use_zdma_path) {
+    if (!vpu_is_mapped()) {
         if (ith == 0) {
-            LOGE("FPGA ZDMA data path is not initialized for tensor=%s", tensor_name);
+            LOGE("FPGA direct VPU window is not initialized for tensor=%s", tensor_name);
             if (g_abort_on_cpu_fallback) {
-                fpga_fatal("FPGA ZDMA data path is not initialized; refusing CPU fallback");
+                fpga_fatal("FPGA direct VPU window is not initialized; refusing CPU fallback");
             }
         }
         return 0;
