@@ -20,7 +20,7 @@ module MY_IP #(
     parameter integer MAX_ROWS               = 256,
     parameter integer MAX_COL_BEATS          = 32,
     parameter [C_S00_AXI_ADDR_WIDTH-1:0] S00_AXI_BASE_ADDR = 40'h00A0_0000_00,
-    parameter [C_S00_AXI_ADDR_WIDTH-1:0] S01_AXI_BASE_ADDR = 40'h00B0_0000_00
+    parameter [C_S00_AXI_ADDR_WIDTH-1:0] S01_AXI_BASE_ADDR = 40'h00A8_0000_00
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
