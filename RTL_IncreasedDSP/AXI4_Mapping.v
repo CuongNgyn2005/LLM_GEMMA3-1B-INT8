@@ -18,7 +18,7 @@ module AXI4_Mapping #(
     parameter integer AXI_DATA_WIDTH           = 128,
     parameter integer AXI_ADDR_WIDTH           = 40,
     parameter [AXI_ADDR_WIDTH-1:0] VPU_BASE_ADDR = 40'h00A0_0000_00,
-    parameter [AXI_ADDR_WIDTH-1:0] S01_BASE_ADDR = 40'h00B0_0000_00,
+    parameter [AXI_ADDR_WIDTH-1:0] S01_BASE_ADDR = 40'h00A8_0000_00,
     parameter integer ENABLE_BASE_TRANSLATION  = 1,
 
     parameter integer NUM_LANES                = 32,

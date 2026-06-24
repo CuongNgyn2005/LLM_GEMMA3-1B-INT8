@@ -31,7 +31,7 @@ module VPU_Top #(
     parameter integer MAX_ROWS               = 256,
     parameter integer MAX_COL_BEATS          = 32,
     parameter [C_S00_AXI_ADDR_WIDTH-1:0] S00_AXI_BASE_ADDR = 40'h00A0_0000_00,
-    parameter [C_S00_AXI_ADDR_WIDTH-1:0] S01_AXI_BASE_ADDR = 40'h00B0_0000_00
+    parameter [C_S00_AXI_ADDR_WIDTH-1:0] S01_AXI_BASE_ADDR = 40'h00A8_0000_00
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
@@ -89,7 +89,11 @@ module VPU_Top #(
     output wire                                  s00_axi_rvalid,
     input  wire                                  s00_axi_rready,
 
+    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s01_axi_aclk CLK" *)
+    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s01_axi, ASSOCIATED_RESET s01_axi_aresetn" *)
     input  wire                                  s01_axi_aclk,
+    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 s01_axi_aresetn RST" *)
+    (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
     input  wire                                  s01_axi_aresetn,
     input  wire [C_S00_AXI_ID_WIDTH-1:0]         s01_axi_awid,
     input  wire [C_S00_AXI_ADDR_WIDTH-1:0]       s01_axi_awaddr,
