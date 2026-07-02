@@ -1,11 +1,12 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : VPU_Top
- * Description : Project-facing AXI4-Full wrapper for the INT8 VPU.
+ * Description : AXI4-Full top wrapper for the INT8 VPU.
  *
- * VPU_Top is intentionally a thin alias around MY_IP so the Vivado block design
- * can keep using the familiar VPU top name while the implementation underneath
- * is a memory-mapped AXI4-Full slave.
+ * VPU_Top is the outer wrapper exposed to Vivado Block Design.  It presents
+ * the complete AXI4-Full slave interface, while all protocol handling, address
+ * decoding, local BRAM storage, and arithmetic datapath logic live in the
+ * lower modules.
  *-----------------------------------------------------------------------------
  */
 
@@ -88,6 +89,9 @@ module VPU_Top #(
     input  wire                                  s00_axi_rready
 );
 
+    // This top wrapper does not modify AXI traffic.  All AW/W/B/AR/R channels
+    // and system parameters are passed directly into MY_IP so the AXI slave
+    // protocol implementation is maintained in a single lower-level module.
     MY_IP #(
         .C_S00_AXI_ID_WIDTH     (C_S00_AXI_ID_WIDTH),
         .C_S00_AXI_DATA_WIDTH   (C_S00_AXI_DATA_WIDTH),

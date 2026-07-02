@@ -1,18 +1,22 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : Dual_Port_BRAM
- * Description : Project-generic true dual-port block RAM wrapper.
+ * Description : True dual-port block RAM wrapper shared by the VPU.
  *
- * This module is a cleaned-up version of the course BRAM block, adapted for the
- * current AXI4-Full INT8 VPU project:
+ * This module is the local storage primitive used for activation, weight, and
+ * result memories.  It does not implement AXI.  The AXI and mapping layers
+ * have already converted transactions into addresses, write data, and byte
+ * enables before data reaches this BRAM wrapper.
+ *
+ * Main properties:
  * - parameterized address/data width;
  * - byte write strobes for 128-bit AXI beats and 32-bit result words;
  * - synchronous read on both ports;
  * - read-first behavior on same-port read/write.
  *
- * The block is not an AXI slave by itself.  AXI address decoding and burst
- * handling stay in MY_IP; this module only provides local storage for tensor,
- * weight, and result tiles.
+ * Port A and Port B can read/write independently on their own clocks.  In the
+ * current VPU integration, one port usually serves CPU/DMA access through the
+ * mapping layer while the other port serves the GEMV compute path.
  *-----------------------------------------------------------------------------
  */
 
@@ -45,6 +49,10 @@ module Dual_Port_BRAM #(
     reg [DWIDTH-1:0] douta_mem;
     reg [DWIDTH-1:0] doutb_mem;
 
+    // Port A performs synchronous read and byte-enable write.  Because
+    // douta_mem samples mem before the byte write loop updates it, same-port
+    // read/write to the same address is read-first: the output sees the old
+    // value and the RAM array is updated afterward.
     integer byte_i_a;
     always @(posedge clka) begin
         if (ena) begin
@@ -56,6 +64,8 @@ module Dual_Port_BRAM #(
         end
     end
 
+    // Port B mirrors Port A behavior.  Keeping the two ports in independent
+    // clocked blocks helps Vivado infer a true dual-port block RAM.
     integer byte_i_b;
     always @(posedge clkb) begin
         if (enb) begin
@@ -67,6 +77,9 @@ module Dual_Port_BRAM #(
         end
     end
 
+    // OUTPUT_REG adds an optional output register for timing closure when this
+    // BRAM sits in front of the PMAU pipeline.  When OUTPUT_REG is zero, the
+    // output is the RAM's internal synchronous read register.
     generate
         if (OUTPUT_REG != 0) begin : GEN_OUTPUT_REG
             reg [DWIDTH-1:0] douta_reg;

@@ -1,3 +1,21 @@
+/*
+ *-----------------------------------------------------------------------------
+ * Module      : MY_IP
+ * Description : AXI4-Full slave protocol layer for the INT8 VPU.
+ *
+ * MY_IP receives the AXI AW/W/B/AR/R channels from VPU_Top and converts each
+ * AXI data beat into a serialized local request for AXI4_Mapping.  This layer
+ * does not interpret the semantic meaning of address regions.  It preserves
+ * burst order, IDs, last flags, responses, and byte strobes; AXI4_Mapping
+ * performs the register/window decode.
+ *
+ * The current implementation processes requests in order and does not support
+ * multiple outstanding read transactions.  This matches the register map and
+ * Result BRAM read path because all internal read/write requests are
+ * serialized.
+ *-----------------------------------------------------------------------------
+ */
+
 `timescale 1ns/1ps
 
 module MY_IP #(
@@ -87,6 +105,10 @@ module MY_IP #(
         end
     endfunction
 
+    // Compute the next beat address from AWSIZE/ARSIZE.  Only INCR bursts
+    // advance the address.  Other burst types hold the address constant to
+    // avoid generating wrap/fixed behavior that is not used by the current DMA
+    // flow.
     function [C_S00_AXI_ADDR_WIDTH-1:0] axi_next_addr;
         input [C_S00_AXI_ADDR_WIDTH-1:0] addr;
         input [2:0] size;
@@ -104,6 +126,13 @@ module MY_IP #(
     localparam integer ADDR_LSB = clog2(C_S00_AXI_DATA_WIDTH / 8);
     localparam [2:0] ADDR_LSB_3 = ADDR_LSB;
 
+    // ---------------------------------------------------------------------
+    // Write channel
+    // ---------------------------------------------------------------------
+    // The AW channel is captured first.  Each following W beat becomes a
+    // one-cycle map_wr_en_r pulse carrying the current address, WDATA, and
+    // WSTRB.  When WLAST arrives, or the beat counter reaches AWLEN, the module
+    // completes the burst and returns an OKAY B response.
     reg wr_active_r;
     reg [C_S00_AXI_ADDR_WIDTH-1:0] wr_addr_r;
     reg [7:0] wr_len_r;
@@ -146,6 +175,10 @@ module MY_IP #(
             map_wr_data_r     <= {C_S00_AXI_DATA_WIDTH{1'b0}};
             map_wr_strb_r     <= {(C_S00_AXI_DATA_WIDTH/8){1'b0}};
         end else begin
+            // map_wr_en_r is asserted for exactly one cycle per accepted W
+            // beat.  AXI4_Mapping uses the captured address to decide whether
+            // this beat targets a register, Activation window, Weight window,
+            // or Result window.
             map_wr_en_r <= w_fire;
             if (w_fire) begin
                 map_wr_addr_r <= wr_addr_r;
@@ -183,6 +216,12 @@ module MY_IP #(
         end
     end
 
+    // ---------------------------------------------------------------------
+    // Read channel
+    // ---------------------------------------------------------------------
+    // Each AR beat is converted into map_rd_en_r.  MY_IP keeps a pending read
+    // entry until AXI4_Mapping asserts map_rd_valid, then returns the data on
+    // the R channel and generates RLAST on the final burst beat.
     reg read_active_r;
     reg [C_S00_AXI_ADDR_WIDTH-1:0] rd_addr_r;
     reg [7:0] rd_len_r;
@@ -227,6 +266,10 @@ module MY_IP #(
     reg [7:0] issue_beat_r;
     reg [7:0] issue_len_r;
 
+    // Select the next local read request.  A newly accepted AR has priority;
+    // otherwise the next beat of the active burst is issued.  A new local read
+    // is only issued when no read is pending and no RVALID is waiting for the
+    // AXI master.
     always @* begin
         issue_read_r = 1'b0;
         issue_last_r = 1'b0;
@@ -272,6 +315,10 @@ module MY_IP #(
             map_rd_en_r       <= 1'b0;
             map_rd_addr_r     <= {C_S00_AXI_ADDR_WIDTH{1'b0}};
         end else begin
+            // map_rd_en_r is a one-cycle local read request.  Returned data
+            // may come from the register map or from Result BRAM, so it is
+            // merged back into the AXI R channel only after map_rd_valid is
+            // asserted.
             map_rd_en_r <= issue_read_r;
             if (issue_read_r)
                 map_rd_addr_r <= issue_addr_r;
@@ -311,6 +358,8 @@ module MY_IP #(
         end
     end
 
+    // The mapping layer receives serialized local requests and handles the
+    // register map, data windows, GEMV core connection, and read-range errors.
     AXI4_Mapping #(
         .AXI_DATA_WIDTH          (C_S00_AXI_DATA_WIDTH),
         .AXI_ADDR_WIDTH          (C_S00_AXI_ADDR_WIDTH),

@@ -155,6 +155,10 @@ module PMAU_Full #(
     wire input_fire = both_inputs_valid && can_accept_pair;
     wire accepted_row_end = input_fire && activation_last && weight_last;
 
+    // A beat is accepted only when activation and weight arrive together and
+    // their last flags agree.  If the beat completes a row/block, PMAU also
+    // reserves one future FIFO slot before accepting it.
+
     // -------------------------------------------------------------------------
     // Stage 0: signed INT8 x INT8 Vivado multiplier IP instances
     // -------------------------------------------------------------------------
@@ -235,6 +239,9 @@ module PMAU_Full #(
                 for (node_i = 0; node_i < HALF_LANES; node_i = node_i + 1)
                     sum_pipe[level_i][node_i] <= {ACC_WIDTH{1'b0}};
         end else begin
+            // Stage 0 captures signed INT8 lane operands for the Vivado
+            // multiplier IPs.  When no beat is accepted, operands are driven to
+            // zero so stale values cannot create a false product with valid=0.
             for (k = 0; k < NUM_LANES; k = k + 1) begin
                 if (input_fire) begin
                     mult_act_reg[k] <=
@@ -253,6 +260,8 @@ module PMAU_Full #(
                 mult_scale_pipe[0] <= scale_factor;
 
             for (mult_lat_i = 1; mult_lat_i <= MULT_IP_LATENCY; mult_lat_i = mult_lat_i + 1) begin
+                // Delay valid/last/scale through the same number of cycles as
+                // mult_gen_0 so metadata stays aligned with the products.
                 mult_valid_pipe[mult_lat_i] <= mult_valid_pipe[mult_lat_i-1];
                 mult_last_pipe[mult_lat_i]  <= mult_last_pipe[mult_lat_i-1];
                 mult_scale_pipe[mult_lat_i] <= mult_scale_pipe[mult_lat_i-1];
@@ -267,6 +276,9 @@ module PMAU_Full #(
                     mult_pipe[k] <= mult_ip_product[k];
 
             for (level_i = 0; level_i < TREE_LEVELS; level_i = level_i + 1) begin
+                // Each adder-tree level is registered.  This shortens the
+                // combinational add path and lets one partial sum advance per
+                // cycle once the pipeline is filled.
                 valid_pipe[level_i+1] <= valid_pipe[level_i];
                 last_pipe[level_i+1]  <= last_pipe[level_i];
                 scale_pipe[level_i+1] <= scale_pipe[level_i];
@@ -322,6 +334,9 @@ module PMAU_Full #(
                 result_fifo_last[k] <= 1'b0;
             end
         end else begin
+            // FIFO pop is controlled by GEMV's result_ready.  FIFO push happens
+            // after dequant stage 2.  Simultaneous push/pop keeps occupancy
+            // unchanged while still advancing both pointers.
             if (fifo_pop)
                 fifo_rd_ptr <= fifo_rd_ptr + {{(FIFO_PTR_WIDTH-1){1'b0}}, 1'b1};
 
@@ -338,6 +353,10 @@ module PMAU_Full #(
             endcase
 
             case ({accepted_row_end, fifo_push})
+                // accepted_row_end reserves capacity for a result that has
+                // entered the arithmetic pipeline but has not reached FIFO yet.
+                // fifo_push releases that reservation because the result is now
+                // accounted for in fifo_count.
                 2'b10: inflight_result_count <= inflight_result_count +
                                                      {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
                 2'b01: inflight_result_count <= inflight_result_count -
@@ -346,6 +365,9 @@ module PMAU_Full #(
             endcase
 
             if (final_valid) begin
+                // Accumulate one adder-tree partial sum per beat.  On the beat
+                // marked last, commit accumulator + current partial as the raw
+                // row/block result and clear the accumulator for the next one.
                 if (final_last)
                     accumulator <= {ACC_WIDTH{1'b0}};
                 else
@@ -355,6 +377,8 @@ module PMAU_Full #(
             deq_s1_valid <= row_commit;
             deq_s1_last  <= row_commit;
             if (row_commit) begin
+                // Dequant stage 1 captures the raw INT32 result and the scale
+                // value that was pipelined alongside this row/block.
                 deq_s1_raw   <= result_commit;
                 deq_s1_scale <= scale_pipe[TREE_LEVELS];
             end
@@ -362,6 +386,8 @@ module PMAU_Full #(
             deq_s2_valid <= deq_s1_valid;
             deq_s2_last  <= deq_s1_last;
             if (deq_s1_valid)
+                // Dequant stage 2 either bypasses raw INT32 for the configured
+                // 16'h3c00 test value or applies fixed-point scale and shift.
                 deq_s2_value <= result_final_value;
         end
     end

@@ -6,9 +6,17 @@
  * Hierarchy:
  *   VPU_Top -> MY_IP -> AXI4_Mapping -> Matrix_Vector_Multiplication
  *
- * MY_IP owns the AXI4-Full protocol channels.  This module owns the VPU local
- * register map, memory-window decode, optional physical-base translation, and
- * the GEMV core instance.
+ * MY_IP handles the AXI4-Full protocol.  AXI4_Mapping receives serialized
+ * local requests from MY_IP and classifies each request as one of the
+ * following operations:
+ * - read/write a control or status register;
+ * - write the Activation/Weight data windows;
+ * - read the Result data window;
+ * - pulse start/clear_done toward the GEMV core.
+ *
+ * PMAU is not connected directly to AXI.  Configuration and tensor data pass
+ * through this mapping layer first; GEMV then reads local BRAM and feeds beats
+ * into PMAU.
  *-----------------------------------------------------------------------------
  */
 
@@ -70,6 +78,9 @@ module AXI4_Mapping #(
     localparam [31:0] WEIGHT_DEPTH_32 = WEIGHT_DEPTH;
     localparam [31:0] RESULT_WORD_DEPTH_32 = RESULT_WORD_DEPTH;
 
+    // Memory-mapped data windows.  Ranges are interpreted as [base, end):
+    // ACT/WEIGHT are CPU/DMA input-loading paths, and RESULT is the CPU/DMA
+    // output-readback path.
     localparam [31:0] ACT_BASE_ADDR    = 32'h0001_0000;
     localparam [31:0] ACT_END_ADDR     = 32'h0002_0000;
     localparam [31:0] WEIGHT_BASE_ADDR = 32'h0010_0000;
@@ -81,6 +92,9 @@ module AXI4_Mapping #(
     localparam [1:0] REGION_WEIGHT = 2'd1;
     localparam [1:0] REGION_RESULT = 2'd2;
 
+    // Support two interconnect addressing styles:
+    // 1. Full physical addresses including VPU_BASE_ADDR.
+    // 2. Base-stripped addresses that are already local offsets.
     function [AXI_ADDR_WIDTH-1:0] to_local_addr;
         input [AXI_ADDR_WIDTH-1:0] addr;
         begin
@@ -100,6 +114,8 @@ module AXI4_Mapping #(
         end
     endfunction
 
+    // 32-bit register writes honor AXI WSTRB.  Only bytes with an asserted
+    // strobe are updated; all other bytes keep their previous value.
     function [31:0] apply_wstrb32;
         input [31:0] old_value;
         input [31:0] new_value;
@@ -138,6 +154,9 @@ module AXI4_Mapping #(
         end
     endfunction
 
+    // Convert a local address into an internal region so GEMV does not need to
+    // decode AXI address windows.  The region code is used for both write and
+    // read requests.
     function [1:0] mem_region;
         input [31:0] addr;
         begin
@@ -150,6 +169,8 @@ module AXI4_Mapping #(
         end
     endfunction
 
+    // Each AXI word is AXI_DATA_WIDTH bits.  ADDR_LSB converts a byte offset
+    // into a 128-bit local BRAM word index.
     function [31:0] mem_index;
         input [31:0] addr;
         begin
@@ -162,6 +183,9 @@ module AXI4_Mapping #(
         end
     endfunction
 
+    // Address windows can be wider than the actual parameterized BRAM depth.
+    // This function blocks accesses that decode into a valid window but exceed
+    // the implemented memory depth.
     function mem_index_in_range;
         input [31:0] addr;
         reg [1:0] region;
@@ -191,6 +215,10 @@ module AXI4_Mapping #(
     wire [15:0] core_active_col_beat;
     wire status_error = core_error;
 
+    // Register read map.  The low 32 bits carry the useful information; the
+    // remaining bits of the 128-bit AXI data bus are returned as zero.  Offset
+    // 0x0000 acts as a control register on writes and as a status alias on
+    // reads.
     function [AXI_DATA_WIDTH-1:0] reg_read_data;
         input [31:0] addr;
         begin
@@ -212,7 +240,7 @@ module AXI4_Mapping #(
                     reg_read_data[31:16] = core_active_col_beat;
                 end
                 16'h0090: begin
-                    reg_read_data[0]      = 1'b1; // packed q8_0 partial mode
+                    reg_read_data[0]      = 1'b1; // packed q8_0 partial mode is available
                     reg_read_data[15:8]   = MAX_GROUP_Q8_BLOCKS_16[7:0];
                     reg_read_data[31:16]  = RESULT_WORD_DEPTH_32[15:0];
                 end
@@ -224,6 +252,8 @@ module AXI4_Mapping #(
     wire [31:0] wr_addr_local = local32(map_wr_addr);
     wire [31:0] rd_addr_local = local32(map_rd_addr);
 
+    // Writing bits 0/1 at register 0x0000 does not store a persistent value.
+    // These bits generate one-cycle pulses that start GEMV or clear done/error.
     wire ctrl_start_hit =
         map_wr_en && is_reg_addr(wr_addr_local) &&
         (wr_addr_local[15:0] == 16'h0000) &&
@@ -244,6 +274,11 @@ module AXI4_Mapping #(
     reg [AXI_DATA_WIDTH-1:0] core_wr_data_r;
     reg [(AXI_DATA_WIDTH/8)-1:0] core_wr_strb_r;
 
+    // Mapping write path:
+    // - register writes update cfg_* registers or generate control pulses;
+    // - memory writes are latched into core_wr_* so GEMV can update local BRAM.
+    // Invalid writes do not generate an AXI BRESP error at this layer; software
+    // should read LIMITS and avoid out-of-range writes.
     always @(posedge clk) begin
         if (!resetn) begin
             cfg_rows_reg      <= 32'd0;
@@ -284,6 +319,9 @@ module AXI4_Mapping #(
         end
     end
 
+    // The read path only forwards Result-window reads to GEMV.  Activation and
+    // Weight windows are input-loading paths, so reading them back reports an
+    // error through map_rd_error.
     wire mmio_core_rd_en =
         map_rd_en && is_result_addr(rd_addr_local) &&
         mem_index_in_range(rd_addr_local);
@@ -301,6 +339,9 @@ module AXI4_Mapping #(
     reg rd_pending_error_r;
     reg [AXI_DATA_WIDTH-1:0] rd_pending_reg_data_r;
 
+    // Read response pipeline.  Register reads can return after one cycle using
+    // rd_pending_reg_data_r; Result reads must wait for GEMV/Result BRAM to
+    // assert core_rd_valid before map_rd_valid is returned to MY_IP.
     always @(posedge clk) begin
         if (!resetn) begin
             map_rd_data <= {AXI_DATA_WIDTH{1'b0}};
@@ -340,6 +381,9 @@ module AXI4_Mapping #(
         end
     end
 
+    // GEMV contains the local BRAMs, compute FSM, and PMAU_Full instance.  The
+    // mapping layer only forwards configuration, memory-window requests, and
+    // receives status/result data.
     Matrix_Vector_Multiplication #(
         .NUM_LANES         (NUM_LANES),
         .ACT_WIDTH         (ACT_WIDTH),
