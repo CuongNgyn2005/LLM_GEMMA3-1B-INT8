@@ -1,22 +1,28 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : AXI4_Mapping
- * Description : Internal address/register mapping layer for the INT8 VPU.
+ * Description : Local register map, memory-window decoder, and GEMV connector.
  *
- * Hierarchy:
- *   VPU_Top -> MY_IP -> AXI4_Mapping -> Matrix_Vector_Multiplication
+ * AXI4_Mapping is the boundary between the AXI protocol adapter and the compute
+ * core.  MY_IP has already serialized AXI traffic into map_wr_* and map_rd_*
+ * requests; this module interprets the local address, applies optional
+ * VPU_BASE_ADDR translation, classifies the access, and drives the correct
+ * internal control or memory path.
  *
- * MY_IP handles the AXI4-Full protocol.  AXI4_Mapping receives serialized
- * local requests from MY_IP and classifies each request as one of the
- * following operations:
- * - read/write a control or status register;
- * - write the Activation/Weight data windows;
- * - read the Result data window;
- * - pulse start/clear_done toward the GEMV core.
+ * Address responsibilities:
+ * - register space below 0x0001_0000 stores ROWS, COLS, COL_BEATS, SCALE, and
+ *   MODE; exposes STATUS, LIMITS, PROGRESS, and CAPABILITY registers; and
+ *   generates one-cycle ctrl_start/ctrl_clear_done pulses;
+ * - ACT_BASE_ADDR..ACT_END_ADDR writes activation beats into the GEMV local
+ *   Activation BRAM;
+ * - WEIGHT_BASE_ADDR..WEIGHT_END_ADDR writes flattened row-major weight beats
+ *   into the GEMV Weight BRAM banks;
+ * - RESULT_BASE_ADDR..RESULT_END_ADDR reads 128-bit result words from GEMV.
  *
- * PMAU is not connected directly to AXI.  Configuration and tensor data pass
- * through this mapping layer first; GEMV then reads local BRAM and feeds beats
- * into PMAU.
+ * This module also checks implemented BRAM depths before forwarding memory
+ * writes or accepting Result-window reads.  PMAU is not visible at this level;
+ * configuration and tensor data reach PMAU only after GEMV reads local BRAM
+ * and schedules valid/ready beats.
  *-----------------------------------------------------------------------------
  */
 
@@ -36,7 +42,8 @@ module AXI4_Mapping #(
     parameter integer SCALE_FRAC_BITS          = 15,
     parameter integer RESULT_FIFO_DEPTH        = 8,
     parameter integer MAX_ROWS                 = 256,
-    parameter integer MAX_COL_BEATS            = 32
+    parameter integer MAX_COL_BEATS            = 128,
+    parameter integer MAX_GROUP_Q8_BLOCKS      = 64
 ) (
     input  wire                                  clk,
     input  wire                                  resetn,
@@ -66,7 +73,6 @@ module AXI4_Mapping #(
     localparam integer ADDR_LSB = clog2(AXI_DATA_WIDTH / 8);
     localparam integer WEIGHT_DEPTH = MAX_ROWS * MAX_COL_BEATS;
     localparam integer RESULT_PACK_LANES = AXI_DATA_WIDTH / ACC_WIDTH;
-    localparam integer MAX_GROUP_Q8_BLOCKS = 16;
     localparam integer MAX_RESULT_VALUES = MAX_ROWS * MAX_GROUP_Q8_BLOCKS;
     localparam integer RESULT_WORD_DEPTH =
         (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
@@ -241,6 +247,7 @@ module AXI4_Mapping #(
                 end
                 16'h0090: begin
                     reg_read_data[0]      = 1'b1; // packed q8_0 partial mode is available
+                    reg_read_data[1]      = 1'b1; // compact active-stride weight layout is available
                     reg_read_data[15:8]   = MAX_GROUP_Q8_BLOCKS_16[7:0];
                     reg_read_data[31:16]  = RESULT_WORD_DEPTH_32[15:0];
                 end
@@ -381,7 +388,7 @@ module AXI4_Mapping #(
         end
     end
 
-    // GEMV contains the local BRAMs, compute FSM, and PMAU_Full instance.  The
+    // GEMV contains the local BRAMs, compute FSM, and PMAU_Full instance. The
     // mapping layer only forwards configuration, memory-window requests, and
     // receives status/result data.
     Matrix_Vector_Multiplication #(
@@ -394,7 +401,8 @@ module AXI4_Mapping #(
         .RESULT_FIFO_DEPTH (RESULT_FIFO_DEPTH),
         .AXI_DATA_WIDTH    (AXI_DATA_WIDTH),
         .MAX_ROWS          (MAX_ROWS),
-        .MAX_COL_BEATS     (MAX_COL_BEATS)
+        .MAX_COL_BEATS     (MAX_COL_BEATS),
+        .MAX_GROUP_Q8_BLOCKS (MAX_GROUP_Q8_BLOCKS)
     ) u_gemv (
         .CLK               (clk),
         .RST               (resetn),

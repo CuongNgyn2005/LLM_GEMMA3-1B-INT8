@@ -1,29 +1,41 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : PMAU_Full
- * Description : Internal parallel multiply-accumulate unit for the VPU.
+ * Description : Pipelined parallel multiply-accumulate datapath for GEMV.
  *
- * This block consumes one paired activation/weight beat per cycle when both
- * internal activation/weight valid signals are asserted.  The datapath is
- * fully pipelined:
+ * PMAU_Full is the arithmetic core used by Matrix_Vector_Multiplication.  It
+ * receives one activation beat and one weight beat through an internal
+ * valid/ready interface, where each beat contains NUM_LANES signed INT8
+ * elements.  On every accepted beat, lane i of activation is multiplied by
+ * lane i of weight using one mult_gen_0 instance, so the default 16-lane
+ * configuration performs 16 signed INT8xINT8 multiplications in parallel.
  *
- *   DSP pipeline     : NUM_LANES signed INT8 x INT8 mult_gen_0 instances
- *                      configured for three pipeline stages
- *   Product capture  : multiplier-output capture after IP latency
- *   Stage 2..log2(N) : registered binary adder tree
- *   Commit stage     : row accumulator, fixed-point dequant, result FIFO
+ * Datapath flow:
+ * - input handshake accepts a paired activation/weight beat only when both
+ *   sides are valid, their last flags match, and enough result FIFO capacity
+ *   remains for rows already in flight;
+ * - NUM_LANES DSP-backed multiplier IP instances produce signed products after
+ *   the configured mult_gen_0 pipeline delay;
+ * - a registered binary adder tree reduces all lane products into one INT32
+ *   partial sum for the accepted beat;
+ * - the accumulator adds partial sums across all beats belonging to the
+ *   current row or packed q8 block, then commits raw_result when last is
+ *   asserted;
+ * - dequant/post-scale either bypasses raw_result for 16'h3c00 or applies the
+ *   fixed-point scale_factor and right shift;
+ * - the result FIFO decouples the arithmetic pipeline from GEMV result writes.
  *
- * Throughput is one input beat per clock while the result FIFO has enough
- * space for completed rows already in flight.  The result channel uses a
- * simple valid/ready handshake internal to the AXI4-Full VPU wrapper.
+ * PMAU_Full does not know BRAM addresses, row numbers, DMA transfers, or AXI
+ * transactions.  GEMV provides correctly aligned data and last flags, then
+ * consumes result_data/result_valid through result_ready.
+ * compute_mode and scalar_axpy are kept at the interface for mode expansion,
+ * but the current MAC/accumulate/dequant datapath is controlled by the input
+ * valid/ready handshake, last flags, and scale_factor.
  *
- * Notes:
- * - NUM_LANES must be a power of two.  16/32/64/128 are the intended values.
- * - scale_factor is treated as a positive fixed-point scale with
- *   SCALE_FRAC_BITS fractional bits.  FP16 1.0 (16'h3c00) is bypassed for the
- *   existing raw-accumulator test flow.  FP16 is only a possible future
- *   numeric-format option; this project intentionally implements an INT8 VPU.
- * - RESULT_FIFO_DEPTH must be a power of two.
+ * Constraints and assumptions:
+ * - NUM_LANES and RESULT_FIFO_DEPTH must be powers of two.
+ * - scale_factor is treated as a positive fixed-point value with
+ *   SCALE_FRAC_BITS fractional bits.
  * - Reset is active-low and synchronous.
  *-----------------------------------------------------------------------------
  */

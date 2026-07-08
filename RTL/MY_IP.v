@@ -1,18 +1,27 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : MY_IP
- * Description : AXI4-Full slave protocol layer for the INT8 VPU.
+ * Description : AXI4-Full slave protocol adapter for the INT8 VPU.
  *
- * MY_IP receives the AXI AW/W/B/AR/R channels from VPU_Top and converts each
- * AXI data beat into a serialized local request for AXI4_Mapping.  This layer
- * does not interpret the semantic meaning of address regions.  It preserves
- * burst order, IDs, last flags, responses, and byte strobes; AXI4_Mapping
- * performs the register/window decode.
+ * MY_IP receives the standard AXI4-Full AW, W, B, AR, and R channels from
+ * VPU_Top and converts them into a narrow ordered local request interface for
+ * AXI4_Mapping.  It is responsible for AXI handshakes, burst beat counting,
+ * INCR-burst address advancement, ID preservation, WSTRB forwarding,
+ * RLAST/BVALID generation, and SLVERR propagation when the mapping layer
+ * reports an invalid read.
  *
- * The current implementation processes requests in order and does not support
- * multiple outstanding read transactions.  This matches the register map and
- * Result BRAM read path because all internal read/write requests are
- * serialized.
+ * This module deliberately does not decode VPU register offsets or tensor
+ * memory windows.  Every accepted write beat becomes map_wr_en with address,
+ * data, and byte strobes.  Every accepted read beat becomes map_rd_en, then
+ * MY_IP waits for map_rd_valid/map_rd_data/map_rd_error before returning the
+ * corresponding AXI read response.
+ *
+ * The implementation keeps ordering simple on each side of the AXI interface:
+ * the write side accepts one burst at a time, and the read side allows only
+ * one local read request to be pending before issuing the next burst beat.
+ * Multiple outstanding read transactions are not supported.  This matches the
+ * downstream register map and Result BRAM readback path, both of which return
+ * read data as ordered local responses.
  *-----------------------------------------------------------------------------
  */
 
@@ -36,7 +45,8 @@ module MY_IP #(
     parameter integer SCALE_FRAC_BITS        = 15,
     parameter integer RESULT_FIFO_DEPTH      = 8,
     parameter integer MAX_ROWS               = 256,
-    parameter integer MAX_COL_BEATS          = 32
+    parameter integer MAX_COL_BEATS          = 128,
+    parameter integer MAX_GROUP_Q8_BLOCKS    = 64
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
@@ -371,7 +381,8 @@ module MY_IP #(
         .SCALE_FRAC_BITS         (SCALE_FRAC_BITS),
         .RESULT_FIFO_DEPTH       (RESULT_FIFO_DEPTH),
         .MAX_ROWS                (MAX_ROWS),
-        .MAX_COL_BEATS           (MAX_COL_BEATS)
+        .MAX_COL_BEATS           (MAX_COL_BEATS),
+        .MAX_GROUP_Q8_BLOCKS     (MAX_GROUP_Q8_BLOCKS)
     ) u_axi4_mapping (
         .clk            (s00_axi_aclk),
         .resetn         (s00_axi_aresetn),

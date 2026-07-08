@@ -1,29 +1,39 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : Matrix_Vector_Multiplication
- * Description : Runtime-sized INT8 GEMV engine with BRAM-backed activation,
- *               weight, and result storage.
+ * Description : GEMV scheduler, local-memory subsystem, and PMAU controller.
  *
- * The AXI wrapper writes tensor data into these memory windows, configures the
- * active matrix size, then pulses ctrl_start.  The compute path feeds one
- * NUM_LANES-wide INT8 activation/weight beat per clock into PMAU_Full
- * after the pipelined BRAM read latency.  Results are stored one row per
- * 128-bit result word, using the low ACC_WIDTH bits.
+ * Matrix_Vector_Multiplication is the compute core behind AXI4_Mapping.  It
+ * owns the local Activation BRAM, banked and optionally sharded Weight BRAM,
+ * Result BRAM, active runtime configuration latched from AXI4_Mapping, the
+ * compute FSM, the synchronous BRAM read-alignment pipeline, and the PMAU_Full
+ * instance.
  *
- * Addressing contract used by the AXI wrapper:
- * - activation index = column beat
- * - weight index     = row * MAX_COL_BEATS + column beat
- * - result index     = row
+ * External memory-window behavior:
+ * - REGION_ACT writes store activation beats indexed by col_beat.
+ * - REGION_WEIGHT writes store flattened row-major weight beats.  New
+ *   bitstreams use compact active-stride layout:
+ *   row * active_col_beats + col_beat.
+ * - REGION_RESULT reads return 128-bit result words for CPU/DMA readback.
+ *   CPU/DMA writes to REGION_RESULT are not part of the normal compute flow;
+ *   Result BRAM is written by GEMV after PMAU returns an INT32 result.
  *
- * Runtime sizes are bounded by MAX_ROWS and MAX_COL_BEATS.  If cfg_col_beats is
- * zero, the engine derives it from cfg_cols assuming NUM_LANES is a power of 2.
- * The last beat must be zero-padded by software when cfg_cols is not an exact
- * multiple of NUM_LANES.
+ * Compute behavior:
+ * - ctrl_start snapshots cfg_rows, cfg_cols/cfg_col_beats, cfg_scale, and
+ *   compute_mode, then S_VALIDATE rejects out-of-range or invalid packed-mode
+ *   settings before any BRAM read is issued.
+ * - S_RUN issues synchronous reads to Activation and Weight BRAM, delays valid
+ *   and last metadata through the d/q/x pipeline, and presents aligned beats
+ *   to PMAU_Full through valid/ready handshakes.
+ * - S_WAIT_RESULT waits for PMAU result_valid after the final beat of a row or
+ *   q8 block, computes the destination word/lane, and writes only the selected
+ *   INT32 lane in Result BRAM.
+ * - S_DONE holds completion status for host polling, while S_ERROR holds
+ *   invalid-configuration status until cleared or restarted.
  *
- * compute_mode[0] enables packed q8_0 partial mode.  In this mode the core
- * treats every two 128-bit beats as one q8_0 block, emits one raw INT32 partial
- * per row per q8_0 block, and packs four partials into each 128-bit result word.
- * This reduces host start/poll cycles while keeping q8_0 scaling in software.
+ * Normal mode produces one INT32 result per row.  Packed q8 partial mode
+ * treats every two beats as one q8 block, produces one INT32 partial per
+ * row/block, and packs four partials into each 128-bit Result BRAM word.
  *-----------------------------------------------------------------------------
  */
 
@@ -39,7 +49,8 @@ module Matrix_Vector_Multiplication #(
     parameter RESULT_FIFO_DEPTH  = 8,
     parameter AXI_DATA_WIDTH     = 128,
     parameter MAX_ROWS           = 256,
-    parameter MAX_COL_BEATS      = 32
+    parameter MAX_COL_BEATS      = 128,
+    parameter MAX_GROUP_Q8_BLOCKS = 64
 ) (
     input  wire                              CLK,
     input  wire                              RST,
@@ -93,7 +104,6 @@ module Matrix_Vector_Multiplication #(
     localparam ACT_ADDR_WIDTH       = clog2(MAX_COL_BEATS);
     localparam RESULT_PACK_LANES    = AXI_DATA_WIDTH / ACC_WIDTH;
     localparam RESULT_LANE_SHIFT    = clog2(RESULT_PACK_LANES);
-    localparam MAX_GROUP_Q8_BLOCKS  = 16;
     localparam MAX_RESULT_VALUES    = MAX_ROWS * MAX_GROUP_Q8_BLOCKS;
     localparam RESULT_WORD_DEPTH    = (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
     localparam RESULT_ADDR_WIDTH    = clog2(RESULT_WORD_DEPTH);
@@ -101,9 +111,9 @@ module Matrix_Vector_Multiplication #(
     localparam WEIGHT_ADDR_WIDTH    = clog2(WEIGHT_DEPTH);
     // Split each 32-bit weight bank into 16K-word depth shards when the
     // configured matrix capacity grows beyond a single BRAM address range.
-    // With the default MAX_ROWS=256 and MAX_COL_BEATS=32 configuration, each
-    // bank uses one shard; larger configurations can add shards without
-    // changing the logical MMIO address map.
+    // With the Phase 1A MAX_ROWS=256 and MAX_COL_BEATS=128 configuration, each
+    // bank uses multiple shards.  Sharding keeps the logical MMIO address map
+    // stable while allowing deeper weight storage.
     localparam WEIGHT_LOCAL_ADDR_WIDTH =
         (WEIGHT_ADDR_WIDTH > 14) ? 14 : WEIGHT_ADDR_WIDTH;
     localparam WEIGHT_SHARD_DEPTH      = (1 << WEIGHT_LOCAL_ADDR_WIDTH);
@@ -122,7 +132,6 @@ module Matrix_Vector_Multiplication #(
     localparam [31:0] WEIGHT_DEPTH_32       = WEIGHT_DEPTH;
     localparam [31:0] MAX_RESULT_VALUES_32  = MAX_RESULT_VALUES;
     localparam [31:0] RESULT_WORD_DEPTH_32  = RESULT_WORD_DEPTH;
-    localparam [WEIGHT_ADDR_WIDTH-1:0] MAX_COL_BEATS_WADDR = MAX_COL_BEATS;
 
     localparam [1:0] REGION_ACT     = 2'd0;
     localparam [1:0] REGION_WEIGHT  = 2'd1;
@@ -354,9 +363,10 @@ module Matrix_Vector_Multiplication #(
                 weight_wr_strb_leaf[wr_ram_i] <= {WEIGHT_BANK_BYTES{1'b0}};
             end
         end else begin
-            // Capture every memory-window write from AXI4_Mapping.  Activation
-            // and Result memories are direct 128-bit BRAM words; Weight memory
-            // is split into four 32-bit banks and optional depth shards.
+            // Capture memory-window writes from AXI4_Mapping.  Activation is a
+            // direct 128-bit BRAM word path, while Weight memory is split into
+            // four 32-bit banks and optional depth shards.  Result BRAM is
+            // written only by the PMAU result path below.
             wr_pipe_en_r <= mm_wr_en;
             if (mm_wr_en) begin
                 wr_pipe_region_r <= mm_wr_region;
@@ -442,7 +452,8 @@ module Matrix_Vector_Multiplication #(
     Dual_Port_BRAM #(
         .AWIDTH (ACT_ADDR_WIDTH),
         .DWIDTH (ACT_BEAT_WIDTH),
-        .OUTPUT_REG (1)
+        .OUTPUT_REG (1),
+        .USE_URAM (0)
     ) u_act_bram (
         .clka  (CLK),
         .ena   (act_wr_hit),
@@ -473,7 +484,8 @@ module Matrix_Vector_Multiplication #(
                 Dual_Port_BRAM #(
                     .AWIDTH (WEIGHT_LOCAL_ADDR_WIDTH),
                     .DWIDTH (WEIGHT_BANK_WIDTH),
-                    .OUTPUT_REG (1)
+                    .OUTPUT_REG (1),
+                    .USE_URAM (1)
                 ) u_weight_bram_bank (
                     .clka  (CLK),
                     .ena   (weight_wr_en_leaf[WEIGHT_RAM_INDEX]),
@@ -505,7 +517,8 @@ module Matrix_Vector_Multiplication #(
 
     Dual_Port_BRAM #(
         .AWIDTH (RESULT_ADDR_WIDTH),
-        .DWIDTH (AXI_DATA_WIDTH)
+        .DWIDTH (AXI_DATA_WIDTH),
+        .USE_URAM (0)
     ) u_result_bram (
         .clka  (CLK),
         .ena   (result_rd_hit),
@@ -762,7 +775,7 @@ module Matrix_Vector_Multiplication #(
                                 read_beat_idx_r   <= 16'd0;
                                 result_row_base_r <= result_row_base_r + {16'd0, group_blocks_r};
                                 weight_row_base_r <= weight_row_base_r +
-                                                     MAX_COL_BEATS_WADDR;
+                                                     active_col_beats_r;
                                 state_r           <= S_RUN;
                             end
                         end

@@ -1,12 +1,24 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : VPU_Top
- * Description : AXI4-Full top wrapper for the INT8 VPU.
+ * Description : AXI4-Full top-level wrapper for the INT8 VPU IP.
  *
- * VPU_Top is the outer wrapper exposed to Vivado Block Design.  It presents
- * the complete AXI4-Full slave interface, while all protocol handling, address
- * decoding, local BRAM storage, and arithmetic datapath logic live in the
- * lower modules.
+ * VPU_Top is the integration boundary that Vivado Block Design sees as the
+ * custom accelerator IP.  It exposes the AXI4-Full slave interface, clock,
+ * reset, user-side AXI metadata signals, and datapath sizing parameters, then
+ * forwards these signals into MY_IP without adding extra behavior.
+ *
+ * This module intentionally contains no register map, BRAM instance, compute
+ * FSM, or arithmetic datapath.  Its contribution to the RTL system is to keep
+ * the external IP interface stable while AXI protocol handling, address
+ * decoding, local memory storage, GEMV scheduling, and PMAU arithmetic remain
+ * implemented in the lower modules.
+ *
+ * Parameter groups:
+ * - C_S00_AXI_* define the external AXI ID, address, data, and USER widths.
+ * - NUM_LANES and data-width parameters define the INT8 MAC datapath shape.
+ * - MAX_ROWS, MAX_COL_BEATS, and MAX_GROUP_Q8_BLOCKS define the maximum local
+ *   tile capacity passed down to the GEMV implementation.
  *-----------------------------------------------------------------------------
  */
 
@@ -30,7 +42,8 @@ module VPU_Top #(
     parameter integer SCALE_FRAC_BITS        = 15,
     parameter integer RESULT_FIFO_DEPTH      = 8,
     parameter integer MAX_ROWS               = 256,
-    parameter integer MAX_COL_BEATS          = 32
+    parameter integer MAX_COL_BEATS          = 128,
+    parameter integer MAX_GROUP_Q8_BLOCKS    = 64
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
@@ -109,7 +122,8 @@ module VPU_Top #(
         .SCALE_FRAC_BITS        (SCALE_FRAC_BITS),
         .RESULT_FIFO_DEPTH      (RESULT_FIFO_DEPTH),
         .MAX_ROWS               (MAX_ROWS),
-        .MAX_COL_BEATS          (MAX_COL_BEATS)
+        .MAX_COL_BEATS          (MAX_COL_BEATS),
+        .MAX_GROUP_Q8_BLOCKS    (MAX_GROUP_Q8_BLOCKS)
     ) u_my_ip (
         .s00_axi_aclk       (s00_axi_aclk),
         .s00_axi_aresetn    (s00_axi_aresetn),
