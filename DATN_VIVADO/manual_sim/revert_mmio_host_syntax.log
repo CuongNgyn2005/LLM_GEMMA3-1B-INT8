@@ -1,2 +1,0 @@
-﻿COMMAND: g++ -std=c++11 -Wall -Wextra -Wformat=2 -fsyntax-only -I /mnt/d/DOAN/llama.cpp/ggml/include -I /mnt/d/DOAN/llama.cpp/ggml/src -I /mnt/d/DOAN/llama.cpp/ggml/src/ggml-cpu /mnt/d/DOAN/llama.cpp/ggml/src/ggml-cpu/fpga_host.cpp
-RESULT: PASS

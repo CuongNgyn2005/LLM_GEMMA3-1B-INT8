@@ -1,0 +1,23 @@
+Vivado Simulator v2022.2
+Copyright 1986-1999, 2001-2022 Xilinx, Inc. All Rights Reserved.
+Running: D:/Xlinx/Vivado/2022.2/bin/unwrapped/win64.o/xelab.exe -L xpm tb_VPU_Top -debug typical -s phase1a_compact_sim 
+Multi-threading is on. Using 10 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+Starting simulation data flow analysis
+Completed simulation data flow analysis
+Time Resolution for simulation is 1ps
+Compiling module work.mult_gen_0
+Compiling module work.PMAU_Full_default
+Compiling module work.Dual_Port_BRAM(AWIDTH=7,OUTPUT_R...
+Compiling module xpm.xpm_memory_base(MEMORY_TYPE=1,ME...
+Compiling module xpm.xpm_memory_sdpram(MEMORY_SIZE=52...
+Compiling module work.Dual_Port_BRAM(AWIDTH=14,DWIDTH=...
+Compiling module work.Dual_Port_BRAM(AWIDTH=12)
+Compiling module work.Matrix_Vector_Multiplication_def...
+Compiling module work.AXI4_Mapping_default
+Compiling module work.MY_IP_default
+Compiling module work.VPU_Top
+Compiling module work.tb_VPU_Top
+Built simulation snapshot phase1a_compact_sim
