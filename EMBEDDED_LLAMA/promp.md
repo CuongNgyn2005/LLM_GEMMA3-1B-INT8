@@ -40,4 +40,4 @@ sudo ./build_mem/bin/llama-cli \
     -p "Please write about AI" \
     -n 64
 Lệnh set tần số clock cho FPGA:
-echo 249999998 | sudo tee /sys/devices/platform/fclk0/set_rate
+echo 200000000 | sudo tee /sys/devices/platform/fclk0/set_rate

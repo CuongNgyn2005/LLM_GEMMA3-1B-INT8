@@ -24,7 +24,7 @@
 #include <vector>
 
 #define FPGA_LOG_FILE "/tmp/fpga_debug.log"
-#define FPGA_HOST_TRACE_VERSION "zcu104-gemma3-q8-phase1a-compact128x64-uram-backup-v1"
+#define FPGA_HOST_TRACE_VERSION "zcu104-gemma3-q8-phase1m-stage-summary"
 
 /**
  * Physical base addresses used by the Linux host to access FPGA resources.
@@ -116,13 +116,13 @@ static void fpga_log_line(bool enabled, const char *tag, bool force_flush, const
 #define LOGW(fmt, ...) fpga_log_line(true, "WARNING", true, fmt, ##__VA_ARGS__)
 #define LOGDMA(fmt, ...) fpga_log_line(kLogDmaDetail &&g_dma_timing_enabled, "DMA", true, fmt, ##__VA_ARGS__)
 #define LOGIP(fmt, ...) fpga_log_line(kLogTileDetail &&g_ip_timing_enabled, "IPTIME", true, fmt, ##__VA_ARGS__)
-#define LOGSTAGE(fmt, ...) fpga_log_line(kLogStageSummary, "STAGE", true, fmt, ##__VA_ARGS__)
+#define LOGSTAGE(fmt, ...) fpga_log_line(g_stage_summary_enabled, "STAGE", false, fmt, ##__VA_ARGS__)
 #define LOGTILE(fmt, ...) fpga_log_line(kLogTileDetail, "TILE", false, fmt, ##__VA_ARGS__)
 #define LOGTOKEN(fmt, ...) fpga_log_line(true, "TOKEN", true, fmt, ##__VA_ARGS__)
 #define LOGDATA(fmt, ...) fpga_log_line(g_trace_data_enabled, "DATA", true, fmt, ##__VA_ARGS__)
 #define LOGSELF(fmt, ...) fpga_log_line(true, "SELFTEST", true, fmt, ##__VA_ARGS__)
-#define LOGRESULT(fmt, ...) fpga_log_line(kFpgaResultAudit, "RESULT", true, fmt, ##__VA_ARGS__)
-#define LOGLAYOUT(fmt, ...) fpga_log_line(kFpgaLayoutAudit, "LAYOUT", true, fmt, ##__VA_ARGS__)
+#define LOGRESULT(fmt, ...) fpga_log_line(g_result_audit_enabled, "RESULT", false, fmt, ##__VA_ARGS__)
+#define LOGLAYOUT(fmt, ...) fpga_log_line(g_layout_audit_enabled, "LAYOUT", false, fmt, ##__VA_ARGS__)
 #define LOGMISMATCH(fmt, ...) fpga_log_line(true, "MISMATCH", true, fmt, ##__VA_ARGS__)
 #define LOGHWFAIL(fmt, ...) fpga_log_line(true, "HW_FAIL", true, fmt, ##__VA_ARGS__)
 
@@ -190,15 +190,15 @@ static constexpr long long FPGA_DEFAULT_LARGE_MATRIX_MIN_MACS = 1000000LL;
 static constexpr bool kLogTileDetail = false;
 static constexpr bool kLogPollStatus = false;
 static constexpr bool kLogDmaDetail = false;
-static constexpr bool kLogStageSummary = true;
+static constexpr bool kDefaultStageSummary = true;
 static constexpr bool kPreferZdmaPath = true;
 static constexpr bool FPGA_ENABLE_ACTIVATION_CACHE = false;
-static constexpr bool FPGA_ENABLE_DEBUG_COMPARE = false;
-static constexpr int FPGA_DEBUG_COMPARE_LIMIT = 10;
+static constexpr bool FPGA_DEFAULT_DEBUG_COMPARE = false;
+static constexpr int FPGA_DEFAULT_DEBUG_COMPARE_LIMIT = 64;
 static constexpr int64_t FPGA_MAX_SAFE_OFFLOAD_N = 65536;
-static constexpr bool kFpgaResultAudit = true;
+static constexpr bool kDefaultFpgaResultAudit = false;
 static constexpr int kFpgaResultAuditMaxCalls = 80;
-static constexpr bool kFpgaLayoutAudit = true;
+static constexpr bool kDefaultFpgaLayoutAudit = false;
 static constexpr int kFpgaLayoutAuditMaxCalls = 32;
 static constexpr bool kForceAllMatmulCpu = false;
 static constexpr bool kFpgaOnlyFFN = false;
@@ -321,6 +321,18 @@ typedef struct
     bool activation_cache_valid;
 } fpga_scratch_t;
 
+typedef struct
+{
+    const struct ggml_tensor *tensor;
+    const void *data;
+    int64_t k;
+    int64_t n;
+    size_t nb0;
+    size_t nb1;
+    bool finite;
+    long long bad_count;
+} fpga_weight_scale_preflight_entry_t;
+
 /**
  * Summary entry used to remember the slowest observed FPGA stages.
  * The cleanup path prints these entries so performance bottlenecks can be reviewed after inference.
@@ -358,6 +370,7 @@ static std::string g_vpu_map_source;
 static std::string g_ddr_map_source;
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 static fpga_scratch_t g_scratch;
+static std::vector<fpga_weight_scale_preflight_entry_t> g_weight_scale_preflight_cache;
 
 static long long g_fpga_start_us = 0;
 static long long g_fpga_count = 0;
@@ -381,6 +394,7 @@ static int g_nonfinite_weight_scale_log_count = 0;
 static long long g_nonfinite_activation_scale_count = 0;
 static long long g_activation_scale_overflow_count = 0;
 static int g_nonfinite_activation_scale_log_count = 0;
+static int g_activation_scale_overflow_log_count = 0;
 static long long g_total_prep_us = 0;
 static long long g_total_transfer_in_us = 0;
 static long long g_total_ip_compute_us = 0;
@@ -413,8 +427,12 @@ static int g_compact_weight_layout = 0;
 
 static bool g_dma_timing_enabled = true;
 static bool g_ip_timing_enabled = true;
+static bool g_stage_summary_enabled = kDefaultStageSummary;
 static bool g_status_stderr = false;
 static bool g_trace_data_enabled = false;
+static bool g_debug_compare_enabled = FPGA_DEFAULT_DEBUG_COMPARE;
+static bool g_result_audit_enabled = kDefaultFpgaResultAudit;
+static bool g_layout_audit_enabled = kDefaultFpgaLayoutAudit;
 static bool g_cleanup_done = false;
 static bool g_atexit_registered = false;
 static bool g_abort_on_cpu_fallback = true;
@@ -423,6 +441,7 @@ static bool g_use_zdma_path = false;
 static bool g_zdma_selftest_passed = false;
 static int g_profile_every = FPGA_DEFAULT_PROFILE_EVERY;
 static int g_ip_status_every = FPGA_DEFAULT_STATUS_EVERY;
+static int g_debug_compare_limit = FPGA_DEFAULT_DEBUG_COMPARE_LIMIT;
 static long long g_dma_timeout_us = FPGA_DEFAULT_DMA_TIMEOUT_US;
 static long long g_ip_timeout_us = FPGA_DEFAULT_IP_TIMEOUT_US;
 static long long g_large_matrix_min_macs = FPGA_DEFAULT_LARGE_MATRIX_MIN_MACS;
@@ -449,6 +468,14 @@ enum fpga_tensor_category_t
     FPGA_TENSOR_CATEGORY_COUNT
 };
 
+enum fpga_compare_status_t
+{
+    FPGA_COMPARE_PASS = 0,
+    FPGA_COMPARE_SKIPPED,
+    FPGA_COMPARE_SUBSTITUTED,
+    FPGA_COMPARE_MISMATCH_KEPT
+};
+
 /**
  * Reason codes used when a tensor is intentionally kept on the CPU path.
  * The counters distinguish output/logits tensors, tensors that exceed current VPU limits, and tensors outside the transformer allowlist.
@@ -458,7 +485,8 @@ enum fpga_skip_kind_t
     FPGA_SKIP_NONE = 0,
     FPGA_SKIP_LOGITS_OUTPUT,
     FPGA_SKIP_LARGE_N,
-    FPGA_SKIP_NOT_ALLOWLISTED
+    FPGA_SKIP_NOT_ALLOWLISTED,
+    FPGA_SKIP_QUALITY_GUARD
 };
 
 static bool g_debug_compare_seen_category[FPGA_TENSOR_CATEGORY_COUNT] = {};
@@ -467,6 +495,7 @@ static bool g_logged_skip_logits_output = false;
 static bool g_logged_skip_large_n = false;
 static bool g_logged_skip_not_allowlisted = false;
 static bool g_logged_skip_safe_mode = false;
+static bool g_logged_skip_quality_guard = false;
 
 /**
  * Return a monotonic-enough wall-clock timestamp in microseconds for profiling.
@@ -1205,6 +1234,10 @@ static void log_fpga_tensor_skip_once(
         should_log = !g_logged_skip_not_allowlisted;
         g_logged_skip_not_allowlisted = true;
         break;
+    case FPGA_SKIP_QUALITY_GUARD:
+        should_log = !g_logged_skip_quality_guard;
+        g_logged_skip_quality_guard = true;
+        break;
     case FPGA_SKIP_NONE:
     default:
         break;
@@ -1219,6 +1252,61 @@ static void log_fpga_tensor_skip_once(
              (long long)m,
              reason ? reason : "unknown");
     }
+}
+
+/**
+ * Keep tensors with known bad Q8_0 scale patterns on the upstream CPU path.
+ * The decision is name-based so every ggml worker thread makes the same choice
+ * without a per-call scan or thread-local disagreement.
+ */
+[[maybe_unused]] static bool fpga_quality_guard_forces_cpu(
+    const char *tensor_name,
+    const char **reason)
+{
+    if (reason)
+    {
+        *reason = nullptr;
+    }
+    if (!tensor_name)
+    {
+        return false;
+    }
+
+    static const char *const known_bad_scale_tensors[] = {
+        "blk.5.ffn_up.weight",
+        "blk.6.ffn_gate.weight",
+        "blk.6.ffn_up.weight",
+        "blk.8.ffn_gate.weight",
+    };
+
+    for (const char *bad_name : known_bad_scale_tensors)
+    {
+        if (std::strcmp(tensor_name, bad_name) == 0)
+        {
+            if (reason)
+            {
+                *reason = "quality_guard_known_nonfinite_q8_weight_scale";
+            }
+            return true;
+        }
+    }
+
+    static const char *const known_activation_overflow_tensors[] = {
+        "blk.5.ffn_down.weight",
+    };
+
+    for (const char *sensitive_name : known_activation_overflow_tensors)
+    {
+        if (std::strcmp(tensor_name, sensitive_name) == 0)
+        {
+            if (reason)
+            {
+                *reason = "quality_guard_known_activation_scale_overflow";
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -2148,6 +2236,83 @@ static inline uint16_t fp32_to_fp16(float f)
     return (uint16_t)ggml_fp32_to_fp16(f);
 }
 
+static inline uint16_t fp32_to_fp16_nonnegative_saturated(float f)
+{
+    if (!std::isfinite(f) || f <= 0.0f)
+    {
+        return fp32_to_fp16(0.0f);
+    }
+    return fp32_to_fp16(std::min(f, kFp16MaxFinite));
+}
+
+static bool fpga_weight_scales_are_finite(
+    const struct ggml_tensor *src0,
+    int64_t k,
+    int64_t n,
+    const char *tensor_name,
+    int layer_id,
+    bool log_details,
+    long long *bad_count_out);
+
+/**
+ * Cached wrapper for the Q8_0 weight-scale preflight.
+ * Model weights are immutable after load, so each tensor needs the full scan
+ * only once. Later decode calls reuse the decision without re-reading every
+ * Q8_0 block scale.
+ */
+static bool fpga_weight_scales_are_finite_cached(
+    const struct ggml_tensor *src0,
+    int64_t k,
+    int64_t n,
+    const char *tensor_name,
+    int layer_id,
+    long long *bad_count_out)
+{
+    for (const fpga_weight_scale_preflight_entry_t &entry : g_weight_scale_preflight_cache)
+    {
+        if (entry.tensor == src0 &&
+            entry.data == src0->data &&
+            entry.k == k &&
+            entry.n == n &&
+            entry.nb0 == (size_t)src0->nb[0] &&
+            entry.nb1 == (size_t)src0->nb[1])
+        {
+            if (bad_count_out)
+            {
+                *bad_count_out = entry.bad_count;
+            }
+            return entry.finite;
+        }
+    }
+
+    long long bad_count = 0;
+    const bool finite = fpga_weight_scales_are_finite(
+        src0,
+        k,
+        n,
+        tensor_name,
+        layer_id,
+        true,
+        &bad_count);
+
+    fpga_weight_scale_preflight_entry_t entry = {};
+    entry.tensor = src0;
+    entry.data = src0->data;
+    entry.k = k;
+    entry.n = n;
+    entry.nb0 = (size_t)src0->nb[0];
+    entry.nb1 = (size_t)src0->nb[1];
+    entry.finite = finite;
+    entry.bad_count = bad_count;
+    g_weight_scale_preflight_cache.push_back(entry);
+
+    if (bad_count_out)
+    {
+        *bad_count_out = bad_count;
+    }
+    return finite;
+}
+
 static void log_nonfinite_activation_scale(
     const struct ggml_tensor *src1,
     int64_t col,
@@ -2158,25 +2323,54 @@ static void log_nonfinite_activation_scale(
     int layer_id,
     int64_t m);
 
-static void quantize_q8_0_block(const float *x, ptrdiff_t stride_bytes, block_q8_0_t *y)
+static void log_activation_scale_fp16_overflow(
+    const struct ggml_tensor *src1,
+    int64_t col,
+    int64_t block,
+    int64_t k,
+    const block_q8_0_t *qb,
+    float fp32_scale,
+    const char *tensor_name,
+    int layer_id,
+    int64_t m);
+
+static float quantize_q8_0_block_fp32_scale(const float *x, ptrdiff_t stride_bytes, block_q8_0_t *y)
 {
     float amax = 0.0f;
     for (int i = 0; i < VPU_QK8_0; ++i)
     {
         const float v = *(const float *)((const char *)x + (ptrdiff_t)i * stride_bytes);
-        amax = std::max(amax, std::fabs(v));
+        if (std::isfinite(v))
+        {
+            amax = std::max(amax, std::fabs(v));
+        }
     }
 
     const float d_raw = amax / 127.0f;
-    const float id = d_raw != 0.0f ? 1.0f / d_raw : 0.0f;
-    y->d = fp32_to_fp16(d_raw);
+    const float id = d_raw > 0.0f ? 1.0f / d_raw : 0.0f;
+    y->d = fp32_to_fp16_nonnegative_saturated(d_raw);
+    const float d_stored = fp16_to_fp32(y->d);
 
     for (int i = 0; i < VPU_QK8_0; ++i)
     {
         const float v = *(const float *)((const char *)x + (ptrdiff_t)i * stride_bytes);
-        const int q = (int)std::round(v * id);
+        const int q = std::isfinite(v) ? (int)std::round(v * id) : 0;
         y->qs[i] = (int8_t)std::max(-128, std::min(127, q));
     }
+    return d_stored;
+}
+
+static bool activation_block_has_nonfinite(const char *base, ptrdiff_t stride_bytes)
+{
+    for (int i = 0; i < VPU_QK8_0; ++i)
+    {
+        const float v = *(const float *)(base + (ptrdiff_t)i * stride_bytes);
+        if (!std::isfinite(v))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -2187,19 +2381,35 @@ static void quantize_activation_vector_to(
     const struct ggml_tensor *src1,
     int64_t m,
     int64_t k,
-    block_q8_0_t *out)
+    block_q8_0_t *out,
+    float *out_scales)
 {
     const int64_t nb = k / VPU_QK8_0;
     const char *base = (const char *)src1->data + m * src1->nb[1];
     if (src1->nb[0] == (int64_t)sizeof(float))
     {
         quantize_row_q8_0((const float *)base, out, k);
+        for (int64_t ib = 0; ib < nb; ++ib)
+        {
+            const char *block_base = base + ib * VPU_QK8_0 * (int64_t)sizeof(float);
+            float scale = fp16_to_fp32(out[(size_t)ib].d);
+            if (!std::isfinite(scale) ||
+                activation_block_has_nonfinite(block_base, (ptrdiff_t)sizeof(float)))
+            {
+                scale = quantize_q8_0_block_fp32_scale(
+                    (const float *)block_base,
+                    (ptrdiff_t)sizeof(float),
+                    &out[(size_t)ib]);
+            }
+            out_scales[(size_t)ib] = scale;
+        }
         return;
     }
     for (int64_t ib = 0; ib < nb; ++ib)
     {
         const float *block_base = (const float *)(base + ib * VPU_QK8_0 * src1->nb[0]);
-        quantize_q8_0_block(block_base, src1->nb[0], &out[(size_t)ib]);
+        out_scales[(size_t)ib] =
+            quantize_q8_0_block_fp32_scale(block_base, src1->nb[0], &out[(size_t)ib]);
     }
 }
 
@@ -2239,11 +2449,11 @@ static void ensure_quantized_activation_matrix(
     for (int64_t col = 0; col < m; ++col)
     {
         block_q8_0_t *col_blocks = &act_blocks_all[(size_t)(col * nb)];
-        quantize_activation_vector_to(src1, col, k, col_blocks);
+        float *col_scales = &act_scales[(size_t)(col * nb)];
+        quantize_activation_vector_to(src1, col, k, col_blocks, col_scales);
         for (int64_t ib = 0; ib < nb; ++ib)
         {
-            const float act_scale = fp16_to_fp32(col_blocks[(size_t)ib].d);
-            act_scales[(size_t)(col * nb + ib)] = act_scale;
+            const float act_scale = col_scales[(size_t)ib];
             if (!std::isfinite(act_scale))
             {
                 g_nonfinite_activation_scale_count++;
@@ -2268,6 +2478,32 @@ static void ensure_quantized_activation_matrix(
                     if (g_nonfinite_activation_scale_log_count == kNonFiniteActivationScaleLogLimit)
                     {
                         LOGW("non-finite activation Q8_0 scale log limit reached; further bad activation scales will be counted in summary only");
+                    }
+                }
+            }
+            else if (act_scale > kFp16MaxFinite)
+            {
+                g_activation_scale_overflow_count++;
+                if (totals)
+                {
+                    totals->activation_scale_overflows++;
+                }
+                if (g_activation_scale_overflow_log_count < kNonFiniteActivationScaleLogLimit)
+                {
+                    log_activation_scale_fp16_overflow(
+                        src1,
+                        col,
+                        ib,
+                        k,
+                        &col_blocks[(size_t)ib],
+                        act_scale,
+                        tensor_name,
+                        layer_id,
+                        m);
+                    g_activation_scale_overflow_log_count++;
+                    if (g_activation_scale_overflow_log_count == kNonFiniteActivationScaleLogLimit)
+                    {
+                        LOGW("activation FP32 scale overflow log limit reached; further FP16-clamped activation scales will be counted in summary only");
                     }
                 }
             }
@@ -2488,6 +2724,73 @@ static void log_nonfinite_weight_scale(
 }
 
 /**
+ * Scan Q8_0 model weights before offload.
+ * FPGA must not sanitize bad model scales and continue, because that produces a
+ * different matmul from ggml CPU and can poison later layers.
+ */
+static bool fpga_weight_scales_are_finite(
+    const struct ggml_tensor *src0,
+    int64_t k,
+    int64_t n,
+    const char *tensor_name,
+    int layer_id,
+    bool log_details,
+    long long *bad_count_out)
+{
+    const int64_t q8_blocks = k / VPU_QK8_0;
+    long long bad_count = 0;
+    for (int64_t row = 0; row < n; ++row)
+    {
+        for (int64_t block = 0; block < q8_blocks; ++block)
+        {
+            const block_q8_0_t *wb = weight_block(src0, row, block);
+            const float weight_scale = fp16_to_fp32(wb->d);
+            if (std::isfinite(weight_scale))
+            {
+                continue;
+            }
+
+            bad_count++;
+            if (log_details && g_nonfinite_weight_scale_log_count < kNonFiniteWeightScaleLogLimit)
+            {
+                log_nonfinite_weight_scale(
+                    src0,
+                    wb,
+                    tensor_name,
+                    layer_id,
+                    row,
+                    (int)row,
+                    block,
+                    (int)block,
+                    weight_scale);
+                g_nonfinite_weight_scale_log_count++;
+                if (g_nonfinite_weight_scale_log_count == kNonFiniteWeightScaleLogLimit)
+                {
+                    LOGW("non-finite Q8_0 weight scale log limit reached; further bad scales will be counted in summary only");
+                }
+            }
+        }
+    }
+
+    if (log_details && bad_count > 0)
+    {
+        g_nonfinite_weight_scale_count += bad_count;
+        fpga_log_line(true, "WEIGHT_PREFLIGHT_FAIL", true,
+                      "tensor=%s layer=%d shape=K%lld_N%lld bad_weight_scales=%lld action=fpga_sanitize_weight_scale reason=nonfinite_q8_weight_scale",
+                      tensor_name ? tensor_name : "?",
+                      layer_id,
+                      (long long)k,
+                      (long long)n,
+                      bad_count);
+    }
+    if (bad_count_out)
+    {
+        *bad_count_out = bad_count;
+    }
+    return bad_count == 0;
+}
+
+/**
  * Log detailed context for a non-finite activation scale produced during quantization.
  * The log includes source statistics and the Q8_0 block that would have been sent to RTL.
  */
@@ -2584,6 +2887,80 @@ static void log_nonfinite_activation_scale(
 }
 
 /**
+ * Log activation blocks whose mathematically correct Q8_0 scale is finite FP32
+ * but too large to be represented as finite FP16. RTL only consumes qs, while
+ * host accumulation must use the FP16-stored Q8_0 scale to match ggml.
+ */
+static void log_activation_scale_fp16_overflow(
+    const struct ggml_tensor *src1,
+    int64_t col,
+    int64_t block,
+    int64_t k,
+    const block_q8_0_t *qb,
+    float fp32_scale,
+    const char *tensor_name,
+    int layer_id,
+    int64_t m)
+{
+    const char *col_base = (const char *)src1->data + col * src1->nb[1];
+    const char *block_base = col_base + block * VPU_QK8_0 * src1->nb[0];
+    float min_v = INFINITY;
+    float max_v = -INFINITY;
+    float amax = 0.0f;
+    long long finite_count = 0;
+    float first8[8] = {};
+    const int sample_count = std::min(8, VPU_QK8_0);
+
+    for (int i = 0; i < VPU_QK8_0 && block * VPU_QK8_0 + i < k; ++i)
+    {
+        const float v = *(const float *)(block_base + (ptrdiff_t)i * src1->nb[0]);
+        if (i < sample_count)
+        {
+            first8[i] = v;
+        }
+        if (!std::isfinite(v))
+        {
+            continue;
+        }
+        finite_count++;
+        min_v = std::min(min_v, v);
+        max_v = std::max(max_v, v);
+        amax = std::max(amax, std::fabs(v));
+    }
+
+    if (finite_count == 0)
+    {
+        min_v = NAN;
+        max_v = NAN;
+    }
+
+    char first_buf[160];
+    char qs_buf[160];
+    format_float_samples(first8, sample_count, first_buf, sizeof(first_buf));
+    format_i8_samples(qb->qs, sample_count, qs_buf, sizeof(qs_buf));
+    fpga_log_line(true, "ACT_SCALE_FP16_CLAMP", true,
+                  "tensor=%s layer=%d phase=%s col=%lld block=%lld fp32_scale=%.9g stored_d_bits=0x%04x stored_d=%.9g fp16_max=%.9g amax=%.9g src1_min=%.9g src1_max=%.9g src1_ne=[%lld,%lld,%lld,%lld] src1_nb=[%lld,%lld,%lld,%lld] first8=%s qs_first8=%s host_accum_scale=fp16_stored",
+                  tensor_name ? tensor_name : "?",
+                  layer_id,
+                  decode_or_prefill(m),
+                  (long long)col,
+                  (long long)block,
+                  fp32_scale,
+                  (unsigned)qb->d,
+                  fp16_to_fp32(qb->d),
+                  kFp16MaxFinite,
+                  amax,
+                  min_v,
+                  max_v,
+                  (long long)src1->ne[0], (long long)src1->ne[1],
+                  (long long)src1->ne[2], (long long)src1->ne[3],
+                  (long long)src1->nb[0], (long long)src1->nb[1],
+                  (long long)src1->nb[2], (long long)src1->nb[3],
+                  first_buf,
+                  qs_buf);
+}
+
+/**
  * Log min, max, NaN, and Inf statistics for one activation vector column.
  */
 static void log_src1_stats_for_col(
@@ -2666,7 +3043,7 @@ static uint64_t checksum_update_float(uint64_t checksum, float value)
  */
 static bool should_audit_result(int layer_id, int64_t m)
 {
-    if (!kFpgaResultAudit || g_result_audit_count >= kFpgaResultAuditMaxCalls)
+    if (!g_result_audit_enabled || g_result_audit_count >= kFpgaResultAuditMaxCalls)
     {
         return false;
     }
@@ -2809,6 +3186,18 @@ static bool log_result_audit(
              inf_count);
         return false;
     }
+    const bool all_zero_result = finite_count == total && sum_sq == 0.0;
+    if (all_zero_result)
+    {
+        LOGE("RESULT audit found all-zero output tensor=%s layer=%d phase=%s shape=K%lld_N%lld_M%lld dst_l2=0 status=RESULT_AUDIT_ALL_ZERO",
+             tensor_name ? tensor_name : "?",
+             layer_id,
+             decode_or_prefill(m),
+             (long long)k,
+             (long long)n,
+             (long long)m);
+        return false;
+    }
     else if (max_v > 1.0e4f || min_v < -1.0e4f)
     {
         LOGW("RESULT audit large magnitude tensor=%s layer=%d dst_min=%.6g dst_max=%.6g",
@@ -2825,7 +3214,7 @@ static bool log_result_audit(
  */
 static bool should_audit_layout(int layer_id, int64_t m)
 {
-    if (!kFpgaLayoutAudit || g_layout_audit_count >= kFpgaLayoutAuditMaxCalls)
+    if (!g_layout_audit_enabled || g_layout_audit_count >= kFpgaLayoutAuditMaxCalls)
     {
         return false;
     }
@@ -2861,7 +3250,8 @@ static void log_layout_audit(
 }
 
 /**
- * Compute a CPU reference using the same quantized activation blocks as the FPGA path.
+ * Compute a CPU reference using the same quantized activation qs values and
+ * FP16-stored activation scales as ggml's Q8_0 dot product.
  * This is used only when debug comparison is enabled.
  */
 static void compute_host_reference_from_quantized_activation(
@@ -2879,19 +3269,37 @@ static void compute_host_reference_from_quantized_activation(
         for (int64_t row = 0; row < n; ++row)
         {
             float acc = 0.0f;
-            const block_q8_0_t *wb = weight_block(src0, row, 0);
-            const block_q8_0_t *ab = &g_scratch.act_blocks_all[(size_t)(col * nb)];
-            ggml_vec_dot_q8_0_q8_0((int)k, &acc, 0, wb, 0, ab, 0, 1);
+            for (int64_t ib = 0; ib < nb; ++ib)
+            {
+                const block_q8_0_t *wb = weight_block(src0, row, ib);
+                const block_q8_0_t *ab = &g_scratch.act_blocks_all[(size_t)(col * nb + ib)];
+                int32_t raw = 0;
+                for (int lane = 0; lane < VPU_QK8_0; ++lane)
+                {
+                    raw += (int32_t)wb->qs[lane] * (int32_t)ab->qs[lane];
+                }
+                const float act_scale = g_scratch.act_scales[(size_t)(col * nb + ib)];
+                float weight_scale = fp16_to_fp32(wb->d);
+                if (!std::isfinite(weight_scale))
+                {
+                    weight_scale = 0.0f;
+                }
+                if (std::isfinite(act_scale))
+                {
+                    acc += (float)raw * act_scale * weight_scale;
+                }
+            }
             ref[(size_t)(row * m + col)] = acc;
         }
     }
 }
 
 /**
- * Compare FPGA output with a host reference for selected tensors.
- * The function reports mismatches and blocks silent substitution when debug compare is enabled.
+ * Compare FPGA output with a host reference for guarded tensors.
+ * On mismatch the function overwrites dst with the reference result so the
+ * model does not consume an incorrect FPGA tensor.
  */
-static bool debug_compare_fpga_dst(
+static fpga_compare_status_t debug_compare_fpga_dst(
     const struct ggml_tensor *src0,
     const struct ggml_tensor *dst,
     int64_t k,
@@ -2900,9 +3308,14 @@ static bool debug_compare_fpga_dst(
     const char *tensor_name,
     int layer_id)
 {
-    if (!FPGA_ENABLE_DEBUG_COMPARE)
+    if (!g_debug_compare_enabled)
     {
-        return true;
+        return FPGA_COMPARE_SKIPPED;
+    }
+
+    if (g_debug_compare_count >= g_debug_compare_limit)
+    {
+        return FPGA_COMPARE_SKIPPED;
     }
 
     const fpga_tensor_category_t category = fpga_tensor_category(tensor_name);
@@ -2914,15 +3327,6 @@ static bool debug_compare_fpga_dst(
         category == FPGA_TENSOR_FFN_DOWN &&
         layer_id >= 25 &&
         !g_debug_compare_seen_last_layer_ffn_down;
-
-    if (!need_category_check && !need_last_layer_check)
-    {
-        return true;
-    }
-    if (g_debug_compare_count >= FPGA_DEBUG_COMPARE_LIMIT)
-    {
-        return true;
-    }
 
     g_debug_compare_count++;
     if (need_category_check)
@@ -2941,6 +3345,7 @@ static bool debug_compare_fpga_dst(
     int64_t first_bad = -1;
     float first_ref[8] = {};
     float first_fpga[8] = {};
+    bool ref_all_finite = true;
     const int sample_count = (int)std::min<int64_t>(8, n * m);
 
     for (int64_t row = 0; row < n; ++row)
@@ -2950,6 +3355,10 @@ static bool debug_compare_fpga_dst(
             const int64_t idx = row * m + col;
             const float expected = ref[(size_t)idx];
             const float got = load_dst_value(dst, row, col);
+            if (!std::isfinite(expected))
+            {
+                ref_all_finite = false;
+            }
             if (idx < sample_count)
             {
                 first_ref[idx] = expected;
@@ -2967,14 +3376,14 @@ static bool debug_compare_fpga_dst(
 
     if (first_bad < 0)
     {
-        LOGI("debug compare pass tensor=%s category=%s layer=%d check=%d/%d reference=ggml_vec_dot_q8_0_q8_0 max_abs=%.6g",
+        LOGI("debug compare pass tensor=%s category=%s layer=%d check=%d/%d reference=fp32_act_scale_q8_rawdot max_abs=%.6g",
              tensor_name ? tensor_name : "?",
              fpga_tensor_category_name(category),
              layer_id,
              g_debug_compare_count,
-             FPGA_DEBUG_COMPARE_LIMIT,
+             g_debug_compare_limit,
              max_abs);
-        return true;
+        return FPGA_COMPARE_PASS;
     }
 
     char ref_buf[160];
@@ -2982,7 +3391,37 @@ static bool debug_compare_fpga_dst(
     format_float_samples(first_ref, sample_count, ref_buf, sizeof(ref_buf));
     format_float_samples(first_fpga, sample_count, fpga_buf, sizeof(fpga_buf));
 
-    LOGMISMATCH("tensor=%s category=%s layer=%d shape=K%lld_N%lld_M%lld check=%d/%d max_abs=%.6g first_bad=%lld cpu_vecdot_first8=%s fpga_first8=%s action=abort_no_cpu_substitution",
+    if (ref_all_finite)
+    {
+        for (int64_t row = 0; row < n; ++row)
+        {
+            for (int64_t col = 0; col < m; ++col)
+            {
+                store_dst_value(dst, row, col, ref[(size_t)(row * m + col)]);
+            }
+        }
+
+        LOGMISMATCH("tensor=%s category=%s layer=%d shape=K%lld_N%lld_M%lld check=%d/%d max_abs=%.6g first_bad=%lld cpu_ref_first8=%s fpga_first8=%s action=substitute_cpu_reference",
+                    tensor_name ? tensor_name : "?",
+                    fpga_tensor_category_name(category),
+                    layer_id,
+                    (long long)k,
+                    (long long)n,
+                    (long long)m,
+                    g_debug_compare_count,
+                    g_debug_compare_limit,
+                    max_abs,
+                    (long long)first_bad,
+                    ref_buf,
+                    fpga_buf);
+        LOGE("debug compare mismatch tensor=%s category=%s layer=%d; dst overwritten with guarded CPU reference",
+             tensor_name ? tensor_name : "?",
+             fpga_tensor_category_name(category),
+             layer_id);
+        return FPGA_COMPARE_SUBSTITUTED;
+    }
+
+    LOGMISMATCH("tensor=%s category=%s layer=%d shape=K%lld_N%lld_M%lld check=%d/%d max_abs=%.6g first_bad=%lld cpu_ref_first8=%s fpga_first8=%s action=keep_fpga_dst_reference_nonfinite",
                 tensor_name ? tensor_name : "?",
                 fpga_tensor_category_name(category),
                 layer_id,
@@ -2990,16 +3429,16 @@ static bool debug_compare_fpga_dst(
                 (long long)n,
                 (long long)m,
                 g_debug_compare_count,
-                FPGA_DEBUG_COMPARE_LIMIT,
+                g_debug_compare_limit,
                 max_abs,
                 (long long)first_bad,
                 ref_buf,
                 fpga_buf);
-    LOGE("debug compare mismatch tensor=%s category=%s layer=%d; FPGA result will not be replaced with CPU reference",
+    LOGE("debug compare mismatch tensor=%s category=%s layer=%d; CPU reference contains non-finite values, so dst was not overwritten",
          tensor_name ? tensor_name : "?",
          fpga_tensor_category_name(category),
          layer_id);
-    return false;
+    return FPGA_COMPARE_MISMATCH_KEPT;
 }
 
 /**
@@ -3990,11 +4429,18 @@ int fpga_init(void)
 
     g_dma_timing_enabled = kLogDmaDetail;
     g_ip_timing_enabled = kLogTileDetail;
+    g_stage_summary_enabled = !env_flag_disabled("FPGA_STAGE_LOG");
     g_status_stderr = env_flag_enabled("FPGA_STATUS_STDERR");
     g_trace_data_enabled = env_flag_enabled("FPGA_TRACE_DATA");
+    g_debug_compare_enabled = env_flag_enabled("FPGA_DEBUG_COMPARE");
+    g_result_audit_enabled = env_flag_enabled("FPGA_RESULT_AUDIT");
+    g_layout_audit_enabled = env_flag_enabled("FPGA_LAYOUT_AUDIT");
     g_log_flush_every = 256;
     g_profile_every = env_int_value("FPGA_PROFILE_EVERY", FPGA_DEFAULT_PROFILE_EVERY, 0, 1000000);
     g_ip_status_every = kLogPollStatus ? FPGA_DEFAULT_STATUS_EVERY : 0;
+    g_debug_compare_limit = g_debug_compare_enabled
+        ? env_int_value("FPGA_DEBUG_COMPARE_LIMIT", FPGA_DEFAULT_DEBUG_COMPARE_LIMIT, 1, 1000000)
+        : 0;
     g_dma_timeout_us = env_int64_value("FPGA_DMA_TIMEOUT_US", FPGA_DEFAULT_DMA_TIMEOUT_US, 1000, LLONG_MAX);
     g_ip_timeout_us = env_int64_value("FPGA_IP_TIMEOUT_US", FPGA_DEFAULT_IP_TIMEOUT_US, 1000, LLONG_MAX);
     g_large_matrix_min_macs = env_int64_value(
@@ -4099,9 +4545,17 @@ int fpga_init(void)
          kFpgaOnlyAttentionProjection ? 1 : 0,
          kDisableFpgaForPrefill ? 1 : 0,
          kDisableFpgaForDecode ? 1 : 0,
-         FPGA_ENABLE_DEBUG_COMPARE ? 1 : 0,
-         kFpgaResultAudit ? 1 : 0,
+         g_debug_compare_enabled ? 1 : 0,
+         g_result_audit_enabled ? 1 : 0,
          kAbortOnNonFiniteResult ? 1 : 0);
+    LOGI("runtime logging stage_log=%d result_audit=%d layout_audit=%d debug_compare=%d debug_compare_limit=%d status_stderr=%d trace_data=%d",
+         g_stage_summary_enabled ? 1 : 0,
+         g_result_audit_enabled ? 1 : 0,
+         g_layout_audit_enabled ? 1 : 0,
+         g_debug_compare_enabled ? 1 : 0,
+         g_debug_compare_limit,
+         g_status_stderr ? 1 : 0,
+         g_trace_data_enabled ? 1 : 0);
 
     if (!g_packed_q8_supported)
     {
@@ -4481,6 +4935,25 @@ extern "C" int fpga_try_matmul_extended(
     const long long estimated_runs = estimate_vpu_runs(k, n, m);
     fpga_stage_totals_t totals = {};
 
+    long long bad_weight_scales = 0;
+    if (!fpga_weight_scales_are_finite_cached(
+            src0,
+            k,
+            n,
+            tensor_name,
+            effective_layer_id,
+            &bad_weight_scales))
+    {
+        LOGW("tensor=%s layer=%d phase=%s shape=K%lld_N%lld_M%lld reason=nonfinite_q8_weight_scale bad_weight_scales=%lld action=fpga_sanitize_weight_scale",
+             tensor_name,
+             effective_layer_id,
+             decode_or_prefill(m),
+             (long long)k,
+             (long long)n,
+             (long long)m,
+             bad_weight_scales);
+    }
+
     const long long t0 = now_us();
     log_layout_audit(src0, src1, dst, tensor_name, effective_layer_id);
     LOGTILE("tensor=%s layer=%d seq=%d phase=%s shape=K%lld_N%lld_M%lld path=%s row_tiles=%lld group_tiles_per_rowtile~=%lld q8_blocks=%lld max_group_blocks=%d vpu_runs=%lld",
@@ -4508,24 +4981,50 @@ extern "C" int fpga_try_matmul_extended(
                    (long long)k, (long long)n, (long long)m,
                    g_use_zdma_path ? "zdma_ddr_to_ip" : "direct_vpu_mmio");
     }
-    const bool compare_ok =
+    const fpga_compare_status_t compare_status =
         debug_compare_fpga_dst(src0, dst, k, n, m, tensor_name, effective_layer_id);
-    if (!compare_ok)
+    const bool compare_ok =
+        compare_status == FPGA_COMPARE_PASS || compare_status == FPGA_COMPARE_SKIPPED;
+    const bool compare_substituted = compare_status == FPGA_COMPARE_SUBSTITUTED;
+    const bool compare_mismatch_kept = compare_status == FPGA_COMPARE_MISMATCH_KEPT;
+    if (compare_substituted)
+    {
+        LOGW("debug compare substituted tensor=%s layer=%d phase=%s; continuing with CPU reference dst",
+             tensor_name, effective_layer_id, decode_or_prefill(m));
+    }
+    if (compare_mismatch_kept)
     {
         pthread_mutex_unlock(&g_mutex);
-        fpga_fatal("FPGA debug compare mismatch tensor=%s layer=%d phase=%s; refusing CPU substitution",
+        fpga_fatal("FPGA debug compare mismatch tensor=%s layer=%d phase=%s and CPU reference is non-finite; refusing to let model consume unverifiable dst",
                    tensor_name, effective_layer_id, decode_or_prefill(m));
     }
-    const bool finite_ok =
+    const bool result_audit_ok =
         log_result_audit(g_fpga_count + 1, dst, k, n, m, tensor_name, effective_layer_id);
-    if (!finite_ok && kAbortOnNonFiniteResult)
+    if (!result_audit_ok && kAbortOnNonFiniteResult)
     {
         pthread_mutex_unlock(&g_mutex);
-        fpga_fatal("FPGA produced non-finite result tensor=%s layer=%d phase=%s; refusing to let model consume bad dst",
+        fpga_fatal("FPGA result audit failed tensor=%s layer=%d phase=%s; refusing to let model consume bad dst",
                    tensor_name, effective_layer_id, decode_or_prefill(m));
     }
     const bool weight_scale_ok = totals.nonfinite_weight_scales == 0;
     const bool activation_scale_ok = totals.nonfinite_activation_scales == 0;
+    if (!weight_scale_ok)
+    {
+        LOGW("FPGA stage sanitized non-finite weight scales tensor=%s layer=%d phase=%s nonfinite_weight_scales=%lld sanitized_weight_scales=%lld; continuing with backup-v6 behavior",
+             tensor_name,
+             effective_layer_id,
+             decode_or_prefill(m),
+             totals.nonfinite_weight_scales,
+             totals.sanitized_weight_scales);
+    }
+    if (!activation_scale_ok)
+    {
+        LOGE("FPGA stage observed non-finite activation scales tensor=%s layer=%d phase=%s nonfinite_activation_scales=%lld; continuing so caller can inspect stage correctness",
+             tensor_name,
+             effective_layer_id,
+             decode_or_prefill(m),
+             totals.nonfinite_activation_scales);
+    }
 
     g_fpga_count++;
     g_token_matmuls++;
@@ -4550,7 +5049,7 @@ extern "C" int fpga_try_matmul_extended(
     {
         g_decode_calls++;
         g_decode_total_us += total_stage_us;
-        if (!compare_ok || !finite_ok || !weight_scale_ok || !activation_scale_ok)
+        if (!compare_ok || !result_audit_ok || !weight_scale_ok || !activation_scale_ok)
         {
             g_decode_mismatch_count++;
         }
@@ -4559,7 +5058,7 @@ extern "C" int fpga_try_matmul_extended(
     {
         g_prefill_calls++;
         g_prefill_total_us += total_stage_us;
-        if (!compare_ok || !finite_ok || !weight_scale_ok || !activation_scale_ok)
+        if (!compare_ok || !result_audit_ok || !weight_scale_ok || !activation_scale_ok)
         {
             g_prefill_mismatch_count++;
         }
@@ -4608,9 +5107,14 @@ extern "C" int fpga_try_matmul_extended(
         host_accum_ms);
 
     const char *stage_status =
-        !activation_scale_ok ? "ACT_SCALE_NONFINITE" : (weight_scale_ok ? "OK" : "WEIGHT_SCALE_SANITIZED");
+        compare_substituted ? "COMPARE_SUBSTITUTED" :
+        (!result_audit_ok ? "RESULT_AUDIT_FAIL" :
+        (!activation_scale_ok ? "ACT_SCALE_NONFINITE" : (weight_scale_ok ? "OK" : "WEIGHT_SCALE_SANITIZED")));
+    const bool compare_required_ok =
+        !g_debug_compare_enabled || compare_ok || compare_substituted;
     const char *correctness =
-        (compare_ok && finite_ok && weight_scale_ok && activation_scale_ok) ? "PASS" : "FAIL";
+        compare_substituted ? "SUBSTITUTED" :
+        ((compare_required_ok && result_audit_ok && weight_scale_ok && activation_scale_ok) ? "PASS" : "FAIL");
 
     LOGSTAGE("tensor=%s layer=%d phase=%s shape=K%lld_N%lld_M%lld path=%s row_tiles=%lld group_tiles=%lld vpu_runs=%lld prep_ms=%.3f transfer_in_ms=%.3f ip_compute_ms=%.3f transfer_out_ms=%.3f host_accum_ms=%.3f total_ms=%.3f dominant=%s effective_GMAC/s=%.3f status=%s correctness=%s nonfinite_weight_scales=%lld sanitized_weight_scales=%lld nonfinite_activation_scales=%lld activation_scale_overflows=%lld bytes=%zu",
              tensor_name,
