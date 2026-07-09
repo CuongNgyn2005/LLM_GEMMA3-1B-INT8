@@ -7,7 +7,8 @@ module tb_VPU_Top;
     localparam integer ADDR_WIDTH    = 40;
     localparam integer NUM_LANES     = 16;
     localparam integer MAX_ROWS      = 256;
-    localparam integer MAX_COL_BEATS = 8;
+    localparam integer MAX_COL_BEATS = 128;
+    localparam integer MAX_GROUP_Q8_BLOCKS = 64;
     localparam integer MAX_TEST_COLS = NUM_LANES * MAX_COL_BEATS;
 
     localparam [ADDR_WIDTH-1:0] REG_CTRL      = 40'h0000_0000;
@@ -17,6 +18,7 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] REG_COL_BEATS = 40'h0000_0040;
     localparam [ADDR_WIDTH-1:0] REG_SCALE     = 40'h0000_0050;
     localparam [ADDR_WIDTH-1:0] REG_MODE      = 40'h0000_0060;
+    localparam [ADDR_WIDTH-1:0] REG_LIMITS    = 40'h0000_0070;
     localparam [ADDR_WIDTH-1:0] REG_CAPS      = 40'h0000_0090;
     localparam [ADDR_WIDTH-1:0] ACT_BASE      = 40'h0001_0000;
     localparam [ADDR_WIDTH-1:0] WEIGHT_BASE   = 40'h0010_0000;
@@ -83,6 +85,7 @@ module tb_VPU_Top;
     integer current_rows;
     integer current_cols;
     integer current_col_beats;
+    reg [DATA_WIDTH-1:0] init_rd_word;
 
     VPU_Top #(
         .C_S00_AXI_ID_WIDTH     (ID_WIDTH),
@@ -94,7 +97,8 @@ module tb_VPU_Top;
         .C_S00_AXI_RUSER_WIDTH  (1),
         .C_S00_AXI_BUSER_WIDTH  (1),
         .MAX_ROWS               (MAX_ROWS),
-        .MAX_COL_BEATS          (MAX_COL_BEATS)
+        .MAX_COL_BEATS          (MAX_COL_BEATS),
+        .MAX_GROUP_Q8_BLOCKS    (MAX_GROUP_Q8_BLOCKS)
     ) dut (
         .s00_axi_aclk       (clk),
         .s00_axi_aresetn    (resetn),
@@ -430,7 +434,7 @@ module tb_VPU_Top;
 
             for (row = 0; row < rows; row = row + 1) begin
                 for (beat = 0; beat < current_col_beats; beat = beat + 1)
-                    axi_write(WEIGHT_BASE + ((row * MAX_COL_BEATS) + beat) * 16,
+                    axi_write(WEIGHT_BASE + ((row * current_col_beats) + beat) * 16,
                               pack_weight(row, beat), 16'hffff);
             end
 
@@ -496,6 +500,10 @@ module tb_VPU_Top;
             axi_read(REG_CAPS, rd_word);
             if (rd_word[0] !== 1'b1)
                 fail("Packed q8 capability bit was not set");
+            if (rd_word[1] !== 1'b1)
+                fail("Compact weight layout capability bit was not set");
+            if (rd_word[15:8] !== 8'd64)
+                fail("REG_CAPS max_group_q8_blocks was not 64");
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
             axi_write(REG_ROWS, word32(rows), 16'h000f);
@@ -509,7 +517,7 @@ module tb_VPU_Top;
 
             for (row = 0; row < rows; row = row + 1) begin
                 for (beat = 0; beat < current_col_beats; beat = beat + 1)
-                    axi_write(WEIGHT_BASE + ((row * MAX_COL_BEATS) + beat) * 16,
+                    axi_write(WEIGHT_BASE + ((row * current_col_beats) + beat) * 16,
                               pack_weight(row, beat), 16'hffff);
             end
 
@@ -568,15 +576,23 @@ module tb_VPU_Top;
         pass_count = 0;
         fail_count = 0;
         cycle_count = 0;
+        init_rd_word = 0;
 
         repeat (8) @(posedge clk);
         resetn = 1'b1;
         repeat (4) @(posedge clk);
 
+        axi_read(REG_LIMITS, init_rd_word);
+        if (init_rd_word[15:0] !== 16'd256)
+            fail("REG_LIMITS max rows mismatch");
+        if (init_rd_word[31:16] !== 16'd128)
+            fail("REG_LIMITS max col beats mismatch");
+
         run_case(1, 3, 64, 4);
         run_case(2, 2, 17, 0);
         run_case(3, 129, 17, 0);
         run_group_case(4, 5, 3);
+        run_group_case(5, 2, MAX_GROUP_Q8_BLOCKS);
 
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
         if (fail_count == 0) begin
