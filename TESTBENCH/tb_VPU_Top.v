@@ -23,6 +23,10 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] ACT_BASE      = 40'h0001_0000;
     localparam [ADDR_WIDTH-1:0] WEIGHT_BASE   = 40'h0010_0000;
     localparam [ADDR_WIDTH-1:0] RESULT_BASE   = 40'h0020_0000;
+    localparam [31:0] VPU_MODE_PACKED_Q8      = 32'h0000_0001;
+    localparam [31:0] VPU_MODE_RESULT_INT8    = 32'h0000_0002;
+    localparam [31:0] VPU_MODE_ACCUM_CLEAR    = 32'h0000_0004;
+    localparam [31:0] VPU_MODE_RESULT_EMIT    = 32'h0000_0008;
 
     reg clk;
     reg resetn;
@@ -182,6 +186,21 @@ module tb_VPU_Top;
         end
     endfunction
 
+    function [DATA_WIDTH-1:0] pack_activation_from;
+        input integer beat_base;
+        input integer beat;
+        integer lane;
+        integer idx;
+        begin
+            pack_activation_from = {DATA_WIDTH{1'b0}};
+            for (lane = 0; lane < NUM_LANES; lane = lane + 1) begin
+                idx = (beat_base + beat) * NUM_LANES + lane;
+                if (idx < current_cols)
+                    pack_activation_from[8*lane +: 8] = activation[idx];
+            end
+        end
+    endfunction
+
     function [DATA_WIDTH-1:0] pack_weight;
         input integer row;
         input integer beat;
@@ -193,6 +212,22 @@ module tb_VPU_Top;
                 idx = beat * NUM_LANES + lane;
                 if (idx < current_cols)
                     pack_weight[8*lane +: 8] = weight[row*MAX_TEST_COLS + idx];
+            end
+        end
+    endfunction
+
+    function [DATA_WIDTH-1:0] pack_weight_from;
+        input integer row;
+        input integer beat_base;
+        input integer beat;
+        integer lane;
+        integer idx;
+        begin
+            pack_weight_from = {DATA_WIDTH{1'b0}};
+            for (lane = 0; lane < NUM_LANES; lane = lane + 1) begin
+                idx = (beat_base + beat) * NUM_LANES + lane;
+                if (idx < current_cols)
+                    pack_weight_from[8*lane +: 8] = weight[row*MAX_TEST_COLS + idx];
             end
         end
     endfunction
@@ -222,6 +257,38 @@ module tb_VPU_Top;
                 acc = acc + activation[idx] * weight[row*MAX_TEST_COLS + idx];
             end
             golden_q8_block = acc;
+        end
+    endfunction
+
+    function signed [31:0] golden_q8_range;
+        input integer row;
+        input integer block0;
+        input integer blocks;
+        integer lane;
+        integer idx;
+        reg signed [31:0] acc;
+        begin
+            acc = 32'sd0;
+            for (lane = 0; lane < blocks * 32; lane = lane + 1) begin
+                idx = block0 * 32 + lane;
+                acc = acc + activation[idx] * weight[row*MAX_TEST_COLS + idx];
+            end
+            golden_q8_range = acc;
+        end
+    endfunction
+
+    function signed [7:0] requant_i8;
+        input signed [31:0] value;
+        input integer shift;
+        reg signed [31:0] shifted;
+        begin
+            shifted = value >>> shift;
+            if (shifted > 127)
+                requant_i8 = 8'sd127;
+            else if (shifted < -128)
+                requant_i8 = -8'sd128;
+            else
+                requant_i8 = shifted[7:0];
         end
     endfunction
 
@@ -502,6 +569,8 @@ module tb_VPU_Top;
                 fail("Packed q8 capability bit was not set");
             if (rd_word[1] !== 1'b1)
                 fail("Compact weight layout capability bit was not set");
+            if (rd_word[2] !== 1'b1)
+                fail("INT8 result requant capability bit was not set");
             if (rd_word[15:8] !== 8'd64)
                 fail("REG_CAPS max_group_q8_blocks was not 64");
 
@@ -510,7 +579,7 @@ module tb_VPU_Top;
             axi_write(REG_COLS, word32(group_blocks * 32), 16'h000f);
             axi_write(REG_COL_BEATS, word32(group_blocks * 2), 16'h000f);
             axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
-            axi_write(REG_MODE, word32(32'h0000_0001), 16'h000f);
+            axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8), 16'h000f);
 
             for (beat = 0; beat < current_col_beats; beat = beat + 1)
                 axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
@@ -565,6 +634,198 @@ module tb_VPU_Top;
         end
     endtask
 
+    task run_int8_result_case;
+        input integer case_id;
+        input integer rows;
+        input integer group_blocks;
+        input integer requant_shift;
+        integer beat;
+        integer row;
+        integer block_id;
+        integer linear;
+        integer word_idx;
+        integer lane_idx;
+        integer timeout;
+        reg [DATA_WIDTH-1:0] rd_word;
+        reg signed [7:0] got;
+        reg signed [7:0] expected;
+        begin
+            init_case_data(case_id, rows, group_blocks * 32);
+
+            $display("[TB] INT8 RESULT CASE %0d: rows=%0d q8_blocks=%0d shift=%0d",
+                     case_id, rows, group_blocks, requant_shift);
+
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_ROWS, word32(rows), 16'h000f);
+            axi_write(REG_COLS, word32(group_blocks * 32), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(group_blocks * 2), 16'h000f);
+            axi_write(REG_SCALE, word32(requant_shift), 16'h000f);
+            axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8 |
+                                       VPU_MODE_RESULT_INT8 |
+                                       VPU_MODE_ACCUM_CLEAR |
+                                       VPU_MODE_RESULT_EMIT), 16'h000f);
+
+            for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+
+            for (row = 0; row < rows; row = row + 1) begin
+                for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * current_col_beats) + beat) * 16,
+                              pack_weight(row, beat), 16'hffff);
+            end
+
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+
+            timeout = 0;
+            rd_word = {DATA_WIDTH{1'b0}};
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word);
+                timeout = timeout + 1;
+                if (rd_word[2]) begin
+                    fail("INT8 result core reported configuration error");
+                    timeout = 1000;
+                    rd_word[0] = 1'b1;
+                end
+                if (timeout > 1000) begin
+                    fail("INT8 result core did not finish");
+                    rd_word[0] = 1'b1;
+                end
+            end
+
+            for (row = 0; row < rows; row = row + 1) begin
+                linear = row;
+                word_idx = linear / 16;
+                lane_idx = linear % 16;
+                axi_read(RESULT_BASE + word_idx * 16, rd_word);
+                got = rd_word[8*lane_idx +: 8];
+                expected = requant_i8(golden_q8_range(row, 0, group_blocks), requant_shift);
+                if (got !== expected) begin
+                    $display("[TB][FAIL] int8 row=%0d got=%0d expected=%0d raw=%0d",
+                             row, got, expected,
+                             golden_q8_range(row, 0, group_blocks));
+                    fail_count = fail_count + 1;
+                end else begin
+                    $display("[TB][PASS] int8 row=%0d result=%0d raw=%0d",
+                             row, got,
+                             golden_q8_range(row, 0, group_blocks));
+                    pass_count = pass_count + 1;
+                end
+            end
+        end
+    endtask
+
+    task run_int8_accum_groups_case;
+        input integer case_id;
+        input integer rows;
+        input integer first_blocks;
+        input integer second_blocks;
+        input integer requant_shift;
+        integer beat;
+        integer row;
+        integer linear;
+        integer word_idx;
+        integer lane_idx;
+        integer timeout;
+        integer total_blocks;
+        reg [DATA_WIDTH-1:0] rd_word;
+        reg signed [7:0] got;
+        reg signed [7:0] expected;
+        begin
+            total_blocks = first_blocks + second_blocks;
+            init_case_data(case_id, rows, total_blocks * 32);
+
+            $display("[TB] INT8 ACCUM CASE %0d: rows=%0d groups=[%0d,%0d] shift=%0d",
+                     case_id, rows, first_blocks, second_blocks, requant_shift);
+
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_ROWS, word32(rows), 16'h000f);
+            axi_write(REG_COLS, word32(first_blocks * 32), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(first_blocks * 2), 16'h000f);
+            axi_write(REG_SCALE, word32(requant_shift), 16'h000f);
+            axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8 |
+                                       VPU_MODE_RESULT_INT8 |
+                                       VPU_MODE_ACCUM_CLEAR), 16'h000f);
+
+            for (beat = 0; beat < first_blocks * 2; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation_from(0, beat), 16'hffff);
+            for (row = 0; row < rows; row = row + 1)
+                for (beat = 0; beat < first_blocks * 2; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * (first_blocks * 2)) + beat) * 16,
+                              pack_weight_from(row, 0, beat), 16'hffff);
+
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            timeout = 0;
+            rd_word = {DATA_WIDTH{1'b0}};
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word);
+                timeout = timeout + 1;
+                if (rd_word[2]) begin
+                    fail("INT8 accum first group reported configuration error");
+                    timeout = 1000;
+                    rd_word[0] = 1'b1;
+                end
+                if (timeout > 1000) begin
+                    fail("INT8 accum first group did not finish");
+                    rd_word[0] = 1'b1;
+                end
+            end
+
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_ROWS, word32(rows), 16'h000f);
+            axi_write(REG_COLS, word32(second_blocks * 32), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(second_blocks * 2), 16'h000f);
+            axi_write(REG_SCALE, word32(requant_shift), 16'h000f);
+            axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8 |
+                                       VPU_MODE_RESULT_INT8 |
+                                       VPU_MODE_RESULT_EMIT), 16'h000f);
+
+            for (beat = 0; beat < second_blocks * 2; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16,
+                          pack_activation_from(first_blocks * 2, beat), 16'hffff);
+            for (row = 0; row < rows; row = row + 1)
+                for (beat = 0; beat < second_blocks * 2; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * (second_blocks * 2)) + beat) * 16,
+                              pack_weight_from(row, first_blocks * 2, beat), 16'hffff);
+
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            timeout = 0;
+            rd_word = {DATA_WIDTH{1'b0}};
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word);
+                timeout = timeout + 1;
+                if (rd_word[2]) begin
+                    fail("INT8 accum final group reported configuration error");
+                    timeout = 1000;
+                    rd_word[0] = 1'b1;
+                end
+                if (timeout > 1000) begin
+                    fail("INT8 accum final group did not finish");
+                    rd_word[0] = 1'b1;
+                end
+            end
+
+            for (row = 0; row < rows; row = row + 1) begin
+                linear = row;
+                word_idx = linear / 16;
+                lane_idx = linear % 16;
+                axi_read(RESULT_BASE + word_idx * 16, rd_word);
+                got = rd_word[8*lane_idx +: 8];
+                expected = requant_i8(golden_q8_range(row, 0, total_blocks), requant_shift);
+                if (got !== expected) begin
+                    $display("[TB][FAIL] int8 accum row=%0d got=%0d expected=%0d raw=%0d",
+                             row, got, expected,
+                             golden_q8_range(row, 0, total_blocks));
+                    fail_count = fail_count + 1;
+                end else begin
+                    $display("[TB][PASS] int8 accum row=%0d result=%0d raw=%0d",
+                             row, got,
+                             golden_q8_range(row, 0, total_blocks));
+                    pass_count = pass_count + 1;
+                end
+            end
+        end
+    endtask
+
     initial begin
         resetn = 1'b0;
         awid = 0; awaddr = 0; awlen = 0; awsize = 0; awburst = 0; awlock = 0;
@@ -588,11 +849,9 @@ module tb_VPU_Top;
         if (init_rd_word[31:16] !== 16'd128)
             fail("REG_LIMITS max col beats mismatch");
 
-        run_case(1, 3, 64, 4);
-        run_case(2, 2, 17, 0);
-        run_case(3, 129, 17, 0);
-        run_group_case(4, 5, 3);
-        run_group_case(5, 2, MAX_GROUP_Q8_BLOCKS);
+        run_int8_result_case(1, 5, 3, 3);
+        run_int8_result_case(2, 17, MAX_GROUP_Q8_BLOCKS, 7);
+        run_int8_accum_groups_case(3, 4, 2, 3, 4);
 
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
         if (fail_count == 0) begin

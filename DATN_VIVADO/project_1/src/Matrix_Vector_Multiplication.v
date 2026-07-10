@@ -1,29 +1,44 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : Matrix_Vector_Multiplication
- * Description : Runtime-sized INT8 GEMV engine with BRAM-backed activation,
- *               weight, and result storage.
+ * Description : GEMV scheduler, local-memory subsystem, and PMAU controller.
  *
- * The AXI wrapper writes tensor data into these memory windows, configures the
- * active matrix size, then pulses ctrl_start.  The compute path feeds one
- * NUM_LANES-wide INT8 activation/weight beat per clock into PMAU_Full
- * after the pipelined BRAM read latency.  Results are stored one row per
- * 128-bit result word, using the low ACC_WIDTH bits.
+ * Matrix_Vector_Multiplication is the compute core behind AXI4_Mapping.  It
+ * owns the local Activation BRAM, banked and optionally sharded Weight BRAM,
+ * Result BRAM, active runtime configuration latched from AXI4_Mapping, the
+ * compute FSM, the synchronous BRAM read-alignment pipeline, and the PMAU_Full
+ * instance.
  *
- * Addressing contract used by the AXI wrapper:
- * - activation index = column beat
- * - weight index     = row * MAX_COL_BEATS + column beat
- * - result index     = row
+ * External memory-window behavior:
+ * - REGION_ACT writes store activation beats indexed by col_beat.
+ * - REGION_WEIGHT writes store flattened row-major weight beats.  New
+ *   bitstreams use compact active-stride layout:
+ *   row * active_col_beats + col_beat.
+ * - REGION_RESULT reads return packed INT8 result bytes for CPU/DMA readback.
+ *   CPU/DMA writes to REGION_RESULT are not part of the normal compute flow;
+ *   Result BRAM is written only after PMAU results have been accumulated and
+ *   requantized inside PL.
  *
- * Runtime sizes are bounded by MAX_ROWS and MAX_COL_BEATS.  If cfg_col_beats is
- * zero, the engine derives it from cfg_cols assuming NUM_LANES is a power of 2.
- * The last beat must be zero-padded by software when cfg_cols is not an exact
- * multiple of NUM_LANES.
+ * Compute behavior:
+ * - ctrl_start snapshots cfg_rows, cfg_cols/cfg_col_beats, cfg_scale, and
+ *   compute_mode, then S_VALIDATE rejects out-of-range or invalid packed-mode
+ *   settings before any BRAM read is issued.
+ * - S_RUN issues synchronous reads to Activation and Weight BRAM, delays valid
+ *   and last metadata through the d/q/x pipeline, and presents aligned beats
+ *   to PMAU_Full through valid/ready handshakes.
+ * - S_WAIT_RESULT waits for PMAU result_valid after the final beat of a row,
+ *   accumulates the INT32 raw result in the PL row accumulator, and writes the
+ *   requantized INT8 byte only when compute_mode[3] requests final emission.
+ * - S_DONE holds completion status for host polling, while S_ERROR holds
+ *   invalid-configuration status until cleared or restarted.
  *
- * compute_mode[0] enables packed q8_0 partial mode.  In this mode the core
- * treats every two 128-bit beats as one q8_0 block, emits one raw INT32 partial
- * per row per q8_0 block, and packs four partials into each 128-bit result word.
- * This reduces host start/poll cycles while keeping q8_0 scaling in software.
+ * Production mode is INT8-result only.  PMAU still computes raw INT32 sums,
+ * because INT8 dot products require a wide accumulator, but those sums never
+ * leave the IP as the normal software-visible result.  Across split K-group
+ * launches, compute_mode[2] clears the on-chip row accumulator for the first
+ * group and compute_mode[3] emits the final requantized INT8 result for the
+ * last group.  Sixteen INT8 results are packed into each 128-bit Result BRAM
+ * word.
  *-----------------------------------------------------------------------------
  */
 
@@ -39,7 +54,8 @@ module Matrix_Vector_Multiplication #(
     parameter RESULT_FIFO_DEPTH  = 8,
     parameter AXI_DATA_WIDTH     = 128,
     parameter MAX_ROWS           = 256,
-    parameter MAX_COL_BEATS      = 32
+    parameter MAX_COL_BEATS      = 128,
+    parameter MAX_GROUP_Q8_BLOCKS = 64
 ) (
     input  wire                              CLK,
     input  wire                              RST,
@@ -50,7 +66,7 @@ module Matrix_Vector_Multiplication #(
     input  wire [15:0]                       cfg_cols,
     input  wire [15:0]                       cfg_col_beats,
     input  wire [SCALE_WIDTH-1:0]            cfg_scale,
-    input  wire [1:0]                        compute_mode,
+    input  wire [3:0]                        compute_mode,
 
     output wire                              busy,
     output wire                              done,
@@ -93,15 +109,18 @@ module Matrix_Vector_Multiplication #(
     localparam ACT_ADDR_WIDTH       = clog2(MAX_COL_BEATS);
     localparam RESULT_PACK_LANES    = AXI_DATA_WIDTH / ACC_WIDTH;
     localparam RESULT_LANE_SHIFT    = clog2(RESULT_PACK_LANES);
-    localparam MAX_GROUP_Q8_BLOCKS  = 16;
+    localparam RESULT_I8_PACK_LANES = AXI_DATA_WIDTH / 8;
+    localparam RESULT_I8_LANE_SHIFT = clog2(RESULT_I8_PACK_LANES);
     localparam MAX_RESULT_VALUES    = MAX_ROWS * MAX_GROUP_Q8_BLOCKS;
     localparam RESULT_WORD_DEPTH    = (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
     localparam RESULT_ADDR_WIDTH    = clog2(RESULT_WORD_DEPTH);
     localparam WEIGHT_DEPTH         = MAX_ROWS * MAX_COL_BEATS;
     localparam WEIGHT_ADDR_WIDTH    = clog2(WEIGHT_DEPTH);
-    // Split each 32-bit weight bank into 16K-word depth shards.  For the
-    // 256x256 board configuration this creates four shards per bank and keeps
-    // the RAM address nets local without changing the logical MMIO address map.
+    // Split each 32-bit weight bank into 16K-word depth shards when the
+    // configured matrix capacity grows beyond a single BRAM address range.
+    // With the Phase 1A MAX_ROWS=256 and MAX_COL_BEATS=128 configuration, each
+    // bank uses multiple shards.  Sharding keeps the logical MMIO address map
+    // stable while allowing deeper weight storage.
     localparam WEIGHT_LOCAL_ADDR_WIDTH =
         (WEIGHT_ADDR_WIDTH > 14) ? 14 : WEIGHT_ADDR_WIDTH;
     localparam WEIGHT_SHARD_DEPTH      = (1 << WEIGHT_LOCAL_ADDR_WIDTH);
@@ -115,12 +134,12 @@ module Matrix_Vector_Multiplication #(
     localparam [15:0] MAX_ROWS_16           = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16      = MAX_COL_BEATS;
     localparam [15:0] Q8_BLOCK_BEATS_16     = 16'd2;
+    localparam [SCALE_WIDTH-1:0] FP16_ONE    = 16'h3c00;
     localparam [31:0] MAX_ROWS_32           = MAX_ROWS;
     localparam [31:0] MAX_COL_BEATS_32      = MAX_COL_BEATS;
     localparam [31:0] WEIGHT_DEPTH_32       = WEIGHT_DEPTH;
     localparam [31:0] MAX_RESULT_VALUES_32  = MAX_RESULT_VALUES;
     localparam [31:0] RESULT_WORD_DEPTH_32  = RESULT_WORD_DEPTH;
-    localparam [WEIGHT_ADDR_WIDTH-1:0] MAX_COL_BEATS_WADDR = MAX_COL_BEATS;
 
     localparam [1:0] REGION_ACT     = 2'd0;
     localparam [1:0] REGION_WEIGHT  = 2'd1;
@@ -132,6 +151,18 @@ module Matrix_Vector_Multiplication #(
     localparam [2:0] S_DONE         = 3'd3;
     localparam [2:0] S_ERROR        = 3'd4;
     localparam [2:0] S_VALIDATE     = 3'd5;
+    // Final-result handling is deliberately three stages: capture the INT32
+    // accumulated value, requantize it to INT8, then commit Result BRAM.
+    // This prevents the accumulator mux, saturation logic and BRAM routing
+    // from forming one long routed path at 187.5 MHz.
+    localparam [2:0] S_REQUANT_RESULT = 3'd6;
+    localparam [2:0] S_DRAIN_RESULT   = 3'd7;
+
+    // The GEMV core has two independent traffic classes:
+    // - memory-window traffic from AXI4_Mapping, used to fill Activation/Weight
+    //   BRAMs and read Result BRAM;
+    // - compute traffic generated by the FSM, used to read activation/weight
+    //   beats and feed PMAU_Full.
 
     wire [ACT_BEAT_WIDTH-1:0]   act_compute_data;
     reg [WEIGHT_BEAT_WIDTH-1:0]  weight_compute_data;
@@ -182,6 +213,28 @@ module Matrix_Vector_Multiplication #(
     reg [31:0] result_row_base_r;
     reg [WEIGHT_ADDR_WIDTH-1:0] weight_row_base_r;
     reg group_mode_r;
+    reg result_i8_mode_r;
+    reg result_accum_clear_r;
+    reg result_emit_r;
+    reg signed [ACC_WIDTH-1:0] result_accum_mem [0:MAX_ROWS-1];
+
+    // The accumulator/requantizer result is captured before it drives Result
+    // BRAM.  This separates the variable-row accumulator mux from the BRAM
+    // write data path and gives the physical implementation one full cycle to
+    // place each side locally.
+    reg result_write_pending_r;
+    reg [RESULT_ADDR_WIDTH-1:0] result_write_addr_r;
+    reg [RESULT_I8_LANE_SHIFT-1:0] result_write_lane_r;
+    reg signed [7:0] result_write_i8_r;
+
+    // The raw PL accumulator is captured before the saturating INT8
+    // requantizer.  Besides shortening the routed critical path, this makes
+    // the INT32-to-INT8 handoff explicit in the VPU/SPU boundary.
+    reg result_requant_pending_r;
+    reg signed [ACC_WIDTH-1:0] result_requant_value_r;
+    reg [RESULT_ADDR_WIDTH-1:0] result_requant_addr_r;
+    reg [RESULT_I8_LANE_SHIFT-1:0] result_requant_lane_r;
+    reg result_requant_final_r;
 
     reg feed_valid_r;
     reg feed_last_r;
@@ -210,6 +263,9 @@ module Matrix_Vector_Multiplication #(
     wire [15:0] requested_col_beats =
         (cfg_col_beats != 16'd0) ? cfg_col_beats : auto_col_beats;
     wire        requested_group_mode = compute_mode[0];
+    wire        requested_result_i8_mode = 1'b1;
+    wire        requested_result_accum_clear = compute_mode[2];
+    wire        requested_result_emit = compute_mode[3];
     wire [15:0] requested_group_blocks =
         requested_group_mode ? (requested_col_beats >> 1) : 16'd1;
     wire active_group_invalid =
@@ -224,17 +280,26 @@ module Matrix_Vector_Multiplication #(
         (active_col_beats_r > MAX_COL_BEATS_16) ||
         active_group_invalid;
 
+    // Runtime configuration is latched on ctrl_start, then validated before
+    // any BRAM read is issued.  Packed q8 mode groups every two 128-bit beats
+    // into one partial-result block, so an odd beat count is rejected.
+
     wire pmau_activation_ready;
     wire pmau_weight_ready;
     wire pmau_result_valid;
     wire [ACC_WIDTH-1:0] pmau_result_data;
     wire pmau_result_last;
+    wire signed [7:0] pmau_result_i8;
+    wire [4:0] result_requant_shift = cfg_scale[4:0];
     wire pmau_result_ready =
         (state_r == S_RUN) || (state_r == S_WAIT_RESULT);
     wire pmau_input_fire =
         feed_valid_r && pmau_activation_ready && pmau_weight_ready;
     wire pmau_result_fire = pmau_result_valid && pmau_result_ready;
 
+    // BRAM output data is delayed relative to the address request.  The d/q/x
+    // valid pipeline keeps activation data, selected weight shard data, and
+    // sideband last flags aligned before a beat is presented to PMAU.
     wire feed_slot_open = (!feed_valid_r) || pmau_input_fire;
     wire consume_read_x = read_valid_x_r && feed_slot_open;
     wire read_x_slot_open = (!read_valid_x_r) || consume_read_x;
@@ -256,25 +321,52 @@ module Matrix_Vector_Multiplication #(
         read_req_slot_open &&
         (read_beat_idx_r < active_col_beats_r);
     wire issue_read_last =
+        result_i8_mode_r ? (read_beat_idx_r == (active_col_beats_r - 16'd1)) :
         group_mode_r ? (read_beat_idx_r[0] == 1'b1) :
                        (read_beat_idx_r == (active_col_beats_r - 16'd1));
     wire issue_read_group_last =
         (read_beat_idx_r == (active_col_beats_r - 16'd1));
 
     wire [31:0] result_value_index =
+        result_i8_mode_r ? {16'd0, row_idx_r} :
         group_mode_r ? (result_row_base_r + {16'd0, block_idx_r}) :
                        {16'd0, row_idx_r};
-    wire [RESULT_ADDR_WIDTH-1:0] result_wr_addr =
+    wire [RESULT_ADDR_WIDTH-1:0] result_wr_addr_i32 =
         group_mode_r ? result_value_index[RESULT_LANE_SHIFT +: RESULT_ADDR_WIDTH] :
                        row_idx_r[RESULT_ADDR_WIDTH-1:0];
-    wire [RESULT_LANE_SHIFT-1:0] result_wr_lane =
+    wire [RESULT_LANE_SHIFT-1:0] result_wr_lane_i32 =
         group_mode_r ? result_value_index[RESULT_LANE_SHIFT-1:0] :
                        {RESULT_LANE_SHIFT{1'b0}};
+    wire [RESULT_ADDR_WIDTH-1:0] result_wr_addr_i8 =
+        result_value_index[RESULT_I8_LANE_SHIFT +: RESULT_ADDR_WIDTH];
+    wire [RESULT_I8_LANE_SHIFT-1:0] result_wr_lane_i8 =
+        result_value_index[RESULT_I8_LANE_SHIFT-1:0];
+    wire [RESULT_ADDR_WIDTH-1:0] result_wr_addr =
+        result_i8_mode_r ? result_wr_addr_i8 : result_wr_addr_i32;
+    wire [RESULT_I8_LANE_SHIFT-1:0] result_wr_lane =
+        result_i8_mode_r ? result_wr_lane_i8 :
+                           {{(RESULT_I8_LANE_SHIFT-RESULT_LANE_SHIFT){1'b0}},
+                            result_wr_lane_i32};
     wire result_wr_index_ok =
+        result_i8_mode_r ? (row_idx_r < MAX_ROWS_16) :
         group_mode_r ? (result_value_index < MAX_RESULT_VALUES_32) :
                        (row_idx_r < MAX_ROWS_16);
+    wire signed [ACC_WIDTH-1:0] result_accum_prev =
+        result_accum_clear_r ? {ACC_WIDTH{1'b0}} : result_accum_mem[row_idx_r];
+    wire signed [ACC_WIDTH-1:0] result_accum_next =
+        result_accum_prev + $signed(pmau_result_data);
+    wire result_requant_capture =
+        pmau_result_fire && result_wr_index_ok && result_i8_mode_r && result_emit_r;
+    wire result_writeback_fire = result_write_pending_r;
 
-    assign busy            = (state_r == S_RUN) || (state_r == S_WAIT_RESULT);
+    // Result placement is INT8-only for production.  Intermediate K-group
+    // launches update the on-chip accumulator but do not write Result BRAM.
+    // The final group writes one saturated INT8 byte per row.
+
+    assign busy            = (state_r == S_RUN) ||
+                             (state_r == S_WAIT_RESULT) ||
+                             (state_r == S_REQUANT_RESULT) ||
+                             (state_r == S_DRAIN_RESULT);
     assign done            = done_r;
     assign error           = error_r;
     assign active_row      = row_idx_r;
@@ -291,13 +383,13 @@ module Matrix_Vector_Multiplication #(
     ) u_pmau (
         .CLK               (CLK),
         .RST               (RST),
-        .compute_mode      (compute_mode),
+        .compute_mode      (compute_mode[1:0]),
         .activation_data   (act_pmau_data),
         .activation_valid  ((state_r == S_RUN) && feed_valid_r),
         .activation_ready  (pmau_activation_ready),
         .activation_last   (feed_last_r),
         .weight_data       (weight_pmau_data),
-        .scale_factor      (cfg_scale),
+        .scale_factor      (result_i8_mode_r ? FP16_ONE : cfg_scale),
         .weight_valid      ((state_r == S_RUN) && feed_valid_r),
         .weight_ready      (pmau_weight_ready),
         .weight_last       (feed_last_r),
@@ -306,6 +398,15 @@ module Matrix_Vector_Multiplication #(
         .result_valid      (pmau_result_valid),
         .result_ready      (pmau_result_ready),
         .result_last       (pmau_result_last)
+    );
+
+    VPU_Result_Requantizer #(
+        .ACC_WIDTH   (ACC_WIDTH),
+        .SHIFT_WIDTH (5)
+    ) u_result_requantizer (
+        .value_in       (result_requant_value_r),
+        .requant_shift  (result_requant_shift),
+        .value_out      (pmau_result_i8)
     );
 
     wire [WEIGHT_LOCAL_ADDR_WIDTH-1:0] wr_pipe_weight_local_addr =
@@ -319,6 +420,7 @@ module Matrix_Vector_Multiplication #(
     integer fsm_bank_i;
     integer fsm_shard_i;
     integer fsm_ram_i;
+    integer accum_i;
     integer mux_bank_i;
     always @(posedge CLK) begin
         if (!RST) begin
@@ -334,6 +436,10 @@ module Matrix_Vector_Multiplication #(
                 weight_wr_strb_leaf[wr_ram_i] <= {WEIGHT_BANK_BYTES{1'b0}};
             end
         end else begin
+            // Capture memory-window writes from AXI4_Mapping.  Activation is a
+            // direct 128-bit BRAM word path, while Weight memory is split into
+            // four 32-bit banks and optional depth shards.  Result BRAM is
+            // written only by the PMAU result path below.
             wr_pipe_en_r <= mm_wr_en;
             if (mm_wr_en) begin
                 wr_pipe_region_r <= mm_wr_region;
@@ -370,6 +476,8 @@ module Matrix_Vector_Multiplication #(
             rd_pipe_region_r <= REGION_RESULT;
             rd_pipe_index_r  <= 32'd0;
         end else begin
+            // Delay the read request metadata so the Result BRAM data and the
+            // region/error information are returned to AXI4_Mapping together.
             rd_pipe_en_r <= mm_rd_en;
             if (mm_rd_en) begin
                 rd_pipe_region_r <= mm_rd_region;
@@ -400,10 +508,11 @@ module Matrix_Vector_Multiplication #(
     always @* begin
         result_wr_data   = {AXI_DATA_WIDTH{1'b0}};
         result_wr_strobe = {(AXI_DATA_WIDTH/8){1'b0}};
-        if (pmau_result_fire && result_wr_index_ok) begin
-            result_wr_data[ACC_WIDTH*result_wr_lane +: ACC_WIDTH] = pmau_result_data;
-            for (result_lane_i = 0; result_lane_i < RESULT_BYTE_COUNT; result_lane_i = result_lane_i + 1)
-                result_wr_strobe[RESULT_BYTE_COUNT*result_wr_lane + result_lane_i] = 1'b1;
+        if (result_writeback_fire) begin
+            // Final-result mode: PL returns one signed INT8 value per row.
+            // Sixteen values share one 128-bit Result BRAM word.
+            result_wr_data[8*result_write_lane_r +: 8] = result_write_i8_r;
+            result_wr_strobe[result_write_lane_r] = 1'b1;
         end
     end
 
@@ -414,7 +523,8 @@ module Matrix_Vector_Multiplication #(
     Dual_Port_BRAM #(
         .AWIDTH (ACT_ADDR_WIDTH),
         .DWIDTH (ACT_BEAT_WIDTH),
-        .OUTPUT_REG (1)
+        .OUTPUT_REG (1),
+        .USE_URAM (0)
     ) u_act_bram (
         .clka  (CLK),
         .ena   (act_wr_hit),
@@ -445,7 +555,8 @@ module Matrix_Vector_Multiplication #(
                 Dual_Port_BRAM #(
                     .AWIDTH (WEIGHT_LOCAL_ADDR_WIDTH),
                     .DWIDTH (WEIGHT_BANK_WIDTH),
-                    .OUTPUT_REG (1)
+                    .OUTPUT_REG (1),
+                    .USE_URAM (1)
                 ) u_weight_bram_bank (
                     .clka  (CLK),
                     .ena   (weight_wr_en_leaf[WEIGHT_RAM_INDEX]),
@@ -477,7 +588,8 @@ module Matrix_Vector_Multiplication #(
 
     Dual_Port_BRAM #(
         .AWIDTH (RESULT_ADDR_WIDTH),
-        .DWIDTH (AXI_DATA_WIDTH)
+        .DWIDTH (AXI_DATA_WIDTH),
+        .USE_URAM (0)
     ) u_result_bram (
         .clka  (CLK),
         .ena   (result_rd_hit),
@@ -486,9 +598,9 @@ module Matrix_Vector_Multiplication #(
         .dina  ({AXI_DATA_WIDTH{1'b0}}),
         .douta (result_cpu_rd_data),
         .clkb  (CLK),
-        .enb   (pmau_result_fire && result_wr_index_ok),
+        .enb   (result_writeback_fire),
         .web   (result_wr_strobe),
-        .addrb (result_wr_addr),
+        .addrb (result_write_addr_r),
         .dinb  (result_wr_data),
         .doutb (result_compute_rd_unused)
     );
@@ -502,6 +614,9 @@ module Matrix_Vector_Multiplication #(
             mm_rd_region_d_r <= REGION_ACT;
             mm_rd_error_d_r  <= 1'b0;
         end else begin
+            // Result-window reads are synchronous.  The request is accepted in
+            // one cycle, and the data/error response is returned on the next
+            // cycle when Result BRAM output is valid.
             mm_rd_pending_r <= mm_rd_accept;
             if (mm_rd_accept) begin
                 mm_rd_region_d_r <= rd_pipe_region_r;
@@ -549,6 +664,18 @@ module Matrix_Vector_Multiplication #(
             result_row_base_r    <= 32'd0;
             weight_row_base_r   <= {WEIGHT_ADDR_WIDTH{1'b0}};
             group_mode_r         <= 1'b0;
+            result_i8_mode_r     <= 1'b1;
+            result_accum_clear_r <= 1'b0;
+            result_emit_r        <= 1'b0;
+            result_write_pending_r <= 1'b0;
+            result_write_addr_r  <= {RESULT_ADDR_WIDTH{1'b0}};
+            result_write_lane_r  <= {RESULT_I8_LANE_SHIFT{1'b0}};
+            result_write_i8_r    <= 8'sd0;
+            result_requant_pending_r <= 1'b0;
+            result_requant_value_r <= {ACC_WIDTH{1'b0}};
+            result_requant_addr_r <= {RESULT_ADDR_WIDTH{1'b0}};
+            result_requant_lane_r <= {RESULT_I8_LANE_SHIFT{1'b0}};
+            result_requant_final_r <= 1'b0;
             feed_valid_r        <= 1'b0;
             feed_last_r         <= 1'b0;
             feed_group_last_r   <= 1'b0;
@@ -576,10 +703,14 @@ module Matrix_Vector_Multiplication #(
                 weight_compute_addr_leaf[fsm_ram_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
                 weight_compute_en_leaf[fsm_ram_i]   <= 1'b0;
             end
+            for (accum_i = 0; accum_i < MAX_ROWS; accum_i = accum_i + 1)
+                result_accum_mem[accum_i] <= {ACC_WIDTH{1'b0}};
             act_pmau_data       <= {ACT_BEAT_WIDTH{1'b0}};
             weight_pmau_data    <= {WEIGHT_BEAT_WIDTH{1'b0}};
         end else begin
             compute_rd_en  <= 1'b0;
+            result_write_pending_r <= 1'b0;
+            result_requant_pending_r <= 1'b0;
             for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_COUNT; fsm_ram_i = fsm_ram_i + 1)
                 weight_compute_en_leaf[fsm_ram_i] <= 1'b0;
             if (shift_req_to_d)
@@ -594,6 +725,8 @@ module Matrix_Vector_Multiplication #(
 
             case (state_r)
                 S_IDLE: begin
+                    // Wait for a new run.  ctrl_start snapshots all runtime
+                    // configuration and resets row/block/read progress.
                     feed_valid_r       <= 1'b0;
                     feed_last_r        <= 1'b0;
                     feed_group_last_r  <= 1'b0;
@@ -613,12 +746,17 @@ module Matrix_Vector_Multiplication #(
                         active_rows_r      <= cfg_rows;
                         active_col_beats_r <= requested_col_beats;
                         group_mode_r       <= requested_group_mode;
+                        result_i8_mode_r   <= requested_result_i8_mode;
+                        result_accum_clear_r <= requested_result_accum_clear;
+                        result_emit_r      <= requested_result_emit;
                         group_blocks_r     <= requested_group_blocks;
                         state_r            <= S_VALIDATE;
                     end
                 end
 
                 S_VALIDATE: begin
+                    // Reject illegal runtime dimensions before any memory read
+                    // can be issued.  This prevents out-of-range BRAM access.
                     feed_valid_r <= 1'b0;
                     if (active_config_invalid) begin
                         error_r <= 1'b1;
@@ -630,6 +768,9 @@ module Matrix_Vector_Multiplication #(
                 end
 
                 S_RUN: begin
+                    // Main compute state.  Issue BRAM read requests, shift the
+                    // synchronous-read pipeline, and feed aligned beats into
+                    // PMAU when its input ready signals allow it.
                     if (pmau_input_fire)
                         feed_valid_r <= 1'b0;
 
@@ -689,6 +830,9 @@ module Matrix_Vector_Multiplication #(
                         block_idx_r <= block_idx_r + 16'd1;
 
                     if (pmau_input_fire && feed_group_last_r) begin
+                        // The last beat of the current row/block has entered
+                        // PMAU.  Stop issuing input and wait for the pipeline
+                        // to produce the corresponding result.
                         feed_valid_r    <= 1'b0;
                         compute_rd_en   <= 1'b0;
                         for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_COUNT; fsm_ram_i = fsm_ram_i + 1)
@@ -702,10 +846,45 @@ module Matrix_Vector_Multiplication #(
                 end
 
                 S_WAIT_RESULT: begin
+                    // PMAU may still be processing the last accepted beat.
+                    // Hold the FSM here until the completed INT32 result is
+                    // returned and written into Result BRAM.
                     feed_valid_r <= 1'b0;
 
                     if (pmau_result_fire) begin
-                        if ((block_idx_r + 16'd1) < group_blocks_r) begin
+                        if (result_i8_mode_r) begin
+                            result_accum_mem[row_idx_r] <= result_accum_next;
+                            block_idx_r <= 16'd0;
+
+                            if (result_requant_capture) begin
+                                result_requant_pending_r <= 1'b1;
+                                result_requant_value_r   <= result_accum_next;
+                                result_requant_addr_r    <= result_wr_addr;
+                                result_requant_lane_r    <= result_wr_lane;
+                                result_requant_final_r   <=
+                                    ((row_idx_r + 16'd1) >= active_rows_r);
+                            end
+
+                            if ((row_idx_r + 16'd1) >= active_rows_r) begin
+                                // The final INT32 value is first registered,
+                                // then requantized and committed to Result
+                                // BRAM in the two following cycles.
+                                if (result_requant_capture)
+                                    state_r <= S_REQUANT_RESULT;
+                                else begin
+                                    done_r  <= 1'b1;
+                                    state_r <= S_DONE;
+                                end
+                            end else begin
+                                row_idx_r         <= row_idx_r + 16'd1;
+                                read_beat_idx_r   <= 16'd0;
+                                result_row_base_r <= result_row_base_r + 32'd1;
+                                weight_row_base_r <= weight_row_base_r +
+                                                     active_col_beats_r;
+                                state_r           <= result_requant_capture ?
+                                                     S_REQUANT_RESULT : S_RUN;
+                            end
+                        end else if ((block_idx_r + 16'd1) < group_blocks_r) begin
                             block_idx_r       <= block_idx_r + 16'd1;
                         end else begin
                             block_idx_r       <= 16'd0;
@@ -718,14 +897,52 @@ module Matrix_Vector_Multiplication #(
                                 read_beat_idx_r   <= 16'd0;
                                 result_row_base_r <= result_row_base_r + {16'd0, group_blocks_r};
                                 weight_row_base_r <= weight_row_base_r +
-                                                     MAX_COL_BEATS_WADDR;
+                                                     active_col_beats_r;
                                 state_r           <= S_RUN;
                             end
                         end
                     end
                 end
 
+                S_REQUANT_RESULT: begin
+                    // result_requant_value_r was captured with the PMAU
+                    // response.  Requantize one cycle later so the INT32
+                    // accumulator read and INT8 saturation/packing are never
+                    // on the same timing path.
+                    feed_valid_r <= 1'b0;
+                    if (result_requant_pending_r) begin
+                        result_write_pending_r <= 1'b1;
+                        result_write_addr_r    <= result_requant_addr_r;
+                        result_write_lane_r    <= result_requant_lane_r;
+                        result_write_i8_r      <= pmau_result_i8;
+
+                        if (result_requant_final_r)
+                            state_r <= S_DRAIN_RESULT;
+                        else
+                            state_r <= S_RUN;
+                    end else begin
+                        // Defensive fallback: this state is entered only for
+                        // a final-result capture, but never hang on a bad
+                        // handshake.
+                        error_r <= 1'b1;
+                        state_r <= S_ERROR;
+                    end
+                end
+
+                S_DRAIN_RESULT: begin
+                    // On entry, result_write_pending_r was set by
+                    // S_REQUANT_RESULT.  Result BRAM consumes it on this edge;
+                    // asserting done here guarantees software observes the
+                    // completed INT8 payload after the write is committed.
+                    feed_valid_r <= 1'b0;
+                    done_r       <= 1'b1;
+                    state_r      <= S_DONE;
+                end
+
                 S_DONE: begin
+                    // Keep done asserted for software polling.  A new start
+                    // command immediately snapshots new configuration and
+                    // launches another validation/run sequence.
                     feed_valid_r <= 1'b0;
                     if (ctrl_start) begin
                         done_r              <= 1'b0;
@@ -733,6 +950,9 @@ module Matrix_Vector_Multiplication #(
                         active_rows_r       <= cfg_rows;
                         active_col_beats_r  <= requested_col_beats;
                         group_mode_r        <= requested_group_mode;
+                        result_i8_mode_r    <= requested_result_i8_mode;
+                        result_accum_clear_r <= requested_result_accum_clear;
+                        result_emit_r        <= requested_result_emit;
                         group_blocks_r      <= requested_group_blocks;
                         row_idx_r           <= 16'd0;
                         read_beat_idx_r     <= 16'd0;
@@ -745,6 +965,8 @@ module Matrix_Vector_Multiplication #(
                 end
 
                 S_ERROR: begin
+                    // Configuration errors are sticky until software clears
+                    // them or starts a new run with corrected parameters.
                     feed_valid_r <= 1'b0;
                     if (ctrl_clear_done) begin
                         done_r  <= 1'b0;
@@ -756,6 +978,9 @@ module Matrix_Vector_Multiplication #(
                         active_rows_r      <= cfg_rows;
                         active_col_beats_r <= requested_col_beats;
                         group_mode_r       <= requested_group_mode;
+                        result_i8_mode_r   <= requested_result_i8_mode;
+                        result_accum_clear_r <= requested_result_accum_clear;
+                        result_emit_r      <= requested_result_emit;
                         group_blocks_r     <= requested_group_blocks;
                         row_idx_r          <= 16'd0;
                         read_beat_idx_r    <= 16'd0;
