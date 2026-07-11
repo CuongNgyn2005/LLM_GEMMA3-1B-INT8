@@ -569,8 +569,8 @@ module tb_VPU_Top;
                 fail("Packed q8 capability bit was not set");
             if (rd_word[1] !== 1'b1)
                 fail("Compact weight layout capability bit was not set");
-            if (rd_word[2] !== 1'b1)
-                fail("INT8 result requant capability bit was not set");
+            if (rd_word[2] !== 1'b0)
+                fail("Q8_0 output-block capability bit must stay clear until scale metadata is integrated");
             if (rd_word[15:8] !== 8'd64)
                 fail("REG_CAPS max_group_q8_blocks was not 64");
 
@@ -849,9 +849,12 @@ module tb_VPU_Top;
         if (init_rd_word[31:16] !== 16'd128)
             fail("REG_LIMITS max col beats mismatch");
 
-        run_int8_result_case(1, 5, 3, 3);
-        run_int8_result_case(2, 17, MAX_GROUP_Q8_BLOCKS, 7);
-        run_int8_accum_groups_case(3, 4, 2, 3, 4);
+        run_case(1, 3, 64, 4);
+        run_case(2, 2, 17, 0);
+        run_group_case(3, 5, 3);
+        run_group_case(4, 2, MAX_GROUP_Q8_BLOCKS);
+        run_int8_result_case(5, 5, 3, 3);
+        run_int8_accum_groups_case(6, 4, 2, 3, 4);
 
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
         if (fail_count == 0) begin
@@ -859,7 +862,7 @@ module tb_VPU_Top;
             $finish;
         end else begin
             $display("[TB] AXI4-Full VPU TEST FAILED");
-            $finish;
+            $fatal(1, "VPU testbench observed %0d failures", fail_count);
         end
     end
 

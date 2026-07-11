@@ -15,6 +15,7 @@ module tb_SPU_Top;
     localparam [7:0] SPU_MODE_RMSNORM    = 8'd3;
     localparam [7:0] SPU_MODE_ROPE       = 8'd4;
     localparam [7:0] SPU_MODE_SOFTMAX    = 8'd5;
+    localparam [7:0] SPU_MODE_Q8_SCALE_ACCUM = 8'd6;
     localparam [7:0] SPU_MODE_COPY       = 8'h7f;
 
     reg clk;
@@ -189,6 +190,24 @@ module tb_SPU_Top;
         end
     endfunction
 
+    function [DATA_WIDTH-1:0] pack_scale_entry;
+        input signed [31:0] raw;
+        input [15:0] act_scale;
+        input [15:0] weight_scale;
+        input [15:0] row_id;
+        input clear_accum;
+        input last_block;
+        begin
+            pack_scale_entry = {DATA_WIDTH{1'b0}};
+            pack_scale_entry[31:0] = raw;
+            pack_scale_entry[47:32] = act_scale;
+            pack_scale_entry[63:48] = weight_scale;
+            pack_scale_entry[79:64] = row_id;
+            pack_scale_entry[80] = last_block;
+            pack_scale_entry[81] = clear_accum;
+        end
+    endfunction
+
     function [15:0] abs16;
         input signed [15:0] value;
         begin
@@ -294,13 +313,152 @@ module tb_SPU_Top;
         end
     endtask
 
+    task run_scale_accum_case;
+        reg [DATA_WIDTH-1:0] out0;
+        reg [DATA_WIDTH-1:0] out1;
+        reg [DATA_WIDTH-1:0] status0;
+        reg signed [63:0] got_accum;
+        begin
+            $display("[TB] Q8 scale-accumulate mixed-scale test");
+            mm_write(REGION_IN, 0, pack_scale_entry(32'sd32, 16'h3800, 16'h3400, 16'd0, 1'b1, 1'b0));
+            mm_write(REGION_IN, 1, pack_scale_entry(32'sd32, 16'h3800, 16'h3800, 16'd0, 1'b0, 1'b1));
+            mm_write(REGION_IN, 2, pack_scale_entry(-32'sd64, 16'h3c00, 16'h3000, 16'd1, 1'b1, 1'b1));
+
+            start_and_wait(SPU_MODE_Q8_SCALE_ACCUM, 32'd3);
+            mm_read(REGION_OUT, 0, out0);
+            mm_read(REGION_OUT, 1, out1);
+            mm_read(REGION_SCRATCH, 0, status0);
+
+            if (status0[31:0] !== 32'd2)
+                fail("Q8 scale-accumulate output count mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            if (out0[15:0] !== 16'd0)
+                fail("Q8 scale-accumulate row 0 id mismatch");
+            else
+                pass_count = pass_count + 1;
+            got_accum = out0[79:16];
+            if (got_accum !== 64'sd786432) begin
+                $display("[TB][FAIL] row0 accum_q16 got=%0d expected=%0d", got_accum, 64'sd786432);
+                fail_count = fail_count + 1;
+            end else begin
+                pass_count = pass_count + 1;
+            end
+
+            if (out1[15:0] !== 16'd1)
+                fail("Q8 scale-accumulate row 1 id mismatch");
+            else
+                pass_count = pass_count + 1;
+            got_accum = out1[79:16];
+            if (got_accum !== -64'sd524288) begin
+                $display("[TB][FAIL] row1 accum_q16 got=%0d expected=%0d", got_accum, -64'sd524288);
+                fail_count = fail_count + 1;
+            end else begin
+                pass_count = pass_count + 1;
+            end
+        end
+    endtask
+
+    task run_scale_accum_bad_scale_case;
+        begin
+            $display("[TB] Q8 scale-accumulate bad-scale rejection");
+            mm_write(REGION_IN, 0, pack_scale_entry(32'sd1, 16'hbc00, 16'h3c00, 16'd0, 1'b1, 1'b1));
+
+            @(posedge clk);
+            spu_mode  <= SPU_MODE_Q8_SCALE_ACCUM;
+            spu_len   <= 32'd1;
+            spu_start <= 1'b1;
+            @(posedge clk);
+            spu_start <= 1'b0;
+
+            timeout = 0;
+            while (!spu_done) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("Q8 scale-accumulate bad-scale timeout");
+                    timeout = 0;
+                end
+            end
+
+            if (!spu_error || spu_error_code !== 8'd4)
+                fail("Q8 scale-accumulate bad scale did not report ERR_BAD_SCALE");
+            else
+                pass_count = pass_count + 1;
+
+            @(posedge clk);
+            spu_clear_done <= 1'b1;
+            @(posedge clk);
+            spu_clear_done <= 1'b0;
+        end
+    endtask
+
+    task run_scale_accum_row_range_case;
+        begin
+            $display("[TB] Q8 scale-accumulate row-range rejection");
+            mm_write(REGION_IN, 0, pack_scale_entry(32'sd1, 16'h3c00, 16'h3c00, 16'd256, 1'b1, 1'b1));
+
+            @(posedge clk);
+            spu_mode  <= SPU_MODE_Q8_SCALE_ACCUM;
+            spu_len   <= 32'd1;
+            spu_start <= 1'b1;
+            @(posedge clk);
+            spu_start <= 1'b0;
+
+            timeout = 0;
+            while (!spu_done) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("Q8 scale-accumulate row-range timeout");
+                    timeout = 0;
+                end
+            end
+
+            if (!spu_error || spu_error_code !== 8'd3)
+                fail("Q8 scale-accumulate row range did not report ERR_RANGE");
+            else
+                pass_count = pass_count + 1;
+
+            @(posedge clk);
+            spu_clear_done <= 1'b1;
+            @(posedge clk);
+            spu_clear_done <= 1'b0;
+        end
+    endtask
+
     task run_marker_mode;
         input [7:0] mode;
         input [127:0] label;
         begin
-            $display("[TB] %0s marker command", label);
-            start_and_wait(mode, 32'd1);
-            pass_count = pass_count + 1;
+            $display("[TB] %0s reserved command rejection", label);
+            @(posedge clk);
+            spu_mode  <= mode;
+            spu_len   <= 32'd1;
+            spu_start <= 1'b1;
+            @(posedge clk);
+            spu_start <= 1'b0;
+
+            timeout = 0;
+            while (!spu_done) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 20) begin
+                    fail("reserved SPU command timeout");
+                    timeout = 0;
+                end
+            end
+
+            if (!spu_error || spu_error_code !== 8'd1)
+                fail("reserved SPU command did not report ERR_BAD_MODE");
+            else
+                pass_count = pass_count + 1;
+
+            @(posedge clk);
+            spu_clear_done <= 1'b1;
+            @(posedge clk);
+            spu_clear_done <= 1'b0;
         end
     endtask
 
@@ -329,25 +487,30 @@ module tb_SPU_Top;
         repeat (3) @(posedge clk);
 
         if (spu_caps[0] !== 1'b1 || spu_caps[1] !== 1'b1 ||
-            spu_caps[2] !== 1'b1 || spu_caps[3] !== 1'b1 ||
-            spu_caps[4] !== 1'b1 || spu_caps[5] !== 1'b1 ||
-            spu_caps[7] !== 1'b1)
+            spu_caps[2] !== 1'b0 || spu_caps[3] !== 1'b0 ||
+            spu_caps[4] !== 1'b0 || spu_caps[5] !== 1'b0 ||
+            spu_caps[6] !== 1'b1 || spu_caps[7] !== 1'b1)
             fail("SPU capability bits are not set as expected");
         else
             pass_count = pass_count + 1;
 
         run_copy_case();
         run_quant_case();
+        run_scale_accum_case();
+        run_scale_accum_bad_scale_case();
+        run_scale_accum_row_range_case();
         run_marker_mode(SPU_MODE_SILU_MUL, "SPU_SiLU_Mul");
         run_marker_mode(SPU_MODE_RMSNORM, "SPU_RMSNorm");
         run_marker_mode(SPU_MODE_ROPE, "SPU_RoPE");
         run_marker_mode(SPU_MODE_SOFTMAX, "SPU_Softmax");
 
-        if (fail_count == 0)
+        if (fail_count == 0) begin
             $display("[TB][PASS] SPU_Top tests passed pass_count=%0d", pass_count);
-        else
+        end else begin
             $display("[TB][FAIL] SPU_Top tests failed pass_count=%0d fail_count=%0d",
                      pass_count, fail_count);
+            $fatal(1, "SPU testbench observed %0d failures", fail_count);
+        end
         $finish;
     end
 

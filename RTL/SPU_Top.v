@@ -6,10 +6,10 @@
  * SPU_Top is integrated below AXI4_Mapping, next to the existing VPU/GEMV
  * core.  It exposes a small command interface, local memory windows, status,
  * and capability bits.  The first SPU integration phase wires the command
- * boundaries for quantization, SiLU/Mul, RMSNorm, RoPE, Softmax, and copy
- * self-test.  Quantization already performs local-memory data movement;
- * the other scalar functions are advertised as hardware command hooks so the
- * next phase can replace their marker bodies with validated streaming datapaths.
+ * boundaries for quantization, Q8 scale accumulation, SiLU/Mul, RMSNorm, RoPE,
+ * Softmax, and copy self-test.  Quantization and scale accumulation perform
+ * local-memory data movement; the other scalar functions remain reserved until
+ * validated streaming datapaths replace their marker bodies.
  *-----------------------------------------------------------------------------
  */
 
@@ -17,7 +17,8 @@
 
 module SPU_Top #(
     parameter integer AXI_DATA_WIDTH = 128,
-    parameter integer WORD_DEPTH     = 4096
+    parameter integer WORD_DEPTH     = 4096,
+    parameter integer SCALE_ACCUM_ROWS = 256
 ) (
     input  wire                              clk,
     input  wire                              resetn,
@@ -80,13 +81,14 @@ module SPU_Top #(
     // Capability map:
     // bit 0  : SPU framework present
     // bit 1  : fixed-point quantize-to-INT8 payload supported
-    // bit 2  : SPU_SiLU_Mul command supported
-    // bit 3  : SPU_RMSNorm command supported
-    // bit 4  : SPU_RoPE command supported
-    // bit 5  : SPU_Softmax command supported
+    // bit 2  : SPU_SiLU_Mul numerical datapath supported
+    // bit 3  : SPU_RMSNorm numerical datapath supported
+    // bit 4  : SPU_RoPE numerical datapath supported
+    // bit 5  : SPU_Softmax numerical datapath supported
+    // bit 6  : Q8 raw-block scale accumulation supported
     // bit 7  : COPY self-test command supported
     // bits 31:16 expose implemented words per SPU memory window.
-    assign spu_caps = {WORD_DEPTH_16, 8'd0, 1'b1, 1'b0,
+    assign spu_caps = {WORD_DEPTH_16, 8'd0, 1'b1, 1'b1,
                        softmax_supported, rope_supported, rmsnorm_supported,
                        silu_supported, 1'b1, 1'b1};
 
@@ -128,7 +130,8 @@ module SPU_Top #(
 
     SPU_Controller #(
         .AXI_DATA_WIDTH (AXI_DATA_WIDTH),
-        .WORD_DEPTH     (WORD_DEPTH)
+        .WORD_DEPTH     (WORD_DEPTH),
+        .SCALE_ACCUM_ROWS (SCALE_ACCUM_ROWS)
     ) u_spu_controller (
         .clk          (clk),
         .resetn       (resetn),
