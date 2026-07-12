@@ -322,9 +322,9 @@ module AXI4_Mapping #(
                     reg_read_data[31:16] = core_active_col_beat;
                 end
                 16'h0090: begin
-                    reg_read_data[0]      = 1'b1; // packed q8_0 mode is available
+                    reg_read_data[0]      = 1'b1; // packed raw Q8 block mode is available
                     reg_read_data[1]      = 1'b1; // compact active-stride weight layout is available
-                    reg_read_data[2]      = 1'b1; // production result is PL-side INT8 requantized output
+                    reg_read_data[2]      = 1'b0; // Q8_0 output block with scale metadata is not integrated
                     reg_read_data[15:8]   = MAX_GROUP_Q8_BLOCKS_16[7:0];
                     reg_read_data[31:16]  = RESULT_WORD_DEPTH_32[15:0];
                 end
@@ -599,7 +599,8 @@ module AXI4_Mapping #(
 
     SPU_Top #(
         .AXI_DATA_WIDTH (AXI_DATA_WIDTH),
-        .WORD_DEPTH     (SPU_WORD_DEPTH)
+        .WORD_DEPTH     (SPU_WORD_DEPTH),
+        .SCALE_ACCUM_ROWS (MAX_ROWS)
     ) u_spu (
         .clk             (clk),
         .resetn          (resetn),

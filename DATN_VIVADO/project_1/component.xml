@@ -447,7 +447,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>e7401c2a</spirit:value>
+            <spirit:value>8ea0c938</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -466,7 +466,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>e7401c2a</spirit:value>
+            <spirit:value>8ea0c938</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -474,14 +474,14 @@
         <spirit:name>xilinx_testbench</spirit:name>
         <spirit:displayName>Test Bench</spirit:displayName>
         <spirit:envIdentifier>:vivado.xilinx.com:simulation.testbench</spirit:envIdentifier>
-        <spirit:modelName>tb_SPU_Top</spirit:modelName>
+        <spirit:modelName>tb_VPU_Top</spirit:modelName>
         <spirit:fileSetRef>
           <spirit:localName>xilinx_testbench_view_fileset</spirit:localName>
         </spirit:fileSetRef>
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>c6f9cb8e</spirit:value>
+            <spirit:value>5b77dade</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -1444,6 +1444,11 @@
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
+        <spirit:name>src/SPU_Q8_Scale_Accum.v</spirit:name>
+        <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
+      </spirit:file>
+      <spirit:file>
         <spirit:name>src/SPU_Quantize_Q8_0.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
@@ -1538,6 +1543,11 @@
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
+        <spirit:name>src/SPU_Q8_Scale_Accum.v</spirit:name>
+        <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
+      </spirit:file>
+      <spirit:file>
         <spirit:name>src/SPU_Quantize_Q8_0.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
@@ -1591,7 +1601,7 @@
     <spirit:fileSet>
       <spirit:name>xilinx_testbench_view_fileset</spirit:name>
       <spirit:file>
-        <spirit:name>src/tb_SPU_Top.v</spirit:name>
+        <spirit:name>src/tb_VPU_Top.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
         <spirit:userFileType>USED_IN_implementation</spirit:userFileType>
@@ -1720,13 +1730,13 @@
         <xilinx:xpmLibrary>XPM_MEMORY</xilinx:xpmLibrary>
       </xilinx:xpmLibraries>
       <xilinx:coreRevision>2</xilinx:coreRevision>
-      <xilinx:coreCreationDateTime>2026-07-10T02:56:32Z</xilinx:coreCreationDateTime>
+      <xilinx:coreCreationDateTime>2026-07-11T10:12:05Z</xilinx:coreCreationDateTime>
     </xilinx:coreExtensions>
     <xilinx:packagingInfo>
       <xilinx:xilinxVersion>2022.2</xilinx:xilinxVersion>
       <xilinx:checksum xilinx:scope="busInterfaces" xilinx:value="cd624fc7"/>
       <xilinx:checksum xilinx:scope="memoryMaps" xilinx:value="05cf8784"/>
-      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="c857fb93"/>
+      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="8c8cd3e3"/>
       <xilinx:checksum xilinx:scope="ports" xilinx:value="4d9f5675"/>
       <xilinx:checksum xilinx:scope="hdlParameters" xilinx:value="ac55ec7c"/>
       <xilinx:checksum xilinx:scope="parameters" xilinx:value="e6d8316c"/>

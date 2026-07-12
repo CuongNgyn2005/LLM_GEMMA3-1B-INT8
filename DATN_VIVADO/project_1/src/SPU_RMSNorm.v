@@ -1,15 +1,14 @@
 /*
  * Module      : SPU_RMSNorm
- * Description : Architecture marker for future RMSNorm offload.
+ * Description : Reserved interface for future RMSNorm offload.
  *
  * Target operation:
  *     rms = rsqrt(mean(x^2) + eps)
  *     y[i] = x[i] * rms * weight[i]
  *
- * This phase advertises RMSNorm through REG_SPU_CAPS and gives the SPU
- * scheduler a concrete command boundary.  The later numerical datapath will
- * add the two-pass fixed-point square-sum/rsqrt/scale flow with norm weights
- * read from SPU_PARAM.
+ * The two-pass square-sum/rsqrt/scale datapath and SPU_PARAM weight reader are
+ * not implemented yet.  This interface therefore reports supported=0 rather
+ * than advertising a marker completion as an RMSNorm result.
  */
 
 `timescale 1ns/1ps
@@ -22,7 +21,7 @@ module SPU_RMSNorm (
     output reg  done,
     output wire supported
 );
-    assign supported = 1'b1;
+    assign supported = 1'b0;
 
     always @(posedge clk) begin
         if (!resetn) begin

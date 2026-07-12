@@ -1,14 +1,13 @@
 /*
  * Module      : SPU_Softmax
- * Description : Architecture marker for future attention softmax offload.
+ * Description : Reserved interface for future attention softmax offload.
  *
  * Target operation:
  *     softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))
  *
- * This phase advertises Softmax through REG_SPU_CAPS and gives the SPU
- * scheduler a concrete command boundary.  The later numerical datapath will
- * add the multi-pass max/sum/normalize flow, exp approximation, scratch
- * storage, and attention-path integration.
+ * The multi-pass max/sum/normalize flow, exp approximation, scratch storage,
+ * and attention-path integration are not implemented yet.  This interface
+ * reports supported=0 so a marker completion is never treated as Softmax data.
  */
 
 `timescale 1ns/1ps
@@ -21,7 +20,7 @@ module SPU_Softmax (
     output reg  done,
     output wire supported
 );
-    assign supported = 1'b1;
+    assign supported = 1'b0;
 
     always @(posedge clk) begin
         if (!resetn) begin

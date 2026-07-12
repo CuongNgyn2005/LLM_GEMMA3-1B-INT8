@@ -1,0 +1,11 @@
+../../RTL/Dual_Port_BRAM.v
+../../RTL/SPU_Quantize_Q8_0.v
+../../RTL/SPU_Q8_Scale_Accum.v
+../../RTL/SPU_SiLU_Mul.v
+../../RTL/SPU_RMSNorm.v
+../../RTL/SPU_RoPE.v
+../../RTL/SPU_Softmax.v
+../../RTL/SPU_Local_Memory.v
+../../RTL/SPU_Controller.v
+../../RTL/SPU_Top.v
+../../TESTBENCH/tb_SPU_Top.v
