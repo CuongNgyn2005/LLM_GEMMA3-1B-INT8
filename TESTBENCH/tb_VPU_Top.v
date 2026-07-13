@@ -20,13 +20,38 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] REG_MODE      = 40'h0000_0060;
     localparam [ADDR_WIDTH-1:0] REG_LIMITS    = 40'h0000_0070;
     localparam [ADDR_WIDTH-1:0] REG_CAPS      = 40'h0000_0090;
+    localparam [ADDR_WIDTH-1:0] REG_BANK      = 40'h0000_0100;
+    localparam [ADDR_WIDTH-1:0] REG_JOB_ID    = 40'h0000_0110;
+    localparam [ADDR_WIDTH-1:0] REG_BANK_STAT = 40'h0000_0120;
+    localparam [ADDR_WIDTH-1:0] REG_DONE_JOB  = 40'h0000_0140;
+    localparam [ADDR_WIDTH-1:0] REG_SLOT_STATE   = 40'h0000_0150;
+    localparam [ADDR_WIDTH-1:0] REG_TENSOR_ID    = 40'h0000_0160;
+    localparam [ADDR_WIDTH-1:0] REG_ROW0         = 40'h0000_0170;
+    localparam [ADDR_WIDTH-1:0] REG_K_BLOCK0     = 40'h0000_0180;
+    localparam [ADDR_WIDTH-1:0] REG_GROUP_BLOCKS = 40'h0000_0190;
+    localparam [ADDR_WIDTH-1:0] REG_TOKEN_ID     = 40'h0000_01A0;
+    localparam [ADDR_WIDTH-1:0] REG_DESC_FLAGS   = 40'h0000_01B0;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_COUNT    = 40'h0000_01C0;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_DONE     = 40'h0000_01C4;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_DROP     = 40'h0000_01D0;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_OUT      = 40'h0000_01D4;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_ERROR    = 40'h0000_01D8;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_LAST_RAW = 40'h0000_01E0;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_LAST_META = 40'h0000_01E4;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_ACCUM_LO = 40'h0000_01F0;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_ACCUM_HI = 40'h0000_01F4;
     localparam [ADDR_WIDTH-1:0] ACT_BASE      = 40'h0001_0000;
     localparam [ADDR_WIDTH-1:0] WEIGHT_BASE   = 40'h0010_0000;
     localparam [ADDR_WIDTH-1:0] RESULT_BASE   = 40'h0020_0000;
+    localparam [ADDR_WIDTH-1:0] SPU_OUT_BASE   = 40'h0034_0000;
+    localparam [ADDR_WIDTH-1:0] SPU_PARAM_BASE = 40'h0038_0000;
     localparam [31:0] VPU_MODE_PACKED_Q8      = 32'h0000_0001;
     localparam [31:0] VPU_MODE_RESULT_INT8    = 32'h0000_0002;
     localparam [31:0] VPU_MODE_ACCUM_CLEAR    = 32'h0000_0004;
     localparam [31:0] VPU_MODE_RESULT_EMIT    = 32'h0000_0008;
+    localparam [15:0] SPU_TEST_ACT_SCALE      = 16'h3800; // 0.5
+    localparam [15:0] SPU_TEST_WEIGHT_SCALE   = 16'h3400; // 0.25
+    localparam signed [63:0] SPU_TEST_Q16_SCALE_PRODUCT = 64'sd8192;
 
     reg clk;
     reg resetn;
@@ -277,6 +302,23 @@ module tb_VPU_Top;
         end
     endfunction
 
+    function [DATA_WIDTH-1:0] pack_stream_scale_word;
+        input integer rows;
+        input integer group_blocks;
+        input integer word_idx;
+        integer lane;
+        integer linear;
+        begin
+            pack_stream_scale_word = {DATA_WIDTH{1'b0}};
+            for (lane = 0; lane < 4; lane = lane + 1) begin
+                linear = word_idx * 4 + lane;
+                if (linear < rows * group_blocks)
+                    pack_stream_scale_word[32*lane +: 32] =
+                        {SPU_TEST_WEIGHT_SCALE, SPU_TEST_ACT_SCALE};
+            end
+        end
+    endfunction
+
     function signed [7:0] requant_i8;
         input signed [31:0] value;
         input integer shift;
@@ -490,6 +532,8 @@ module tb_VPU_Top;
                      case_id, rows, cols, current_col_beats, explicit_col_beats);
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_JOB_ID, word32(case_id), 16'h000f);
             axi_write(REG_ROWS, word32(rows), 16'h000f);
             axi_write(REG_COLS, word32(cols), 16'h000f);
             axi_write(REG_COL_BEATS, word32(explicit_col_beats), 16'h000f);
@@ -552,12 +596,24 @@ module tb_VPU_Top;
         integer linear;
         integer word_idx;
         integer lane_idx;
+        integer scale_word_idx;
         integer timeout;
         integer start_cycle;
         integer done_cycle;
         reg [DATA_WIDTH-1:0] rd_word;
         reg signed [31:0] got;
         reg signed [31:0] expected;
+        reg [31:0] stream_count_before;
+        reg [31:0] stream_done_before;
+        reg [31:0] stream_drop_before;
+        reg [31:0] stream_out_before;
+        reg [31:0] stream_error_before;
+        reg [31:0] stream_count_after;
+        reg [31:0] stream_done_after;
+        reg [31:0] stream_drop_after;
+        reg [31:0] stream_out_after;
+        reg [31:0] stream_error_after;
+        reg signed [63:0] expected_accum;
         begin
             init_case_data(case_id, rows, group_blocks * 32);
 
@@ -571,10 +627,20 @@ module tb_VPU_Top;
                 fail("Compact weight layout capability bit was not set");
             if (rd_word[2] !== 1'b0)
                 fail("Q8_0 output-block capability bit must stay clear until scale metadata is integrated");
+            if (rd_word[3] !== 1'b1)
+                fail("Ping-pong bank capability bit was not set");
+            if (rd_word[4] !== 1'b1)
+                fail("Descriptor ownership capability bit was not set");
+            if (rd_word[5] !== 1'b1)
+                fail("VPU-to-SPU raw stream capability bit was not set");
+            if (rd_word[6] !== 1'b1)
+                fail("SPU Q8 scale stream capability bit was not set");
             if (rd_word[15:8] !== 8'd64)
                 fail("REG_CAPS max_group_q8_blocks was not 64");
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_JOB_ID, word32(32'h1000 + case_id), 16'h000f);
             axi_write(REG_ROWS, word32(rows), 16'h000f);
             axi_write(REG_COLS, word32(group_blocks * 32), 16'h000f);
             axi_write(REG_COL_BEATS, word32(group_blocks * 2), 16'h000f);
@@ -589,6 +655,24 @@ module tb_VPU_Top;
                     axi_write(WEIGHT_BASE + ((row * current_col_beats) + beat) * 16,
                               pack_weight(row, beat), 16'hffff);
             end
+
+            for (scale_word_idx = 0;
+                 scale_word_idx < ((rows * group_blocks + 3) / 4);
+                 scale_word_idx = scale_word_idx + 1)
+                axi_write(SPU_PARAM_BASE + scale_word_idx * 16,
+                          pack_stream_scale_word(rows, group_blocks, scale_word_idx),
+                          16'hffff);
+
+            axi_read(REG_SPU_STREAM_COUNT, rd_word);
+            stream_count_before = rd_word[31:0];
+            axi_read(REG_SPU_STREAM_DONE, rd_word);
+            stream_done_before = rd_word[31:0];
+            axi_read(REG_SPU_STREAM_DROP, rd_word);
+            stream_drop_before = rd_word[31:0];
+            axi_read(REG_SPU_STREAM_OUT, rd_word);
+            stream_out_before = rd_word[31:0];
+            axi_read(REG_SPU_STREAM_ERROR, rd_word);
+            stream_error_before = rd_word[31:0];
 
             start_cycle = cycle_count;
             axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
@@ -609,6 +693,97 @@ module tb_VPU_Top;
                 end
             end
             done_cycle = cycle_count;
+
+            timeout = 0;
+            stream_out_after = stream_out_before;
+            while (stream_out_after < (stream_out_before + rows)) begin
+                axi_read(REG_SPU_STREAM_OUT, rd_word);
+                stream_out_after = rd_word[31:0];
+                timeout = timeout + 1;
+                if (timeout > 1000) begin
+                    fail("SPU raw stream accumulator did not emit all rows");
+                    stream_out_after = stream_out_before + rows;
+                end
+            end
+
+            axi_read(REG_SPU_STREAM_COUNT, rd_word);
+            stream_count_after = rd_word[31:0];
+            axi_read(REG_SPU_STREAM_DONE, rd_word);
+            stream_done_after = rd_word[31:0];
+            axi_read(REG_SPU_STREAM_DROP, rd_word);
+            stream_drop_after = rd_word[31:0];
+            axi_read(REG_SPU_STREAM_OUT, rd_word);
+            stream_out_after = rd_word[31:0];
+            axi_read(REG_SPU_STREAM_ERROR, rd_word);
+            stream_error_after = rd_word[31:0];
+
+            if (stream_count_after !== (stream_count_before + rows * group_blocks))
+                fail("SPU raw stream accepted-count mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            if (stream_done_after !== (stream_done_before + 32'd1))
+                fail("SPU raw stream done-count mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            if (stream_drop_after !== stream_drop_before)
+                fail("SPU raw stream dropped an entry");
+            else
+                pass_count = pass_count + 1;
+
+            if (stream_error_after !== stream_error_before)
+                fail("SPU raw stream accumulator reported an error");
+            else
+                pass_count = pass_count + 1;
+
+            if (stream_out_after !== (stream_out_before + rows))
+                fail("SPU raw stream output-count mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read(REG_SPU_STREAM_LAST_RAW, rd_word);
+            got = rd_word[31:0];
+            expected = golden_q8_block(rows - 1, group_blocks - 1);
+            if (got !== expected)
+                fail("SPU raw stream last raw value mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read(REG_SPU_STREAM_LAST_META, rd_word);
+            if ((rd_word[30] !== 1'b1) ||
+                (rd_word[31] !== (group_blocks == 1)) ||
+                (rd_word[29:16] != (group_blocks - 1)) ||
+                (rd_word[15:0] != (rows - 1)))
+                fail("SPU raw stream last metadata mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            expected_accum =
+                $signed(golden_q8_range(rows - 1, 0, group_blocks)) *
+                SPU_TEST_Q16_SCALE_PRODUCT;
+            axi_read(REG_SPU_STREAM_ACCUM_LO, rd_word);
+            if (rd_word[31:0] !== expected_accum[31:0])
+                fail("SPU raw stream accumulator low word mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read(REG_SPU_STREAM_ACCUM_HI, rd_word);
+            if (rd_word[31:0] !== expected_accum[63:32])
+                fail("SPU raw stream accumulator high word mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read(SPU_OUT_BASE + (rows - 1) * 16, rd_word);
+            if (rd_word[15:0] !== (rows - 1))
+                fail("SPU_OUT row id mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            if (rd_word[79:16] !== expected_accum)
+                fail("SPU_OUT scaled accumulator mismatch");
+            else
+                pass_count = pass_count + 1;
 
             for (row = 0; row < rows; row = row + 1) begin
                 for (block_id = 0; block_id < group_blocks; block_id = block_id + 1) begin
@@ -656,6 +831,8 @@ module tb_VPU_Top;
                      case_id, rows, group_blocks, requant_shift);
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_JOB_ID, word32(32'h2000 + case_id), 16'h000f);
             axi_write(REG_ROWS, word32(rows), 16'h000f);
             axi_write(REG_COLS, word32(group_blocks * 32), 16'h000f);
             axi_write(REG_COL_BEATS, word32(group_blocks * 2), 16'h000f);
@@ -738,6 +915,8 @@ module tb_VPU_Top;
                      case_id, rows, first_blocks, second_blocks, requant_shift);
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_JOB_ID, word32(32'h3000 + case_id), 16'h000f);
             axi_write(REG_ROWS, word32(rows), 16'h000f);
             axi_write(REG_COLS, word32(first_blocks * 32), 16'h000f);
             axi_write(REG_COL_BEATS, word32(first_blocks * 2), 16'h000f);
@@ -771,6 +950,8 @@ module tb_VPU_Top;
             end
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_JOB_ID, word32(32'h4000 + case_id), 16'h000f);
             axi_write(REG_ROWS, word32(rows), 16'h000f);
             axi_write(REG_COLS, word32(second_blocks * 32), 16'h000f);
             axi_write(REG_COL_BEATS, word32(second_blocks * 2), 16'h000f);
@@ -826,6 +1007,172 @@ module tb_VPU_Top;
         end
     endtask
 
+    task run_pingpong_case;
+        integer beat;
+        integer row;
+        integer timeout;
+        reg [DATA_WIDTH-1:0] rd_word;
+        reg signed [31:0] got;
+        reg signed [31:0] expected0_row0;
+        reg signed [31:0] expected0_row1;
+        reg signed [31:0] expected1_row0;
+        reg signed [31:0] expected1_row1;
+        begin
+            $display("[TB] PINGPONG CASE: bank isolation and job tags");
+
+            axi_write(REG_SLOT_STATE, word32(32'h0000_0214), 16'h000f);
+            axi_write(REG_TENSOR_ID, word32(32'h0000_0055), 16'h000f);
+            axi_write(REG_ROW0, word32(32'h0000_0080), 16'h000f);
+            axi_write(REG_K_BLOCK0, word32(32'h0000_0007), 16'h000f);
+            axi_write(REG_GROUP_BLOCKS, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_TOKEN_ID, word32(32'h0000_004c), 16'h000f);
+            axi_write(REG_DESC_FLAGS, word32(32'h0000_0001), 16'h000f);
+
+            axi_read(REG_SLOT_STATE, rd_word);
+            if (rd_word[31:0] !== 32'h0000_0214)
+                fail("Descriptor slot_state readback mismatch");
+            axi_read(REG_TENSOR_ID, rd_word);
+            if (rd_word[31:0] !== 32'h0000_0055)
+                fail("Descriptor tensor_id readback mismatch");
+            axi_read(REG_ROW0, rd_word);
+            if (rd_word[31:0] !== 32'h0000_0080)
+                fail("Descriptor row0 readback mismatch");
+            axi_read(REG_K_BLOCK0, rd_word);
+            if (rd_word[31:0] !== 32'h0000_0007)
+                fail("Descriptor k_block0 readback mismatch");
+            axi_read(REG_GROUP_BLOCKS, rd_word);
+            if (rd_word[31:0] !== 32'h0000_0002)
+                fail("Descriptor group_blocks readback mismatch");
+            axi_read(REG_TOKEN_ID, rd_word);
+            if (rd_word[31:0] !== 32'h0000_004c)
+                fail("Descriptor token_id readback mismatch");
+            axi_read(REG_DESC_FLAGS, rd_word);
+            if (rd_word[31:0] !== 32'h0000_0001)
+                fail("Descriptor flags readback mismatch");
+
+            init_case_data(20, 2, 64);
+            expected0_row0 = golden_row(0);
+            expected0_row1 = golden_row(1);
+
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_JOB_ID, word32(32'h0000_aa00), 16'h000f);
+            axi_write(REG_ROWS, word32(2), 16'h000f);
+            axi_write(REG_COLS, word32(64), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(4), 16'h000f);
+            axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
+            axi_write(REG_MODE, word32(32'h0000_0000), 16'h000f);
+
+            for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+            for (row = 0; row < 2; row = row + 1)
+                for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * current_col_beats) + beat) * 16,
+                              pack_weight(row, beat), 16'hffff);
+
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            timeout = 0;
+            rd_word = {DATA_WIDTH{1'b0}};
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word);
+                timeout = timeout + 1;
+                if (rd_word[2]) begin
+                    fail("Pingpong bank0 reported configuration error");
+                    rd_word[0] = 1'b1;
+                end
+                if (timeout > 1000) begin
+                    fail("Pingpong bank0 did not finish");
+                    rd_word[0] = 1'b1;
+                end
+            end
+
+            axi_read(REG_DONE_JOB, rd_word);
+            if (rd_word[31:0] !== 32'h0000_aa00)
+                fail("Pingpong bank0 done_job_id mismatch");
+            axi_read(REG_BANK_STAT, rd_word);
+            if (rd_word[9] !== 1'b0)
+                fail("Pingpong bank0 done_bank mismatch");
+
+            for (row = 0; row < 2; row = row + 1) begin
+                axi_read(RESULT_BASE + row * 16, rd_word);
+                got = rd_word[31:0];
+                if ((row == 0 && got !== expected0_row0) ||
+                    (row == 1 && got !== expected0_row1)) begin
+                    fail("Pingpong bank0 initial result mismatch");
+                end else begin
+                    pass_count = pass_count + 1;
+                end
+            end
+
+            init_case_data(21, 2, 64);
+            expected1_row0 = golden_row(0);
+            expected1_row1 = golden_row(1);
+
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
+            axi_write(REG_JOB_ID, word32(32'h0000_bb01), 16'h000f);
+            axi_write(REG_ROWS, word32(2), 16'h000f);
+            axi_write(REG_COLS, word32(64), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(4), 16'h000f);
+            axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
+            axi_write(REG_MODE, word32(32'h0000_0000), 16'h000f);
+
+            for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+            for (row = 0; row < 2; row = row + 1)
+                for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * current_col_beats) + beat) * 16,
+                              pack_weight(row, beat), 16'hffff);
+
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            timeout = 0;
+            rd_word = {DATA_WIDTH{1'b0}};
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word);
+                timeout = timeout + 1;
+                if (rd_word[2]) begin
+                    fail("Pingpong bank1 reported configuration error");
+                    rd_word[0] = 1'b1;
+                end
+                if (timeout > 1000) begin
+                    fail("Pingpong bank1 did not finish");
+                    rd_word[0] = 1'b1;
+                end
+            end
+
+            axi_read(REG_DONE_JOB, rd_word);
+            if (rd_word[31:0] !== 32'h0000_bb01)
+                fail("Pingpong bank1 done_job_id mismatch");
+            axi_read(REG_BANK_STAT, rd_word);
+            if (rd_word[9] !== 1'b1)
+                fail("Pingpong bank1 done_bank mismatch");
+
+            axi_write(REG_BANK, word32(32'h0000_0003), 16'h000f);
+            for (row = 0; row < 2; row = row + 1) begin
+                axi_read(RESULT_BASE + row * 16, rd_word);
+                got = rd_word[31:0];
+                if ((row == 0 && got !== expected1_row0) ||
+                    (row == 1 && got !== expected1_row1)) begin
+                    fail("Pingpong bank1 result mismatch");
+                end else begin
+                    pass_count = pass_count + 1;
+                end
+            end
+
+            axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
+            for (row = 0; row < 2; row = row + 1) begin
+                axi_read(RESULT_BASE + row * 16, rd_word);
+                got = rd_word[31:0];
+                if ((row == 0 && got !== expected0_row0) ||
+                    (row == 1 && got !== expected0_row1)) begin
+                    fail("Pingpong bank0 result was overwritten by bank1");
+                end else begin
+                    pass_count = pass_count + 1;
+                end
+            end
+        end
+    endtask
+
     initial begin
         resetn = 1'b0;
         awid = 0; awaddr = 0; awlen = 0; awsize = 0; awburst = 0; awlock = 0;
@@ -855,6 +1202,7 @@ module tb_VPU_Top;
         run_group_case(4, 2, MAX_GROUP_Q8_BLOCKS);
         run_int8_result_case(5, 5, 3, 3);
         run_int8_accum_groups_case(6, 4, 2, 3, 4);
+        run_pingpong_case();
 
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
         if (fail_count == 0) begin
