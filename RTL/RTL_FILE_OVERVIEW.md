@@ -1,544 +1,297 @@
-# RTL VPU/SPU — kiến trúc, dataflow và trạng thái hiện tại
+# Tổng quan RTL và dataflow VPU–SPU
 
-Tài liệu này mô tả **source RTL hiện có** trong thư mục `DATN_RTL/RTL`. Nó
-phân biệt rõ các datapath đang hoạt động với các interface/module được đặt sẵn
-cho phase tiếp theo. Đây là tài liệu kiến trúc, không thay thế register map của
-host driver hay báo cáo Vivado.
+**Cập nhật:** 14-07-2026  
+**Nguồn mô tả:** RTL canonical trong thư mục này. Các thay đổi phải được đồng bộ qua flow nguồn IP trước khi tạo bitstream mới; thư mục generated của `project_1` không được sửa trực tiếp.
 
-## 1. Phạm vi và các sự thật quan trọng
+## 1. Mục tiêu kiến trúc
 
-- VPU thực hiện MAC `INT8 × INT8` trong `PMAU_Full` với 16 lane song song;
-  raw dot product của một Q8 block là `INT32`.
-- Contract đang phù hợp với `Q8_0 weight × F32 activation -> F32 dst` là
-  **raw-result mode**: host lượng tử hóa activation thành Q8_0, VPU trả raw
-  `INT32` cho từng block, sau đó nơi sở hữu scale phải thực hiện:
+IP là AXI4-Full peripheral tại `0xA0000000`. PS/host dùng ZDMA để chuyển block dữ liệu giữa vùng DDR staging và các local-memory window của IP. VPU thực hiện GEMV INT8; SPU cung cấp scratchpad và các phép scalar/vector quanh GEMV.
 
-  ```text
-  y[row, col] = Σblock(raw_i32[row, block] × d_act[col, block] × d_weight[row, block])
-  ```
+Dataflow production đã được log chứng minh là:
 
-- RTL cũng có mode `INT8 result`, nhưng mode này hiện chỉ là
-  `arithmetic_shift + saturate`. Nó **không** mang `d_out` hay scale Q8_0 theo
-  block; vì vậy không được coi là output Gemma/Q8_0 hoàn chỉnh.
-- SPU có datapath thật cho `QUANT_Q8_0`, `Q8_SCALE_ACCUM` và `COPY`. SiLU,
-  RMSNorm, RoPE, Softmax mới là interface reservation; capability của chúng là
-  `0` và không được dùng như dữ liệu numerical.
-- VPU và SPU hiện cùng nằm dưới `AXI4_Mapping`, nhưng **chưa có stream/FIFO
-  trực tiếp VPU -> SPU**. Mọi trao đổi giữa hai khối hiện phải đi qua software
-  và các MMIO windows. Điều này là giới hạn kiến trúc quan trọng.
+```text
+GGML Q8_0 weight + F32 activation
+  -> host quantize activation thành Q8_0
+  -> ZDMA nạp payload INT8 ACT/WEIGHT
+  -> VPU tạo raw INT32 theo row và Q8 block
+  -> ZDMA đọc raw RESULT
+  -> CPU nhân d_a*d_w, cộng block và ghi dst F32
+```
 
-## 2. Cây hierarchy
+Đường VPU raw→SPU hiện dùng FIFO và giao thức ready/valid lossless. VPU giữ toàn bộ token và metadata khi `ready=0`; FIFO đầy mới kéo `ready` xuống. Capability PL scale vẫn là opt-in và chỉ được host bật khi protocol/bitstream ID khớp.
+
+## 2. Cây module
 
 ```text
 VPU_Top
-└─ MY_IP
-   └─ AXI4_Mapping
-      ├─ u_gemv : Matrix_Vector_Multiplication
-      │  ├─ Activation Dual_Port_BRAM
-      │  ├─ Weight Dual_Port_BRAM / XPM URAM banks + shards
-      │  ├─ Result Dual_Port_BRAM
-      │  ├─ PMAU_Full
-      │  │  └─ 16 × mult_gen_0 (signed INT8 × INT8)
-      │  └─ VPU_Result_Requantizer
-      └─ u_spu : SPU_Top
-         ├─ SPU_Controller
-         │  ├─ SPU_Quantize_Q8_0
-         │  └─ SPU_Q8_Scale_Accum
-         ├─ SPU_Local_Memory
-         │  ├─ SPU_IN BRAM
-         │  ├─ SPU_OUT BRAM
-         │  ├─ SPU_PARAM BRAM
-         │  └─ SPU_SCRATCH BRAM
-         ├─ SPU_SiLU_Mul       (reserved, supported=0)
-         ├─ SPU_RMSNorm        (reserved, supported=0)
-         ├─ SPU_RoPE           (reserved, supported=0)
-         └─ SPU_Softmax        (reserved, supported=0)
+└── MY_IP
+    └── AXI4_Mapping
+        ├── Matrix_Vector_Multiplication
+        │   ├── Dual_Port_BRAM / XPM-backed ACT memory
+        │   ├── banked WEIGHT URAM/BRAM
+        │   ├── PMAU_Full
+        │   └── VPU_Result_Requantizer
+        └── SPU_Top
+            ├── SPU_Local_Memory
+            ├── SPU_Controller
+            │   ├── SPU_Quantize_Q8_0
+            │   ├── SPU_Q8_Scale_Accum
+            │   ├── SPU_RMSInv_Engine
+            │   ├── SPU_RMSNorm
+            │   ├── SPU_SiLU_Mul
+            │   ├── SPU_RoPE
+            │   └── SPU_Softmax
+            └── SPU_Q8_Scale_Accum (instance dành cho VPU raw stream)
 ```
 
-```mermaid
-flowchart LR
-    PS["PS / CPU / ZDMA\nAXI4 memory-mapped"]
-    TOP["VPU_Top"]
-    AXI["MY_IP\nAXI4 protocol adapter"]
-    MAP["AXI4_Mapping\nregister + window decode"]
+## 3. Chức năng từng file
 
-    subgraph VPU["VPU / GEMV"]
-      ACT["ACT BRAM"]
-      WGT["WEIGHT URAM/BRAM"]
-      FSM["GEMV FSM\nread pipeline"]
-      PMAU["PMAU_Full\n16-lane INT8 MAC"]
-      RES["RESULT BRAM"]
-      RQ["optional requantizer\nINT32 -> INT8"]
-      ACT --> FSM
-      WGT --> FSM
-      FSM --> PMAU
-      PMAU --> RQ
-      PMAU --> RES
-      RQ --> RES
-    end
+| File | Vai trò |
+|---|---|
+| `VPU_Top.v` | Wrapper tham số của IP, đưa AXI clock/reset và bus vào `MY_IP`. |
+| `MY_IP.v` | AXI4-Full slave front-end; capture address/data, tạo local map request/response. |
+| `AXI4_Mapping.v` | Decode register và memory window; giữ config VPU/SPU; nối GEMV với SPU; xuất capability/status. |
+| `Matrix_Vector_Multiplication.v` | FSM GEMV: validate config, đọc ACT/WEIGHT, feed PMAU, ghi RESULT, quản lý row/block/group/bank/job. |
+| `PMAU_Full.v` | Multiply-accumulate INT8 theo lane, reduction, raw INT32 result; có dequant/requant helper path. |
+| `VPU_Result_Requantizer.v` | Chuyển accumulator sang INT8 theo shift/saturation cho mode tùy chọn; không thay thế Q8_0 scale theo block. |
+| `Dual_Port_BRAM.v` | Wrapper RAM hai port, hỗ trợ BRAM/URAM inference theo tham số. |
+| `SPU_Top.v` | Ghép controller, local memory và consumer VPU raw stream; xuất SPU capability/counter. |
+| `SPU_Local_Memory.v` | Các window `SPU_IN`, `SPU_OUT`, `SPU_PARAM`, `SPU_SCRATCH`. |
+| `SPU_Controller.v` | FSM command SPU, điều phối đọc/ghi memory và các arithmetic engine. |
+| `SPU_Quantize_Q8_0.v` | Quantize fixed-point input thành payload INT8; phải đi kèm scale metadata để tạo block Q8_0 hoàn chỉnh. |
+| `SPU_Q8_Scale_Accum.v` | Nhận raw INT32 + FP16 `d_a`, `d_w`; tạo contribution fixed-point và accumulate theo row. |
+| `SPU_RMSInv_Engine.v` | Tính inverse RMS nhiều chu kỳ, tránh sqrt/divider tổ hợp rất dài. |
+| `SPU_RMSNorm.v` | RMSNorm fixed-point theo lane với gamma/inverse RMS. |
+| `SPU_SiLU_Mul.v` | Xấp xỉ SiLU và nhân gate×up fixed-point. |
+| `SPU_RoPE.v` | Rotate cặp even/odd bằng cos/sin fixed-point. |
+| `SPU_Softmax.v` | Max, exp-score xấp xỉ và normalize nhiều pass. |
+| `SOC_ARCHITECTURE_OVERVIEW.md` | Mô tả cấp hệ thống cũ; tài liệu này là mô tả chi tiết theo source hiện tại. |
 
-    subgraph SPU["SPU"]
-      IN["SPU_IN"]
-      CTRL["SPU_Controller"]
-      OUT["SPU_OUT"]
-      PARAM["SPU_PARAM"]
-      SCR["SPU_SCRATCH"]
-      IN --> CTRL
-      CTRL --> OUT
-      CTRL --> SCR
-      PARAM --- CTRL
-    end
+## 4. Address map
 
-    PS --> TOP --> AXI --> MAP
-    MAP --> ACT
-    MAP --> WGT
-    RES --> MAP
-    MAP --> IN
-    MAP --> OUT
-    MAP --> PARAM
-    MAP --> SCR
-```
+### 4.1 Register
 
-`PARAM --- CTRL` là đường memory port có sẵn, không có nghĩa controller hiện
-dùng mọi command đều đọc PARAM. Cụ thể `Q8_SCALE_ACCUM` hiện đọc descriptor từ
-`SPU_IN`.
+| Offset | Chức năng |
+|---:|---|
+| `0x0000` | VPU control: start/clear done |
+| `0x0010` | VPU status: done/busy/error |
+| `0x0020` | rows |
+| `0x0030` | cols |
+| `0x0040` | col beats |
+| `0x0050` | scale/requant config |
+| `0x0060` | mode |
+| `0x0070` | limits |
+| `0x0080` | progress |
+| `0x0090` | VPU capabilities |
+| `0x00A0–0x00E4` | SPU control/status/config |
+| `0x00F0` | SPU capabilities |
+| `0x00F4` | stream protocol version (`1`) |
+| `0x00F8` | bitstream identity (`VPU1`) |
+| `0x0100` | ACT/RESULT bank select |
+| `0x0110–0x01B0` | job/slot/tensor/row/block/group/token descriptor |
+| `0x01C0/0x01C4` | VPU raw stream accepted/done counter |
+| `0x01D0/0x01D4/0x01D8` | stream drop/output/error counter |
+| `0x01E8/0x01EC` | job ID/bank của entry stream cuối cùng |
+| `0x01E0–0x01FC` | last raw/meta/accumulator debug |
 
-## 3. Interface ngoài: AXI4 và address map
+### 4.2 Local memory windows
 
-### 3.1 Chuỗi AXI
-
-`VPU_Top.v` chỉ là wrapper mà Block Design nhìn thấy. Nó chuyển nguyên các
-kênh AXI4-Full (`AW/W/B/AR/R`) xuống `MY_IP.v`.
-
-`MY_IP.v`:
-
-- nhận một write burst, tách mỗi beat thành `map_wr_en`, địa chỉ, data và
-  `WSTRB` cho `AXI4_Mapping`;
-- xử lý INCR address progression, response B, ID và `RLAST`;
-- gửi một local read tại một thời điểm và đợi `map_rd_valid` trước khi trả R;
-- không hỗ trợ nhiều local read outstanding. Đây là chủ ý đơn giản hóa,
-  nhưng giới hạn băng thông readback Result.
-
-`AXI4_Mapping.v` đổi địa chỉ local thành register operation, VPU memory
-operation hoặc SPU memory operation. Các memory words đều rộng 128 bit
-(16 byte), phù hợp với AXI data width mặc định.
-
-### 3.2 VPU windows
-
-| Window | Offset local | Hướng thông thường | Ý nghĩa |
-|---|---:|---|---|
-| ACT | `0x0001_0000..0x0001_FFFF` | host/DMA write, VPU read | activation beat, 16 signed INT8/word |
-| WEIGHT | `0x0010_0000..0x001F_FFFF` | host/DMA write, VPU read | weight beat, 16 signed INT8/word |
-| RESULT | `0x0020_0000..0x0020_FFFF` | VPU write, host/DMA read | raw INT32 hoặc packed INT8 tùy mode |
-
-Trong packed-Q8 compact layout, WEIGHT payload của một run được địa chỉ hóa:
-
-```text
-weight_word_index = row * active_col_beats + col_beat
-```
-
-`active_col_beats` là cấu hình của run, không phải luôn là `MAX_COL_BEATS`.
-Host, DMA staging và RTL phải cùng dùng công thức này.
-
-### 3.3 SPU windows
-
-| Window | Offset local | Chức năng dự kiến |
-|---|---:|---|
-| SPU_IN | `0x0030_0000..0x0033_FFFF` | input payload hoặc descriptor command |
-| SPU_OUT | `0x0034_0000..0x0037_FFFF` | output payload/accumulator record |
-| SPU_PARAM | `0x0038_0000..0x003B_FFFF` | hằng số, weight/scale/LUT dành cho future ops |
-| SPU_SCRATCH | `0x003C_0000..0x003F_FFFF` | metadata, temporary output, future multi-pass ops |
-
-Address aperture của mỗi window là 256 KiB, nhưng `SPU_WORD_DEPTH=4096` và
-word width 16 byte. Vì thế **dung lượng thật đã implement của mỗi window chỉ
-64 KiB**. Access có index `>= 4096` bị báo lỗi. Software phải đọc capability
-SPU `[31:16]` thay vì giả định toàn bộ aperture có backing storage.
-
-### 3.4 VPU register map
-
-| Offset | Read / write | Nội dung |
+| Offset từ `0xA0000000` | Vùng | Dùng cho |
 |---:|---|---|
-| `0x0000` | W | CTRL: bit 0 START, bit 1 CLEAR_DONE |
-| `0x0010` | R | status `{error, busy, done}` |
-| `0x0020` | R/W | `cfg_rows` |
-| `0x0030` | R/W | `cfg_cols` |
-| `0x0040` | R/W | `cfg_col_beats`; 0 cho auto từ cols |
-| `0x0050` | R/W | `cfg_scale`; raw mode thường dùng FP16 one |
-| `0x0060` | R/W | `cfg_mode` |
-| `0x0070` | R | limits: rows ở `[15:0]`, max beats ở `[31:16]` |
-| `0x0080` | R | progress: active row và active col beat |
-| `0x0090` | R | capability VPU |
+| `0x00010000–0x0001FFFF` | ACT | INT8 activation beats |
+| `0x00100000–0x001FFFFF` | WEIGHT | compact row-major weight tile |
+| `0x00200000–0x0020FFFF` | RESULT | packed raw INT32 hoặc optional INT8 result |
+| `0x00300000–0x0033FFFF` | SPU_IN | input vector SPU |
+| `0x00340000–0x0037FFFF` | SPU_OUT | output vector/stream result |
+| `0x00380000–0x003BFFFF` | SPU_PARAM | scales, gamma, trig, parameters |
+| `0x003C0000–0x003FFFFF` | SPU_SCRATCH | intermediate/multi-pass state |
 
-VPU capability hiện công bố:
+Base/size phải khớp device tree và UIO. Register address không được dùng thay cho DDR staging address.
 
-- bit 0: packed raw Q8 block mode;
-- bit 1: compact active-stride WEIGHT layout;
-- bit 2: **0** — output Q8_0 có scale metadata chưa được integrate;
-- `[15:8]`: `MAX_GROUP_Q8_BLOCKS`;
-- `[31:16]`: số Result word implement.
+## 5. VPU dataflow chi tiết
 
-### 3.5 SPU register map
+### 5.1 Config và validate
 
-| Offset | Read / write | Nội dung |
-|---:|---|---|
-| `0x00A0` | W/R | CTRL start/clear_done/soft_reset; read status + error code |
-| `0x00B0` | R | mirror SPU status |
-| `0x00C0` | R/W | SPU mode |
-| `0x00D0` | R/W | SPU length |
-| `0x00E0`, `0x00E4` | R/W | AUX0/AUX1, hiện dành sẵn cho command extension |
-| `0x00F0` | R | SPU capability |
+Host ghi rows, col beats, mode, bank và descriptor. `Matrix_Vector_Multiplication` latch config khi start, sau đó kiểm tra:
 
-SPU capability:
+- `rows <= MAX_ROWS`;
+- `col_beats <= MAX_COL_BEATS`;
+- packed Q8 dùng 2 beat 128-bit cho một block 32 INT8;
+- group block/result index nằm trong window;
+- bank/job descriptor hợp lệ.
 
-- bit 0 framework present;
-- bit 1 quantize-to-INT8 payload;
-- bit 2 SiLU, bit 3 RMSNorm, bit 4 RoPE, bit 5 Softmax — hiện đều 0;
-- bit 6 Q8 raw-block scale accumulation;
-- bit 7 copy self-test;
-- `[31:16]` word depth của từng SPU RAM.
+### 5.2 ACT/WEIGHT layout
 
-## 4. VPU dataflow chi tiết
+Một beat AXI 128-bit chứa 16 INT8. Một block Q8_0 có 32 payload INT8 nên cần 2 beat.
 
-### 4.1 Nạp một tile
-
-1. Host/DMA ghi ACT payload vào ACT window. Một word là 16 `int8_t` liên tiếp.
-2. Host/DMA ghi WEIGHT payload vào WEIGHT window theo compact row-major
-   active stride.
-3. Host ghi `ROWS`, `COLS` hoặc `COL_BEATS`, `MODE`, `SCALE`, clear done và
-   cuối cùng set START.
-4. `AXI4_Mapping` register request thành `cfg_*` và pulse `ctrl_start` cho
-   `Matrix_Vector_Multiplication`.
-5. GEMV chốt config tại START và vào `S_VALIDATE`. Sai rows, beats lẻ trong
-   packed mode, hoặc vượt `MAX_ROWS/MAX_COL_BEATS/MAX_GROUP_Q8_BLOCKS` sẽ vào
-   `S_ERROR` trước khi đọc memory.
-
-### 4.2 Read pipeline và PMAU
-
-GEMV có các state compute chính:
+ACT layout:
 
 ```text
-S_IDLE -> S_VALIDATE -> S_RUN -> S_WAIT_RESULT
-                           |          |
-                           |          +-> next row/block hoặc drain
-                           +-> S_REQUANT_RESULT (chỉ INT8 mode)
-                                      -> S_DRAIN_RESULT -> S_DONE
+ACT[block * 2 + beat]
 ```
 
-Trong `S_RUN`:
-
-1. GEMV phát `read_beat_idx` và địa chỉ ACT/WEIGHT.
-2. ACT BRAM và weight RAM là synchronous, nên address/data/`last` đi qua
-   pipeline valid `request -> d -> q -> x`.
-3. Khi PMAU cùng ready cho activation và weight, GEMV phát một cặp beat:
-
-   ```text
-   activation_data[127:0] = 16 × signed INT8
-   weight_data[127:0]     = 16 × signed INT8
-   ```
-
-4. `PMAU_Full` đăng ký operands, dùng 16 `mult_gen_0` signed multipliers,
-   delay metadata theo `MULT_IP_LATENCY=3`, rồi reduce bằng cây adder đã
-   pipeline (`log2(16)=4` tầng).
-5. PMAU accumulator cộng partial theo beat cho tới `activation_last` và
-   `weight_last`, sau đó đưa raw result qua FIFO depth 8.
-6. GEMV nhận `pmau_result_valid`, bắt tay `pmau_result_ready`, rồi ghi result
-   theo contract của mode.
-
-PMAU có thể nhận một paired beat mỗi cycle sau khi pipeline đầy, nhưng end to
-end throughput còn phụ thuộc read pipeline, raw-result boundary, BRAM write và
-host transfer.
-
-### 4.3 Raw packed-Q8 mode — contract đang dùng để giữ scale đúng
-
-`compute_mode[0]=1`, `compute_mode[1]=0` chọn packed raw Q8. Một Q8 block có
-32 payload bytes, tương ứng hai 128-bit beats. Với group có `G` blocks:
+WEIGHT layout compact:
 
 ```text
-ACT:     G × 2 beats
-WEIGHT:  rows × G × 2 beats
-RESULT:  rows × G signed INT32 partials
+WEIGHT[row * active_col_beats + block * 2 + beat]
 ```
 
-GEMV cố ý dừng/chờ result sau từng Q8 block trong raw mode. Result ordering
-là row-major:
+Scale FP16 không nằm trong hai payload beat. Production raw path để host giữ `d_a`, đọc `d_w` từ Q8_0 weight và scale trên CPU. Stream path mới nạp pair scale vào `SPU_PARAM`.
+
+### 5.3 Read pipeline
+
+FSM phát ACT/WEIGHT read request. Dữ liệu RAM đi qua valid pipeline D/Q/X để align latency activation, weight shard và flag last. Chỉ khi `feed_valid && activation_ready && weight_ready`, beat mới được PMAU nhận.
+
+### 5.4 PMAU
+
+PMAU thực hiện 16 phép INT8×INT8 mỗi beat và reduction. Hai beat tạo raw dot của một Q8 block:
 
 ```text
-flat = row * group_blocks + block
-result_word = flat / 4
-result_lane = flat % 4
+raw[row,block] = Σ(i=0..31) qa[i] * qw[row,i]
 ```
 
-Một RESULT word chứa bốn `INT32`. Khối này không biết `d_act`/`d_weight`; raw
-value chỉ là:
+Raw cần INT32. Đây chưa phải F32/Q8_0 output cuối vì mỗi block có scale khác nhau.
+
+### 5.5 Result path
+
+Raw mode:
+
+- pack bốn INT32 vào một RESULT word 128-bit;
+- layout logical `row * group_blocks + block`;
+- pulse metadata sang SPU stream;
+- host có thể DMA RESULT về và scale/accumulate.
+
+Optional INT8 mode:
+
+- accumulator qua group;
+- `VPU_Result_Requantizer` shift/saturate;
+- pack INT8 result.
+
+INT8 shift global không phải Q8_0 output đúng nếu thiếu `d_out` và per-block scale-aware accumulation.
+
+## 6. SPU command dataflow
+
+`SPU_Controller` nhận command qua register, đọc word từ local memory, start arithmetic engine, chờ done rồi ghi output. Những op nhiều pass dùng scratch/parameter memory.
+
+### 6.1 Q8 scale-accumulate
+
+Input logic:
 
 ```text
-raw[row, block] = Σlane(qs_act[block][lane] × qs_weight[row][block][lane])
+raw INT32
+d_a FP16
+d_w FP16
+row_id, clear_accum, last_block
 ```
 
-Scale phải được áp dụng theo đúng block sau đó. Đây là lý do raw mode tạo nhiều
-result traffic, nhưng là contract numerical đầy đủ hơn global shift INT8.
-
-### 4.4 Optional INT8-result mode — không phải Q8_0 output đầy đủ
-
-Bits mode:
-
-| Bit | Tên logic | Ý nghĩa |
-|---:|---|---|
-| 0 | group mode | packed Q8 blocks, hai beats/block |
-| 1 | result_i8 | chọn Result BRAM pack 16 INT8/word |
-| 2 | accum_clear | xóa `result_accum_mem` ở group đầu |
-| 3 | result_emit | chỉ emit byte final ở group cuối |
-
-Khi `result_i8=1`, `result_accum_mem[row]` giữ raw INT32 giữa các group K.
-Ở final group, value đi qua ba stage để giữ timing:
+Arithmetic target:
 
 ```text
-raw accumulator register
--> VPU_Result_Requantizer
--> INT8 write register
--> Result BRAM
+contribution = raw * fp16(d_a) * fp16(d_w)
+acc[row] += contribution
 ```
 
-`VPU_Result_Requantizer` thực hiện arithmetic right shift theo `cfg_scale[4:0]`
-và clamp `[-128, 127]`. Output pack 16 `INT8` trong một word 128 bit.
+Output stream hiện là Q16.16 64-bit kèm row ID trong `SPU_OUT`, không phải block Q8_0 hoàn chỉnh và không phải trực tiếp F32 GGML.
 
-**Giới hạn numerical:** đây không bao gồm `d_act × d_weight` theo Q8 block và
-không phát `d_out`. Vì vậy byte này là fixed-point/debug result, không phải
-tensor Q8_0 semantic có thể ghi trực tiếp vào `dst` F32 hoặc node Gemma kế tiếp.
+### 6.2 RMSNorm
 
-### 4.5 Bộ nhớ VPU
+Pass 1 tích lũy sum-square. `SPU_RMSInv_Engine` tính mean, sqrt/reciprocal nhiều chu kỳ. Pass 2 nhân input×gamma×inverse-RMS và ghi output.
 
-- ACT dùng BRAM và có port nạp từ AXI/MMIO cùng port read compute.
-- WEIGHT được bank/shard; đường compute dùng `Dual_Port_BRAM` với `USE_URAM=1`
-  cho access pattern write-by-host/read-by-compute. XPM URAM là simple-dual-port
-  và write full word, phù hợp payload weight 128-bit.
-- RESULT dùng BRAM byte-write để GEMV cập nhật lane INT32 hoặc lane INT8 trong
-  word 128 bit.
+### 6.3 SiLU-Mul
 
-Không có ping-pong bank selection cho ACT/WEIGHT/RESULT trong contract hiện
-tại. DMA/host phải không ghi một window khi GEMV đang đọc/ghi window đó.
+Đọc gate từ `SPU_IN`, up từ `SPU_PARAM`, xấp xỉ sigmoid tuyến tính có clamp, nhân và saturate Q8.8 sang `SPU_OUT`.
 
-## 5. SPU dataflow chi tiết
+### 6.4 RoPE
 
-### 5.1 SPU memory và hai port
+Đọc vector pair và cos/sin Q1.15, thực hiện bốn multiply và add/sub, ghi pair rotated Q8.8.
 
-`SPU_Local_Memory` instantiate bốn `Dual_Port_BRAM` độc lập. Mỗi RAM có:
+### 6.5 Softmax
 
-- Port A: AXI4_Mapping/MMIO, dùng cho host hoặc DMA;
-- Port B: `SPU_Controller`, dùng cho command datapath.
+Ba bước: max, score xấp xỉ exp, normalize bằng divider tuần tự. Scratch giữ score giữa các pass.
 
-Đọc là synchronous. Controller có explicit wait-state (`*_READ -> *_WAIT ->
-*_CAPTURE`) để không lấy data trước latency BRAM. Các window hiện dùng BRAM;
-không tự đổi thành URAM vì command hiện tại cho phép cả hai port read/write và
-cần ownership protocol khác để infer simple-dual-port URAM đúng.
+Các engine có unit-level RTL không đồng nghĩa llama.cpp đã dùng chúng. Source host hiện chỉ offload hook matrix multiplication; integration graph cho RMSNorm/SiLU/RoPE/Softmax chưa được chứng minh end-to-end.
 
-### 5.2 Mode `COPY` (`0x7F`)
+## 7. Tương tác VPU–SPU hiện tại
 
-Mục đích là self-test memory path:
+### 7.1 Đường intended
 
 ```text
-SPU_IN[word 0..len-1]
-  -> controller read/wait
-  -> SPU_OUT[word 0..len-1]
+PMAU raw result
+  -> raw + row/block/group metadata
+  -> SPU đọc scale tương ứng từ SPU_PARAM
+  -> SPU_Q8_Scale_Accum
+  -> accumulator theo row
+  -> SPU_OUT khi last_block
 ```
 
-Không làm arithmetic. `len` là số word 128-bit và phải nằm trong `WORD_DEPTH`.
+Host v12 nạp scale table, start VPU, đợi VPU done, đợi `SPU_STREAM_OUT` tăng thêm `rows`, rồi DMA `SPU_OUT` về.
 
-### 5.3 Mode `QUANT_Q8_0` (`0x01`)
+### 7.2 Giao thức đã sửa
 
-Input là signed INT16 values trong `SPU_IN`; `len` là số element. Controller:
+`Matrix_Vector_Multiplication` xuất `spu_raw_valid` cùng toàn bộ data/metadata và chỉ tiến row/block sau handshake với `spu_raw_ready`. `SPU_Top` có FIFO raw depth 32; consumer lấy entry khi scale-accumulate sẵn sàng. Một entry có metadata scale không hợp lệ mới tăng `stream_drop`, còn backpressure bình thường không làm mất dữ liệu.
 
-1. đọc 4 word 128-bit để thu 32 INT16 values;
-2. phát `SPU_Quantize_Q8_0`;
-3. quantizer dùng divider dùng chung tuần tự để tránh suy luận nhiều divider
-   combinational;
-4. ghi 32 `qs` INT8 thành 2 word 128-bit ở `SPU_OUT`;
-5. ghi metadata mỗi block ở `SPU_SCRATCH[block]`:
-
-   ```text
-   [15:0] = amax/scale quantizer
-   [16]    = zero_block
-   ```
-
-Mode này tạo payload INT8, nhưng output metadata hiện chưa được định nghĩa là
-`ggml block_q8_0.d` hoàn chỉnh và chưa được VPU host path sử dụng tự động.
-
-### 5.4 Mode `Q8_SCALE_ACCUM` (`0x06`)
-
-Đây là primitive gần nhất với việc đưa scale accumulation từ CPU vào PL.
-Mỗi `SPU_IN[word]` là một descriptor 128 bit:
+### 7.3 Giao thức mục tiêu
 
 ```text
-[31:0]  signed raw INT32
-[47:32] activation scale FP16
-[63:48] weight scale FP16
-[79:64] row_id
-[80]    last_block
-[81]    clear_accum
+VPU producer -- valid,data,metadata --> FIFO --> SPU consumer
+VPU producer <-- ready ------------------------ SPU/FIFO
 ```
 
-Controller đọc descriptor từ `SPU_IN`, gửi vào `SPU_Q8_Scale_Accum`. Primitive:
+Quy tắc:
+
+- valid giữ nguyên cho tới handshake;
+- data/metadata stable khi stalled;
+- FIFO full kéo ready xuống;
+- VPU không tăng row/block khi chưa handshake;
+- done chỉ sau row cuối commit SPU_OUT;
+- job ID và bank theo entry;
+- drop hợp lệ luôn bằng 0.
+
+## 8. Ping-pong
+
+ACT/WEIGHT/RESULT đã có bank select và descriptor, nhưng ping-pong hệ thống chưa hoàn chỉnh:
+
+- SPU_PARAM/SPU_OUT chưa bank theo job;
+- ZDMA là một channel và các copy còn tuần tự;
+- result drain chưa độc lập input fill;
+- scheduler hai bank chưa được host kích hoạt;
+- capability PL scale không tự bật; cần cờ opt-in, protocol/bitstream ID đúng và full-scale validation.
+
+State ownership bắt buộc:
 
 ```text
-FP16 d_act -> unsigned Q16.16
-FP16 d_weight -> unsigned Q16.16
-contribution = raw × (d_act × d_weight)  [Q16.16]
-accum_mem[row_id] = previous_or_zero + contribution
+FREE -> FILLING -> READY -> COMPUTING -> RESULT_READY -> DRAINING -> FREE
 ```
 
-Nếu `last_block=1`, controller ghi one output record tuần tự vào `SPU_OUT`:
+Host chỉ ghi `FREE/FILLING`; PL chỉ đọc `READY/COMPUTING`; không bên nào overwrite bank còn owner khác.
+
+## 9. Bottleneck RTL và timing
+
+Implementation hiện đạt setup timing 187,5 MHz (`WNS +0,604 ns`), nhưng:
+
+- hold margin chỉ +0,010 ns;
+- 83 DSP pipeline warnings;
+- raw mode tạo một result cho từng block và dừng/chuyển state nhiều lần;
+- 16 lane làm effective compute thấp khi cộng toàn bộ DMA/control overhead;
+- Q8 scale path không streaming một entry/cycle;
+- output projection cần 1024 run/token ở host v9.
+
+Sau khi sửa correctness, pipeline DSP input/MREG/PREG tại PMAU dequant, stream scale index, Q8 scale accumulator, RMSNorm và RoPE. Metadata valid/job/row/block phải được delay đúng số stage.
+
+## 10. Tiêu chí production
+
+Không bật capability mới nếu chưa đạt:
 
 ```text
-[15:0]  row_id
-[79:16] signed accumulated Q16.16
+full 256 row × 64 block simulation
+random consumer stall
+drop_count = 0
+accepted = processed
+mixed-scale numerical reference pass
+two-bank ownership pass
+host/bitstream capability version khớp
+primary prompt sinh tiếng Anh
+timing setup/hold pass ở 187,5 MHz
 ```
 
-Sau command, `SPU_SCRATCH[0][31:0]` chứa số output record được tạo. Negative,
-NaN và infinity FP16 scale bị reject; zero scale hợp lệ.
-
-### 5.5 SiLU, RMSNorm, RoPE, Softmax
-
-`SPU_SiLU_Mul`, `SPU_RMSNorm`, `SPU_RoPE`, `SPU_Softmax` có tên/interface
-trong hierarchy để giữ ổn định command surface. Mỗi module chỉ trả completion
-marker khi start; `supported=0`. `SPU_Controller` không nhận các mode đó và
-trả `ERR_BAD_MODE`.
-
-Chúng chưa có các datapath cần thiết:
-
-- SiLU: approximation/LUT, multiplication gate × up, streaming output;
-- RMSNorm: sum-square, reduce, rsqrt, weight read và scale;
-- RoPE: sin/cos table, position/head addressing, pair rotation;
-- Softmax: max pass, exp approximation, sum pass, normalization, attention
-  scratch/streaming.
-
-Software không được coi `done` marker là kết quả numerical của các operator
-này.
-
-## 6. Tương tác VPU ↔ SPU: hiện có và chưa có
-
-### 6.1 Điều đã có
-
-- Hai khối có cùng clock/reset và cùng AXI address decoder.
-- VPU có raw partial `INT32` theo `{row, block}`.
-- SPU có primitive nhận `{raw, d_act, d_weight, row_id, clear, last}` và giữ
-  accumulator theo row.
-- Cả hai có on-chip RAM riêng, status/done/error riêng và capability riêng.
-
-### 6.2 Điều chưa có
-
-Không có bất kỳ wire/FIFO/arbiter nào từ `Matrix_Vector_Multiplication` sang
-`SPU_Controller` hoặc `SPU_Local_Memory`. Vì thế flow sau **chưa tồn tại**:
-
-```text
-PMAU raw partial -> SPU scale accumulator -> VPU RESULT -> next GEMV
-```
-
-SPU cũng không có port nào ghi ACT BRAM VPU, đọc WEIGHT URAM VPU, hay ghi
-RESULT BRAM VPU. Các SPU windows không phải alias của VPU windows.
-
-### 6.3 Flow hiện tại nếu software muốn dùng SPU
-
-```text
-host reads VPU raw result
--> host prepares 128-bit SPU descriptors with raw/d_act/d_weight
--> host writes SPU_IN
--> host starts SPU mode 0x06 and waits done
--> host reads SPU_OUT
-```
-
-Flow này chỉ dùng SPU command primitive, **không giảm** result round-trip tới
-CPU. Nó hữu ích để validate fixed-point arithmetic, không phải final fast path.
-
-### 6.4 Flow mục tiêu để giữ data on-chip
-
-Để SPU thực hiện mục tiêu “store lâu nhất và dùng lại liên tục”, cần thay đổi
-kiến trúc thành stream/descriptor on-chip:
-
-```mermaid
-flowchart LR
-  PMAU["PMAU raw INT32"] --> FIFO["raw-result FIFO\n{row, block, raw, last}"]
-  AS["activation-scale SRAM\nindexed by column/block"] --> SA["SPU scale accumulator"]
-  WS["weight-scale SRAM\nindexed by row/block"] --> SA
-  FIFO --> SA
-  SA --> OUT["accum/output buffer\nF32/Q16.16 or Q8_0 {d, qs}"]
-  OUT --> NEXT["next VPU/SPU consumer\nor final host read"]
-```
-
-Để flow này đúng và nhanh, cần thêm rõ ràng:
-
-1. producer/consumer ready-valid giữa GEMV và SPU;
-2. scale SRAM table có format/addressing chung với host packer;
-3. tag `{tensor, column, row, block, group, last}` để tránh trộn tile;
-4. backpressure: GEMV không ghi đè FIFO khi SPU chưa nhận;
-5. output semantic đã chốt: F32/Q16.16 final hoặc Q8_0 `{d_out, qs_out}`;
-6. bank ownership/ping-pong khi input next tile được DMA nạp song song;
-7. completion chỉ khi result final đã visible ở buffer đúng owner.
-
-Không được chỉ nối `raw` vào existing SPU command FSM mà không có streaming
-contract; mỗi command memory round-trip sẽ tái tạo overhead host hiện tại.
-
-## 7. File-by-file overview
-
-| File | Vai trò | Ghi chú dataflow |
-|---|---|---|
-| `VPU_Top.v` | AXI top wrapper | không xử lý arithmetic/memory map |
-| `MY_IP.v` | AXI4-Full slave adapter | one ordered local read pending |
-| `AXI4_Mapping.v` | register/window decoder | instantiate GEMV và SPU |
-| `Matrix_Vector_Multiplication.v` | GEMV scheduler, local memory integration | raw and optional INT8 result contracts |
-| `PMAU_Full.v` | 16-lane INT8 MAC pipeline | mult IP, adder tree, accumulator, FIFO |
-| `VPU_Result_Requantizer.v` | global shift/saturate | chưa Q8 scale-aware |
-| `Dual_Port_BRAM.v` | BRAM/URAM wrapper | synchronous dual-port, URAM weight mode |
-| `SPU_Top.v` | SPU command/memory wrapper | capability source |
-| `SPU_Controller.v` | command FSM | COPY, QUANT, SCALE_ACCUM |
-| `SPU_Local_Memory.v` | 4 x 128-bit RAM | MMIO port + controller port |
-| `SPU_Quantize_Q8_0.v` | sequential 32-value quantizer | one shared divider, avoids timing-heavy unroll |
-| `SPU_Q8_Scale_Accum.v` | Q8 scale-aware fixed-point accumulator | descriptor-based, isolated from VPU stream |
-| `SPU_SiLU_Mul.v` | reserved future function | `supported=0` |
-| `SPU_RMSNorm.v` | reserved future function | `supported=0` |
-| `SPU_RoPE.v` | reserved future function | `supported=0` |
-| `SPU_Softmax.v` | reserved future function | `supported=0` |
-
-## 8. Correctness and performance implications
-
-### 8.1 Correctness gates
-
-Before enabling an INT8 final result for Gemma:
-
-1. validate raw `INT32` by block against a reference dot product;
-2. validate scale association `d_act[col,block]` and `d_weight[row,block]`;
-3. validate accumulated F32/Q16.16 value across split K groups;
-4. define and validate output scale/format if destination is quantized;
-5. validate tensor layout at `dst` and downstream consumer;
-6. then advertise capability and switch host path.
-
-### 8.2 Current bottlenecks visible from RTL
-
-- Raw mode waits for each 32-element Q8 block result so scales can be applied
-  later. This preserves contract but creates many result boundaries.
-- A single ACT/WEIGHT/RESULT active bank means no compute/load/read overlap.
-- `MY_IP` serializes local result reads.
-- No direct VPU->SPU stream means raw values leave the VPU path before SPU can
-  use them.
-- SPU local RAM is BRAM-based and currently private; it is not an activation
-  cache for next GEMV.
-
-The correct optimization order is: prove numerical contract, introduce VPU-SPU
-streaming scale accumulation, add result/output format, then add ping-pong
-banking and persistent weight/activation residency. Raising clock or changing
-only output width cannot remove these architectural round trips.
-
-## 9. Operational checklist for a run
-
-1. Read `REG_LIMITS`, `REG_CAPS`, and `REG_SPU_CAPS` and reject incompatible
-   bitstream/host contracts.
-2. Keep ACT/WEIGHT compact active-stride configuration identical in host and
-   RTL.
-3. Never overlap host/DMA writes with GEMV reads of the same current bank.
-4. In raw mode, read exactly `rows × group_blocks` INT32 partials, packed four
-   per RESULT word.
-5. In optional INT8 mode, read sixteen bytes per RESULT word and require a
-   valid scale/output semantic before use in a model tensor.
-6. For SPU, poll done/error; verify capability before interpreting output.
-7. Treat `supported=0` scalar modules as unavailable even if their marker
-   instance is visible in hierarchy.
-
+Cho đến lúc đó, compatibility path là raw INT32→CPU scale/accumulate; chậm nhưng đã có log sinh tiếng Anh hợp lệ.

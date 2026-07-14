@@ -46,7 +46,8 @@ module AXI4_Mapping #(
     parameter integer MAX_ROWS                 = 256,
     parameter integer MAX_COL_BEATS            = 128,
     parameter integer MAX_GROUP_Q8_BLOCKS      = 64,
-    parameter integer SPU_WORD_DEPTH           = 4096
+    parameter integer SPU_WORD_DEPTH           = 4096,
+    parameter integer SPU_STREAM_TEST_STALL_ENABLE = 0
 ) (
     input  wire                                  clk,
     input  wire                                  resetn,
@@ -79,6 +80,8 @@ module AXI4_Mapping #(
     localparam integer MAX_RESULT_VALUES = MAX_ROWS * MAX_GROUP_Q8_BLOCKS;
     localparam integer RESULT_WORD_DEPTH =
         (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
+    localparam [31:0] STREAM_PROTOCOL_VERSION = 32'h0000_0001;
+    localparam [31:0] BITSTREAM_ID = 32'h5650_5531; // "VPU1"
 
     localparam [15:0] MAX_ROWS_16 = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16 = MAX_COL_BEATS;
@@ -309,12 +312,15 @@ module AXI4_Mapping #(
     wire [7:0] spu_error_code;
     wire [31:0] spu_caps;
     wire core_spu_raw_valid;
+    wire core_spu_raw_ready;
     wire signed [31:0] core_spu_raw_data;
     wire [15:0] core_spu_raw_row;
     wire [15:0] core_spu_raw_block;
     wire [15:0] core_spu_raw_group_blocks;
     wire core_spu_raw_last_block;
     wire core_spu_raw_clear_accum;
+    wire [31:0] core_spu_raw_job_id;
+    wire core_spu_raw_bank;
     wire core_spu_raw_done;
     wire [31:0] spu_stream_count;
     wire [31:0] spu_stream_done_count;
@@ -325,6 +331,8 @@ module AXI4_Mapping #(
     wire [31:0] spu_stream_last_meta;
     wire [31:0] spu_stream_last_accum_lo;
     wire [31:0] spu_stream_last_accum_hi;
+    wire [31:0] spu_stream_last_job;
+    wire [31:0] spu_stream_last_bank;
     wire status_error = core_error;
 
     // Register read map.  The low 32 bits carry the useful information; the
@@ -357,7 +365,7 @@ module AXI4_Mapping #(
                     reg_read_data[2]      = 1'b0; // Q8_0 output block with scale metadata is not integrated
                     reg_read_data[3]      = 1'b1; // two-bank VPU ping-pong storage is available
                     reg_read_data[4]      = 1'b1; // banked job descriptor/ownership registers are available
-                    reg_read_data[5]      = 1'b1; // VPU raw-result stream is connected to SPU
+                    reg_read_data[5]      = 1'b1; // lossless VPU raw-result ready/valid stream
                     reg_read_data[6]      = 1'b1; // SPU applies Q8_0 scales and writes row outputs
                     reg_read_data[15:8]   = MAX_GROUP_Q8_BLOCKS_16[7:0];
                     reg_read_data[31:16]  = RESULT_WORD_DEPTH_32[15:0];
@@ -375,6 +383,8 @@ module AXI4_Mapping #(
                 16'h00E0: reg_read_data[31:0] = cfg_spu_aux0_reg;
                 16'h00E4: reg_read_data[31:0] = cfg_spu_aux1_reg;
                 16'h00F0: reg_read_data[31:0] = spu_caps;
+                16'h00F4: reg_read_data[31:0] = STREAM_PROTOCOL_VERSION;
+                16'h00F8: reg_read_data[31:0] = BITSTREAM_ID;
                 16'h0100: reg_read_data[31:0] = cfg_bank_reg;
                 16'h0110: reg_read_data[31:0] = cfg_job_id_reg;
                 16'h0120: begin
@@ -402,6 +412,8 @@ module AXI4_Mapping #(
                 16'h01D8: reg_read_data[31:0] = spu_stream_error_count;
                 16'h01E0: reg_read_data[31:0] = spu_stream_last_raw;
                 16'h01E4: reg_read_data[31:0] = spu_stream_last_meta;
+                16'h01E8: reg_read_data[31:0] = spu_stream_last_job;
+                16'h01EC: reg_read_data[31:0] = spu_stream_last_bank;
                 16'h01F0: reg_read_data[31:0] = spu_stream_last_accum_lo;
                 16'h01F4: reg_read_data[31:0] = spu_stream_last_accum_hi;
                 default: reg_read_data = {AXI_DATA_WIDTH{1'b0}};
@@ -719,12 +731,15 @@ module AXI4_Mapping #(
         .active_job_id     (core_active_job_id),
         .done_job_id       (core_done_job_id),
         .spu_raw_valid     (core_spu_raw_valid),
+        .spu_raw_ready     (core_spu_raw_ready),
         .spu_raw_data      (core_spu_raw_data),
         .spu_raw_row       (core_spu_raw_row),
         .spu_raw_block     (core_spu_raw_block),
         .spu_raw_group_blocks(core_spu_raw_group_blocks),
         .spu_raw_last_block(core_spu_raw_last_block),
         .spu_raw_clear_accum(core_spu_raw_clear_accum),
+        .spu_raw_job_id    (core_spu_raw_job_id),
+        .spu_raw_bank      (core_spu_raw_bank),
         .spu_raw_done      (core_spu_raw_done),
         .mm_wr_en          (core_wr_en_r),
         .mm_wr_region      (core_wr_region_r),
@@ -742,7 +757,8 @@ module AXI4_Mapping #(
     SPU_Top #(
         .AXI_DATA_WIDTH (AXI_DATA_WIDTH),
         .WORD_DEPTH     (SPU_WORD_DEPTH),
-        .SCALE_ACCUM_ROWS (MAX_ROWS)
+        .SCALE_ACCUM_ROWS (MAX_ROWS),
+        .STREAM_TEST_STALL_ENABLE (SPU_STREAM_TEST_STALL_ENABLE)
     ) u_spu (
         .clk             (clk),
         .resetn          (resetn),
@@ -759,12 +775,15 @@ module AXI4_Mapping #(
         .spu_error_code  (spu_error_code),
         .spu_caps        (spu_caps),
         .vpu_raw_valid   (core_spu_raw_valid),
+        .vpu_raw_ready   (core_spu_raw_ready),
         .vpu_raw_data    (core_spu_raw_data),
         .vpu_raw_row     (core_spu_raw_row),
         .vpu_raw_block   (core_spu_raw_block),
         .vpu_raw_group_blocks(core_spu_raw_group_blocks),
         .vpu_raw_last_block(core_spu_raw_last_block),
         .vpu_raw_clear_accum(core_spu_raw_clear_accum),
+        .vpu_raw_job_id  (core_spu_raw_job_id),
+        .vpu_raw_bank    (core_spu_raw_bank),
         .vpu_raw_done    (core_spu_raw_done),
         .vpu_stream_count(spu_stream_count),
         .vpu_stream_done_count(spu_stream_done_count),
@@ -775,6 +794,8 @@ module AXI4_Mapping #(
         .vpu_stream_last_meta(spu_stream_last_meta),
         .vpu_stream_last_accum_lo(spu_stream_last_accum_lo),
         .vpu_stream_last_accum_hi(spu_stream_last_accum_hi),
+        .vpu_stream_last_job(spu_stream_last_job),
+        .vpu_stream_last_bank(spu_stream_last_bank),
         .mm_wr_en        (spu_wr_en_r),
         .mm_wr_region    (spu_wr_region_r),
         .mm_wr_index     (spu_wr_index_r),

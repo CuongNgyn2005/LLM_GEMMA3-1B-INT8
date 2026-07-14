@@ -80,12 +80,15 @@ module Matrix_Vector_Multiplication #(
     output wire [31:0]                       active_job_id,
     output wire [31:0]                       done_job_id,
     output reg                               spu_raw_valid,
+    input  wire                              spu_raw_ready,
     output reg  signed [31:0]                spu_raw_data,
     output reg  [15:0]                       spu_raw_row,
     output reg  [15:0]                       spu_raw_block,
     output reg  [15:0]                       spu_raw_group_blocks,
     output reg                               spu_raw_last_block,
     output reg                               spu_raw_clear_accum,
+    output reg  [31:0]                       spu_raw_job_id,
+    output reg                               spu_raw_bank,
     output reg                               spu_raw_done,
 
     input  wire                              mm_wr_en,
@@ -176,6 +179,7 @@ module Matrix_Vector_Multiplication #(
     localparam [3:0] S_ACCUM_WAIT     = 4'd8;
     localparam [3:0] S_ACCUM_ADD      = 4'd9;
     localparam [3:0] S_ACCUM_WRITE    = 4'd10;
+    localparam [3:0] S_RAW_STREAM_HOLD = 4'd11;
 
     // The GEMV core has two independent traffic classes:
     // - memory-window traffic from AXI4_Mapping, used to fill Activation/Weight
@@ -412,7 +416,8 @@ module Matrix_Vector_Multiplication #(
                              (state_r == S_ACCUM_ADD) ||
                              (state_r == S_ACCUM_WRITE) ||
                              (state_r == S_REQUANT_RESULT) ||
-                             (state_r == S_DRAIN_RESULT);
+                             (state_r == S_DRAIN_RESULT) ||
+                             (state_r == S_RAW_STREAM_HOLD);
     assign done            = done_r;
     assign error           = error_r;
     assign active_row      = row_idx_r;
@@ -791,6 +796,8 @@ module Matrix_Vector_Multiplication #(
             spu_raw_group_blocks <= 16'd1;
             spu_raw_last_block  <= 1'b0;
             spu_raw_clear_accum <= 1'b0;
+            spu_raw_job_id      <= 32'd0;
+            spu_raw_bank        <= 1'b0;
             spu_raw_done        <= 1'b0;
             feed_valid_r        <= 1'b0;
             feed_last_r         <= 1'b0;
@@ -826,7 +833,6 @@ module Matrix_Vector_Multiplication #(
             result_accum_rd_en_r <= 1'b0;
             result_write_pending_r <= 1'b0;
             result_requant_pending_r <= 1'b0;
-            spu_raw_valid <= 1'b0;
             spu_raw_done  <= 1'b0;
             if (result_accum_rd_en_r)
                 result_accum_rd_data_r <= result_accum_mem[result_accum_rd_addr_r];
@@ -1002,26 +1008,37 @@ module Matrix_Vector_Multiplication #(
                                 spu_raw_last_block     <=
                                     ((block_idx_r + 16'd1) >= group_blocks_r);
                                 spu_raw_clear_accum    <= (block_idx_r == 16'd0);
+                                spu_raw_job_id         <= active_job_id_r;
+                                spu_raw_bank           <= active_bank_r;
+                                state_r                <= S_RAW_STREAM_HOLD;
                             end else begin
                                 error_r <= 1'b1;
+                                state_r <= S_ERROR;
                             end
+                        end
+                    end
+                end
 
-                            if ((block_idx_r + 16'd1) < group_blocks_r) begin
-                                block_idx_r <= block_idx_r + 16'd1;
-                                state_r <= result_wr_index_ok ? S_RUN : S_ERROR;
+                S_RAW_STREAM_HOLD: begin
+                    // Keep the complete raw token stable until SPU/FIFO
+                    // accepts it.  Row/block progress is deliberately held
+                    // here, so no partial result can be lost under backpressure.
+                    feed_valid_r <= 1'b0;
+                    if (spu_raw_valid && spu_raw_ready) begin
+                        spu_raw_valid <= 1'b0;
+                        if ((block_idx_r + 16'd1) < group_blocks_r) begin
+                            block_idx_r <= block_idx_r + 16'd1;
+                            state_r <= S_RUN;
+                        end else begin
+                            block_idx_r <= 16'd0;
+                            if ((row_idx_r + 16'd1) >= active_rows_r) begin
+                                state_r <= S_DRAIN_RESULT;
                             end else begin
-                                block_idx_r <= 16'd0;
-
-                                if ((row_idx_r + 16'd1) >= active_rows_r) begin
-                                    state_r <= result_wr_index_ok ? S_DRAIN_RESULT : S_ERROR;
-                                end else begin
-                                    row_idx_r         <= row_idx_r + 16'd1;
-                                    read_beat_idx_r   <= 16'd0;
-                                    result_row_base_r <= result_row_base_r + {16'd0, group_blocks_r};
-                                    weight_row_base_r <= weight_row_base_r +
-                                                         active_col_beats_r;
-                                    state_r           <= result_wr_index_ok ? S_RUN : S_ERROR;
-                                end
+                                row_idx_r         <= row_idx_r + 16'd1;
+                                read_beat_idx_r   <= 16'd0;
+                                result_row_base_r <= result_row_base_r + {16'd0, group_blocks_r};
+                                weight_row_base_r <= weight_row_base_r + active_col_beats_r;
+                                state_r           <= S_RUN;
                             end
                         end
                     end

@@ -20,6 +20,8 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] REG_MODE      = 40'h0000_0060;
     localparam [ADDR_WIDTH-1:0] REG_LIMITS    = 40'h0000_0070;
     localparam [ADDR_WIDTH-1:0] REG_CAPS      = 40'h0000_0090;
+    localparam [ADDR_WIDTH-1:0] REG_STREAM_PROTOCOL = 40'h0000_00F4;
+    localparam [ADDR_WIDTH-1:0] REG_BITSTREAM_ID = 40'h0000_00F8;
     localparam [ADDR_WIDTH-1:0] REG_BANK      = 40'h0000_0100;
     localparam [ADDR_WIDTH-1:0] REG_JOB_ID    = 40'h0000_0110;
     localparam [ADDR_WIDTH-1:0] REG_BANK_STAT = 40'h0000_0120;
@@ -38,6 +40,8 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_ERROR    = 40'h0000_01D8;
     localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_LAST_RAW = 40'h0000_01E0;
     localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_LAST_META = 40'h0000_01E4;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_LAST_JOB = 40'h0000_01E8;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_LAST_BANK = 40'h0000_01EC;
     localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_ACCUM_LO = 40'h0000_01F0;
     localparam [ADDR_WIDTH-1:0] REG_SPU_STREAM_ACCUM_HI = 40'h0000_01F4;
     localparam [ADDR_WIDTH-1:0] ACT_BASE      = 40'h0001_0000;
@@ -114,7 +118,17 @@ module tb_VPU_Top;
     integer current_rows;
     integer current_cols;
     integer current_col_beats;
+    integer stream_stall_observed;
     reg [DATA_WIDTH-1:0] init_rd_word;
+    reg stream_hold_valid;
+    reg signed [31:0] stream_hold_data;
+    reg [15:0] stream_hold_row;
+    reg [15:0] stream_hold_block;
+    reg [15:0] stream_hold_group_blocks;
+    reg stream_hold_last_block;
+    reg stream_hold_clear_accum;
+    reg [31:0] stream_hold_job_id;
+    reg stream_hold_bank;
 
     VPU_Top #(
         .C_S00_AXI_ID_WIDTH     (ID_WIDTH),
@@ -127,7 +141,8 @@ module tb_VPU_Top;
         .C_S00_AXI_BUSER_WIDTH  (1),
         .MAX_ROWS               (MAX_ROWS),
         .MAX_COL_BEATS          (MAX_COL_BEATS),
-        .MAX_GROUP_Q8_BLOCKS    (MAX_GROUP_Q8_BLOCKS)
+        .MAX_GROUP_Q8_BLOCKS    (MAX_GROUP_Q8_BLOCKS),
+        .SPU_STREAM_TEST_STALL_ENABLE (1)
     ) dut (
         .s00_axi_aclk       (clk),
         .s00_axi_aresetn    (resetn),
@@ -637,6 +652,12 @@ module tb_VPU_Top;
                 fail("SPU Q8 scale stream capability bit was not set");
             if (rd_word[15:8] !== 8'd64)
                 fail("REG_CAPS max_group_q8_blocks was not 64");
+            axi_read(REG_STREAM_PROTOCOL, rd_word);
+            if (rd_word[31:0] !== 32'h0000_0001)
+                fail("stream protocol version is not ready/valid FIFO v1");
+            axi_read(REG_BITSTREAM_ID, rd_word);
+            if (rd_word[31:0] !== 32'h5650_5531)
+                fail("bitstream identity register mismatch");
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
             axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
@@ -687,7 +708,7 @@ module tb_VPU_Top;
                     timeout = 1000;
                     rd_word[0] = 1'b1;
                 end
-                if (timeout > 1000) begin
+                if (timeout > 100000) begin
                     fail("Packed q8 core did not finish");
                     rd_word[0] = 1'b1;
                 end
@@ -700,7 +721,7 @@ module tb_VPU_Top;
                 axi_read(REG_SPU_STREAM_OUT, rd_word);
                 stream_out_after = rd_word[31:0];
                 timeout = timeout + 1;
-                if (timeout > 1000) begin
+                if (timeout > 100000) begin
                     fail("SPU raw stream accumulator did not emit all rows");
                     stream_out_after = stream_out_before + rows;
                 end
@@ -756,6 +777,18 @@ module tb_VPU_Top;
                 (rd_word[29:16] != (group_blocks - 1)) ||
                 (rd_word[15:0] != (rows - 1)))
                 fail("SPU raw stream last metadata mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read(REG_SPU_STREAM_LAST_JOB, rd_word);
+            if (rd_word[31:0] !== (32'h0000_1000 + case_id))
+                fail("SPU raw stream last job id mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read(REG_SPU_STREAM_LAST_BANK, rd_word);
+            if (rd_word[0] !== 1'b0)
+                fail("SPU raw stream last bank mismatch");
             else
                 pass_count = pass_count + 1;
 
@@ -1007,6 +1040,45 @@ module tb_VPU_Top;
         end
     endtask
 
+    // Protocol assertion: a VPU raw token must not change while the SPU FIFO
+    // backpressures it.  The DUT test parameter creates pseudo-random stalls.
+    always @(posedge clk) begin
+        if (!resetn) begin
+            stream_hold_valid <= 1'b0;
+            stream_stall_observed <= 0;
+        end else if (dut.u_my_ip.u_axi4_mapping.core_spu_raw_valid) begin
+            if (stream_hold_valid &&
+                ({dut.u_my_ip.u_axi4_mapping.core_spu_raw_data,
+                  dut.u_my_ip.u_axi4_mapping.core_spu_raw_row,
+                  dut.u_my_ip.u_axi4_mapping.core_spu_raw_block,
+                  dut.u_my_ip.u_axi4_mapping.core_spu_raw_group_blocks,
+                  dut.u_my_ip.u_axi4_mapping.core_spu_raw_last_block,
+                  dut.u_my_ip.u_axi4_mapping.core_spu_raw_clear_accum,
+                  dut.u_my_ip.u_axi4_mapping.core_spu_raw_job_id,
+                  dut.u_my_ip.u_axi4_mapping.core_spu_raw_bank} !==
+                 {stream_hold_data, stream_hold_row, stream_hold_block,
+                  stream_hold_group_blocks, stream_hold_last_block,
+                  stream_hold_clear_accum, stream_hold_job_id, stream_hold_bank}))
+                fail("VPU raw data or metadata changed while valid was held");
+            if (!dut.u_my_ip.u_axi4_mapping.core_spu_raw_ready) begin
+                stream_stall_observed <= stream_stall_observed + 1;
+                stream_hold_valid <= 1'b1;
+                stream_hold_data <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_data;
+                stream_hold_row <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_row;
+                stream_hold_block <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_block;
+                stream_hold_group_blocks <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_group_blocks;
+                stream_hold_last_block <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_last_block;
+                stream_hold_clear_accum <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_clear_accum;
+                stream_hold_job_id <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_job_id;
+                stream_hold_bank <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_bank;
+            end else begin
+                stream_hold_valid <= 1'b0;
+            end
+        end else begin
+            stream_hold_valid <= 1'b0;
+        end
+    end
+
     task run_pingpong_case;
         integer beat;
         integer row;
@@ -1080,7 +1152,7 @@ module tb_VPU_Top;
                     fail("Pingpong bank0 reported configuration error");
                     rd_word[0] = 1'b1;
                 end
-                if (timeout > 1000) begin
+                if (timeout > 100000) begin
                     fail("Pingpong bank0 did not finish");
                     rd_word[0] = 1'b1;
                 end
@@ -1203,6 +1275,9 @@ module tb_VPU_Top;
         run_int8_result_case(5, 5, 3, 3);
         run_int8_accum_groups_case(6, 4, 2, 3, 4);
         run_pingpong_case();
+
+        if (stream_stall_observed == 0)
+            fail("ready/valid random-stall test did not observe a stalled raw token");
 
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
         if (fail_count == 0) begin

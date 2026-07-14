@@ -34,6 +34,7 @@ module tb_SPU_Top;
     wire        spu_error;
     wire [7:0]  spu_error_code;
     wire [31:0] spu_caps;
+    wire        vpu_raw_ready;
     wire [31:0] vpu_stream_count;
     wire [31:0] vpu_stream_done_count;
     wire [31:0] vpu_stream_drop_count;
@@ -43,6 +44,8 @@ module tb_SPU_Top;
     wire [31:0] vpu_stream_last_meta;
     wire [31:0] vpu_stream_last_accum_lo;
     wire [31:0] vpu_stream_last_accum_hi;
+    wire [31:0] vpu_stream_last_job;
+    wire [31:0] vpu_stream_last_bank;
 
     reg                              mm_wr_en;
     reg [1:0]                        mm_wr_region;
@@ -84,12 +87,15 @@ module tb_SPU_Top;
         .spu_error_code  (spu_error_code),
         .spu_caps        (spu_caps),
         .vpu_raw_valid   (1'b0),
+        .vpu_raw_ready   (vpu_raw_ready),
         .vpu_raw_data    (32'sd0),
         .vpu_raw_row     (16'd0),
         .vpu_raw_block   (16'd0),
         .vpu_raw_group_blocks(16'd1),
         .vpu_raw_last_block(1'b0),
         .vpu_raw_clear_accum(1'b0),
+        .vpu_raw_job_id  (32'd0),
+        .vpu_raw_bank    (1'b0),
         .vpu_raw_done    (1'b0),
         .vpu_stream_count(vpu_stream_count),
         .vpu_stream_done_count(vpu_stream_done_count),
@@ -100,6 +106,8 @@ module tb_SPU_Top;
         .vpu_stream_last_meta(vpu_stream_last_meta),
         .vpu_stream_last_accum_lo(vpu_stream_last_accum_lo),
         .vpu_stream_last_accum_hi(vpu_stream_last_accum_hi),
+        .vpu_stream_last_job(vpu_stream_last_job),
+        .vpu_stream_last_bank(vpu_stream_last_bank),
         .mm_wr_en        (mm_wr_en),
         .mm_wr_region    (mm_wr_region),
         .mm_wr_index     (mm_wr_index),
@@ -837,11 +845,11 @@ module tb_SPU_Top;
         repeat (3) @(posedge clk);
 
         if (spu_caps[0] !== 1'b1 || spu_caps[1] !== 1'b1 ||
-            spu_caps[2] !== 1'b1 || spu_caps[3] !== 1'b1 ||
-            spu_caps[4] !== 1'b1 || spu_caps[5] !== 1'b1 ||
+            spu_caps[2] !== 1'b0 || spu_caps[3] !== 1'b0 ||
+            spu_caps[4] !== 1'b0 || spu_caps[5] !== 1'b0 ||
             spu_caps[6] !== 1'b1 || spu_caps[7] !== 1'b1 ||
             spu_caps[8] !== 1'b1 || spu_caps[9] !== 1'b1)
-            fail("SPU capability bits are not set as expected");
+            fail("SPU capability bits do not match the integration-safe policy");
         else
             pass_count = pass_count + 1;
 
