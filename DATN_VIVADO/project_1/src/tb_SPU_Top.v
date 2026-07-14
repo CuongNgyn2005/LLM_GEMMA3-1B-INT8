@@ -34,6 +34,18 @@ module tb_SPU_Top;
     wire        spu_error;
     wire [7:0]  spu_error_code;
     wire [31:0] spu_caps;
+    wire        vpu_raw_ready;
+    wire [31:0] vpu_stream_count;
+    wire [31:0] vpu_stream_done_count;
+    wire [31:0] vpu_stream_drop_count;
+    wire [31:0] vpu_stream_out_count;
+    wire [31:0] vpu_stream_error_count;
+    wire [31:0] vpu_stream_last_raw;
+    wire [31:0] vpu_stream_last_meta;
+    wire [31:0] vpu_stream_last_accum_lo;
+    wire [31:0] vpu_stream_last_accum_hi;
+    wire [31:0] vpu_stream_last_job;
+    wire [31:0] vpu_stream_last_bank;
 
     reg                              mm_wr_en;
     reg [1:0]                        mm_wr_region;
@@ -54,6 +66,7 @@ module tb_SPU_Top;
     integer lane;
     integer sample_i;
     reg signed [15:0] samples [0:31];
+    reg signed [15:0] params [0:31];
 
     SPU_Top #(
         .AXI_DATA_WIDTH (DATA_WIDTH),
@@ -73,6 +86,28 @@ module tb_SPU_Top;
         .spu_error       (spu_error),
         .spu_error_code  (spu_error_code),
         .spu_caps        (spu_caps),
+        .vpu_raw_valid   (1'b0),
+        .vpu_raw_ready   (vpu_raw_ready),
+        .vpu_raw_data    (32'sd0),
+        .vpu_raw_row     (16'd0),
+        .vpu_raw_block   (16'd0),
+        .vpu_raw_group_blocks(16'd1),
+        .vpu_raw_last_block(1'b0),
+        .vpu_raw_clear_accum(1'b0),
+        .vpu_raw_job_id  (32'd0),
+        .vpu_raw_bank    (1'b0),
+        .vpu_raw_done    (1'b0),
+        .vpu_stream_count(vpu_stream_count),
+        .vpu_stream_done_count(vpu_stream_done_count),
+        .vpu_stream_drop_count(vpu_stream_drop_count),
+        .vpu_stream_out_count(vpu_stream_out_count),
+        .vpu_stream_error_count(vpu_stream_error_count),
+        .vpu_stream_last_raw(vpu_stream_last_raw),
+        .vpu_stream_last_meta(vpu_stream_last_meta),
+        .vpu_stream_last_accum_lo(vpu_stream_last_accum_lo),
+        .vpu_stream_last_accum_hi(vpu_stream_last_accum_hi),
+        .vpu_stream_last_job(vpu_stream_last_job),
+        .vpu_stream_last_bank(vpu_stream_last_bank),
         .mm_wr_en        (mm_wr_en),
         .mm_wr_region    (mm_wr_region),
         .mm_wr_index     (mm_wr_index),
@@ -190,6 +225,16 @@ module tb_SPU_Top;
         end
     endfunction
 
+    function [DATA_WIDTH-1:0] pack_param_word;
+        input integer base;
+        integer i;
+        begin
+            pack_param_word = {DATA_WIDTH{1'b0}};
+            for (i = 0; i < 8; i = i + 1)
+                pack_param_word[16*i +: 16] = params[base + i];
+        end
+    endfunction
+
     function [DATA_WIDTH-1:0] pack_scale_entry;
         input signed [31:0] raw;
         input [15:0] act_scale;
@@ -242,6 +287,142 @@ module tb_SPU_Top;
                 expected_q = -8'sd128;
             else
                 expected_q = rounded[7:0];
+        end
+    endfunction
+
+    function signed [15:0] sat16_tb;
+        input signed [63:0] value;
+        begin
+            if (value > 64'sd32767)
+                sat16_tb = 16'sd32767;
+            else if (value < -64'sd32768)
+                sat16_tb = -16'sd32768;
+            else
+                sat16_tb = value[15:0];
+        end
+    endfunction
+
+    function signed [15:0] expected_silu_mul;
+        input signed [15:0] gate_q8;
+        input signed [15:0] up_q8;
+        reg signed [31:0] sigmoid_q15;
+        reg signed [63:0] silu_q8;
+        reg signed [63:0] result_q8;
+        begin
+            if (gate_q8 >= 16'sd1024)
+                sigmoid_q15 = 32'sd32768;
+            else if (gate_q8 <= -16'sd1024)
+                sigmoid_q15 = 32'sd0;
+            else
+                sigmoid_q15 = 32'sd16384 + ($signed(gate_q8) <<< 4);
+
+            silu_q8 = ($signed(gate_q8) * sigmoid_q15) >>> 15;
+            result_q8 = (silu_q8 * $signed(up_q8)) >>> 8;
+            expected_silu_mul = sat16_tb(result_q8);
+        end
+    endfunction
+
+    function signed [15:0] expected_rope_lane;
+        input signed [15:0] x0_q8;
+        input signed [15:0] x1_q8;
+        input signed [15:0] cos_q15;
+        input signed [15:0] sin_q15;
+        input integer lane_sel;
+        reg signed [63:0] y0_q8;
+        reg signed [63:0] y1_q8;
+        reg signed [31:0] x0_ext;
+        reg signed [31:0] x1_ext;
+        reg signed [31:0] cos_ext;
+        reg signed [31:0] sin_ext;
+        begin
+            x0_ext = {{16{x0_q8[15]}}, x0_q8};
+            x1_ext = {{16{x1_q8[15]}}, x1_q8};
+            cos_ext = {{16{cos_q15[15]}}, cos_q15};
+            sin_ext = {{16{sin_q15[15]}}, sin_q15};
+            y0_q8 = ((x0_ext * cos_ext) - (x1_ext * sin_ext)) >>> 15;
+            y1_q8 = ((x0_ext * sin_ext) + (x1_ext * cos_ext)) >>> 15;
+            expected_rope_lane = lane_sel ? sat16_tb(y1_q8) : sat16_tb(y0_q8);
+        end
+    endfunction
+
+    function [31:0] isqrt64_tb;
+        input [63:0] value;
+        reg [31:0] result;
+        reg [31:0] trial;
+        integer bit_i;
+        begin
+            result = 32'd0;
+            for (bit_i = 31; bit_i >= 0; bit_i = bit_i - 1) begin
+                trial = result | (32'd1 << bit_i);
+                if ({32'd0, trial} * {32'd0, trial} <= value)
+                    result = trial;
+            end
+            isqrt64_tb = result;
+        end
+    endfunction
+
+    function [31:0] expected_rms_inv;
+        input [63:0] sumsq_q16;
+        input [31:0] element_count;
+        reg [63:0] mean_q16;
+        reg [31:0] sqrt_q8;
+        begin
+            mean_q16 = (sumsq_q16 / element_count) + 64'd1;
+            sqrt_q8 = isqrt64_tb(mean_q16);
+            if (sqrt_q8 == 32'd0)
+                expected_rms_inv = 32'h7fff_ffff;
+            else
+                expected_rms_inv = 64'd8388608 / sqrt_q8;
+        end
+    endfunction
+
+    function signed [15:0] expected_rms_lane;
+        input signed [15:0] value_q8;
+        input signed [15:0] weight_q8;
+        input [31:0] inv_q15;
+        reg signed [63:0] prod;
+        reg signed [31:0] value_ext;
+        reg signed [31:0] weight_ext;
+        begin
+            value_ext = {{16{value_q8[15]}}, value_q8};
+            weight_ext = {{16{weight_q8[15]}}, weight_q8};
+            prod = value_ext * weight_ext;
+            prod = (prod * $signed({1'b0, inv_q15[30:0]})) >>> 23;
+            expected_rms_lane = sat16_tb(prod);
+        end
+    endfunction
+
+    function [15:0] expected_soft_score;
+        input signed [15:0] delta_q8;
+        begin
+            if (delta_q8 >= 16'sd0)
+                expected_soft_score = 16'd32768;
+            else if (delta_q8 >= -16'sd128)
+                expected_soft_score = 16'd19872;
+            else if (delta_q8 >= -16'sd256)
+                expected_soft_score = 16'd12055;
+            else if (delta_q8 >= -16'sd384)
+                expected_soft_score = 16'd7310;
+            else if (delta_q8 >= -16'sd512)
+                expected_soft_score = 16'd4435;
+            else if (delta_q8 >= -16'sd640)
+                expected_soft_score = 16'd2690;
+            else if (delta_q8 >= -16'sd768)
+                expected_soft_score = 16'd1631;
+            else if (delta_q8 >= -16'sd896)
+                expected_soft_score = 16'd989;
+            else if (delta_q8 >= -16'sd1024)
+                expected_soft_score = 16'd600;
+            else if (delta_q8 >= -16'sd1280)
+                expected_soft_score = 16'd221;
+            else if (delta_q8 >= -16'sd1536)
+                expected_soft_score = 16'd81;
+            else if (delta_q8 >= -16'sd1792)
+                expected_soft_score = 16'd30;
+            else if (delta_q8 >= -16'sd2048)
+                expected_soft_score = 16'd11;
+            else
+                expected_soft_score = 16'd0;
         end
     endfunction
 
@@ -394,6 +575,217 @@ module tb_SPU_Top;
         end
     endtask
 
+    task run_scale_accum_row_range_case;
+        begin
+            $display("[TB] Q8 scale-accumulate row-range rejection");
+            mm_write(REGION_IN, 0, pack_scale_entry(32'sd1, 16'h3c00, 16'h3c00, 16'd256, 1'b1, 1'b1));
+
+            @(posedge clk);
+            spu_mode  <= SPU_MODE_Q8_SCALE_ACCUM;
+            spu_len   <= 32'd1;
+            spu_start <= 1'b1;
+            @(posedge clk);
+            spu_start <= 1'b0;
+
+            timeout = 0;
+            while (!spu_done) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("Q8 scale-accumulate row-range timeout");
+                    timeout = 0;
+                end
+            end
+
+            if (!spu_error || spu_error_code !== 8'd3)
+                fail("Q8 scale-accumulate row range did not report ERR_RANGE");
+            else
+                pass_count = pass_count + 1;
+
+            @(posedge clk);
+            spu_clear_done <= 1'b1;
+            @(posedge clk);
+            spu_clear_done <= 1'b0;
+        end
+    endtask
+
+    task run_silu_mul_case;
+        reg [DATA_WIDTH-1:0] out0;
+        reg signed [15:0] got;
+        reg signed [15:0] exp;
+        begin
+            $display("[TB] SPU_SiLU_Mul functional Q8.8 test");
+            samples[0] = 16'sd0;
+            samples[1] = 16'sd256;
+            samples[2] = -16'sd256;
+            samples[3] = 16'sd1024;
+            samples[4] = -16'sd1024;
+            samples[5] = 16'sd512;
+            samples[6] = -16'sd512;
+            samples[7] = 16'sd128;
+
+            params[0] = 16'sd512;
+            params[1] = 16'sd512;
+            params[2] = 16'sd512;
+            params[3] = 16'sd256;
+            params[4] = 16'sd256;
+            params[5] = -16'sd256;
+            params[6] = 16'sd256;
+            params[7] = 16'sd384;
+
+            mm_write(REGION_IN, 0, pack_i16_word(0));
+            mm_write(REGION_PARAM, 0, pack_param_word(0));
+            start_and_wait(SPU_MODE_SILU_MUL, 32'd8);
+            mm_read(REGION_OUT, 0, out0);
+
+            for (lane = 0; lane < 8; lane = lane + 1) begin
+                got = out0[16*lane +: 16];
+                exp = expected_silu_mul(samples[lane], params[lane]);
+                if (got !== exp) begin
+                    $display("[TB][FAIL] SiLU lane=%0d got=%0d expected=%0d", lane, got, exp);
+                    fail_count = fail_count + 1;
+                end else begin
+                    pass_count = pass_count + 1;
+                end
+            end
+        end
+    endtask
+
+    task run_rmsnorm_case;
+        reg [DATA_WIDTH-1:0] out0;
+        reg signed [15:0] got;
+        reg signed [15:0] exp;
+        reg [63:0] sumsq;
+        reg [31:0] inv;
+        reg signed [31:0] sample_ext;
+        reg signed [63:0] sample_square;
+        integer i;
+        begin
+            $display("[TB] SPU_RMSNorm functional Q8.8 test");
+            samples[0] = 16'sd256;
+            samples[1] = 16'sd512;
+            samples[2] = -16'sd256;
+            samples[3] = 16'sd0;
+            samples[4] = 16'sd128;
+            samples[5] = -16'sd128;
+            samples[6] = 16'sd64;
+            samples[7] = -16'sd64;
+            for (i = 0; i < 8; i = i + 1)
+                params[i] = 16'sd256;
+
+            mm_write(REGION_IN, 0, pack_i16_word(0));
+            mm_write(REGION_PARAM, 0, pack_param_word(0));
+            start_and_wait(SPU_MODE_RMSNORM, 32'd8);
+            mm_read(REGION_OUT, 0, out0);
+
+            sumsq = 64'd0;
+            for (i = 0; i < 8; i = i + 1) begin
+                sample_ext = {{16{samples[i][15]}}, samples[i]};
+                sample_square = $signed({{32{sample_ext[31]}}, sample_ext}) *
+                                $signed({{32{sample_ext[31]}}, sample_ext});
+                sumsq = sumsq + sample_square[63:0];
+            end
+            inv = expected_rms_inv(sumsq, 32'd8);
+
+            for (lane = 0; lane < 8; lane = lane + 1) begin
+                got = out0[16*lane +: 16];
+                exp = expected_rms_lane(samples[lane], params[lane], inv);
+                if (got !== exp) begin
+                    $display("[TB][FAIL] RMS lane=%0d got=%0d expected=%0d", lane, got, exp);
+                    fail_count = fail_count + 1;
+                end else begin
+                    pass_count = pass_count + 1;
+                end
+            end
+        end
+    endtask
+
+    task run_rope_case;
+        reg [DATA_WIDTH-1:0] out0;
+        reg signed [15:0] got;
+        reg signed [15:0] exp;
+        begin
+            $display("[TB] SPU_RoPE functional Q8.8/Q1.15 test");
+            samples[0] = 16'sd256; samples[1] = 16'sd0;
+            samples[2] = 16'sd0;   samples[3] = 16'sd256;
+            samples[4] = 16'sd256; samples[5] = 16'sd256;
+            samples[6] = -16'sd256; samples[7] = 16'sd256;
+
+            params[0] = 16'sd32767; params[1] = 16'sd0;
+            params[2] = 16'sd0;     params[3] = 16'sd32767;
+            params[4] = 16'sd0;     params[5] = 16'sd32767;
+            params[6] = 16'sd32767; params[7] = 16'sd0;
+
+            mm_write(REGION_IN, 0, pack_i16_word(0));
+            mm_write(REGION_PARAM, 0, pack_param_word(0));
+            start_and_wait(SPU_MODE_ROPE, 32'd8);
+            mm_read(REGION_OUT, 0, out0);
+
+            for (lane = 0; lane < 8; lane = lane + 1) begin
+                got = out0[16*lane +: 16];
+                exp = expected_rope_lane(samples[(lane/2)*2],
+                                         samples[(lane/2)*2 + 1],
+                                         params[(lane/2)*2],
+                                         params[(lane/2)*2 + 1],
+                                         lane % 2);
+                if (got !== exp) begin
+                    $display("[TB][FAIL] RoPE lane=%0d got=%0d expected=%0d", lane, got, exp);
+                    fail_count = fail_count + 1;
+                end else begin
+                    pass_count = pass_count + 1;
+                end
+            end
+        end
+    endtask
+
+    task run_softmax_case;
+        reg [DATA_WIDTH-1:0] out0;
+        reg [15:0] got;
+        reg [15:0] exp;
+        reg signed [15:0] max_val;
+        reg [63:0] score_sum;
+        reg [15:0] scores [0:7];
+        reg [79:0] prob_tmp;
+        integer i;
+        begin
+            $display("[TB] SPU_Softmax functional Q8.8/Q0.15 test");
+            samples[0] = 16'sd0;
+            samples[1] = -16'sd256;
+            samples[2] = -16'sd512;
+            samples[3] = -16'sd1024;
+            samples[4] = -16'sd2048;
+            samples[5] = -16'sd128;
+            samples[6] = -16'sd384;
+            samples[7] = -16'sd768;
+
+            mm_write(REGION_IN, 0, pack_i16_word(0));
+            start_and_wait(SPU_MODE_SOFTMAX, 32'd8);
+            mm_read(REGION_OUT, 0, out0);
+
+            max_val = samples[0];
+            for (i = 1; i < 8; i = i + 1)
+                if (samples[i] > max_val)
+                    max_val = samples[i];
+            score_sum = 64'd0;
+            for (i = 0; i < 8; i = i + 1) begin
+                scores[i] = expected_soft_score(samples[i] - max_val);
+                score_sum = score_sum + scores[i];
+            end
+
+            for (lane = 0; lane < 8; lane = lane + 1) begin
+                got = out0[16*lane +: 16];
+                prob_tmp = ({64'd0, scores[lane]} << 15) / score_sum;
+                exp = prob_tmp[15:0];
+                if (got !== exp) begin
+                    $display("[TB][FAIL] Softmax lane=%0d got=%0d expected=%0d", lane, got, exp);
+                    fail_count = fail_count + 1;
+                end else begin
+                    pass_count = pass_count + 1;
+                end
+            end
+        end
+    endtask
+
     task run_marker_mode;
         input [7:0] mode;
         input [127:0] label;
@@ -455,8 +847,9 @@ module tb_SPU_Top;
         if (spu_caps[0] !== 1'b1 || spu_caps[1] !== 1'b1 ||
             spu_caps[2] !== 1'b0 || spu_caps[3] !== 1'b0 ||
             spu_caps[4] !== 1'b0 || spu_caps[5] !== 1'b0 ||
-            spu_caps[6] !== 1'b1 || spu_caps[7] !== 1'b1)
-            fail("SPU capability bits are not set as expected");
+            spu_caps[6] !== 1'b1 || spu_caps[7] !== 1'b1 ||
+            spu_caps[8] !== 1'b1 || spu_caps[9] !== 1'b1)
+            fail("SPU capability bits do not match the integration-safe policy");
         else
             pass_count = pass_count + 1;
 
@@ -464,10 +857,11 @@ module tb_SPU_Top;
         run_quant_case();
         run_scale_accum_case();
         run_scale_accum_bad_scale_case();
-        run_marker_mode(SPU_MODE_SILU_MUL, "SPU_SiLU_Mul");
-        run_marker_mode(SPU_MODE_RMSNORM, "SPU_RMSNorm");
-        run_marker_mode(SPU_MODE_ROPE, "SPU_RoPE");
-        run_marker_mode(SPU_MODE_SOFTMAX, "SPU_Softmax");
+        run_scale_accum_row_range_case();
+        run_silu_mul_case();
+        run_rmsnorm_case();
+        run_rope_case();
+        run_softmax_case();
 
         if (fail_count == 0) begin
             $display("[TB][PASS] SPU_Top tests passed pass_count=%0d", pass_count);

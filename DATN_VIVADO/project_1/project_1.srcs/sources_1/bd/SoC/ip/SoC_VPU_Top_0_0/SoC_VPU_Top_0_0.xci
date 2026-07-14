@@ -26,6 +26,7 @@
         "MAX_ROWS": [ { "value": "256", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "MAX_COL_BEATS": [ { "value": "128", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "MAX_GROUP_Q8_BLOCKS": [ { "value": "64", "resolve_type": "user", "format": "long", "usage": "all" } ],
+        "SPU_STREAM_TEST_STALL_ENABLE": [ { "value": "0", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "Component_Name": [ { "value": "SoC_VPU_Top_0_0", "resolve_type": "user", "usage": "all" } ]
       },
       "model_parameters": {
@@ -46,7 +47,8 @@
         "RESULT_FIFO_DEPTH": [ { "value": "8", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "MAX_ROWS": [ { "value": "256", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "MAX_COL_BEATS": [ { "value": "128", "resolve_type": "generated", "format": "long", "usage": "all" } ],
-        "MAX_GROUP_Q8_BLOCKS": [ { "value": "64", "resolve_type": "generated", "format": "long", "usage": "all" } ]
+        "MAX_GROUP_Q8_BLOCKS": [ { "value": "64", "resolve_type": "generated", "format": "long", "usage": "all" } ],
+        "SPU_STREAM_TEST_STALL_ENABLE": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ]
       },
       "project_parameters": {
         "ARCHITECTURE": [ { "value": "zynquplus" } ],

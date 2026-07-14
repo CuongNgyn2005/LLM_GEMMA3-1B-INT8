@@ -43,7 +43,8 @@ module VPU_Top #(
     parameter integer RESULT_FIFO_DEPTH      = 8,
     parameter integer MAX_ROWS               = 256,
     parameter integer MAX_COL_BEATS          = 128,
-    parameter integer MAX_GROUP_Q8_BLOCKS    = 64
+    parameter integer MAX_GROUP_Q8_BLOCKS    = 64,
+    parameter integer SPU_STREAM_TEST_STALL_ENABLE = 0
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
@@ -123,7 +124,8 @@ module VPU_Top #(
         .RESULT_FIFO_DEPTH      (RESULT_FIFO_DEPTH),
         .MAX_ROWS               (MAX_ROWS),
         .MAX_COL_BEATS          (MAX_COL_BEATS),
-        .MAX_GROUP_Q8_BLOCKS    (MAX_GROUP_Q8_BLOCKS)
+        .MAX_GROUP_Q8_BLOCKS    (MAX_GROUP_Q8_BLOCKS),
+        .SPU_STREAM_TEST_STALL_ENABLE (SPU_STREAM_TEST_STALL_ENABLE)
     ) u_my_ip (
         .s00_axi_aclk       (s00_axi_aclk),
         .s00_axi_aresetn    (s00_axi_aresetn),

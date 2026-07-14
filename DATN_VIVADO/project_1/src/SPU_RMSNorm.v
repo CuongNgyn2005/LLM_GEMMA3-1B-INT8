@@ -1,35 +1,160 @@
 /*
  * Module      : SPU_RMSNorm
- * Description : Reserved interface for future RMSNorm offload.
+ * Description : Fixed-point RMSNorm lane helper.
  *
- * Target operation:
- *     rms = rsqrt(mean(x^2) + eps)
- *     y[i] = x[i] * rms * weight[i]
+ * Memory contract used by SPU_Controller:
+ *   SPU_IN    word N : eight signed Q8.8 input values
+ *   SPU_PARAM word N : eight signed Q8.8 weight values
+ *   SPU_OUT   word N : eight signed Q8.8 normalized values
  *
- * The two-pass square-sum/rsqrt/scale datapath and SPU_PARAM weight reader are
- * not implemented yet.  This interface therefore reports supported=0 rather
- * than advertising a marker completion as an RMSNorm result.
+ * The controller performs the vector square-sum pass and provides inv_rms_q15.
+ * This helper processes one lane at a time through registered multiply stages
+ * so the RMSNorm lane arithmetic is not an 8-lane combinational cone.
  */
 
 `timescale 1ns/1ps
 
-module SPU_RMSNorm (
-    input  wire clk,
-    input  wire resetn,
-    input  wire start,
-    output reg  busy,
-    output reg  done,
-    output wire supported
+module SPU_RMSNorm #(
+    parameter integer AXI_DATA_WIDTH = 128
+) (
+    input  wire                              clk,
+    input  wire                              resetn,
+    input  wire                              start,
+    input  wire [AXI_DATA_WIDTH-1:0]         input_word,
+    input  wire [AXI_DATA_WIDTH-1:0]         weight_word,
+    input  wire [31:0]                       inv_rms_q15,
+    input  wire [7:0]                        lane_valid,
+    output reg                               busy,
+    output reg                               done,
+    output reg  [AXI_DATA_WIDTH-1:0]         result_word,
+    output reg  [63:0]                       word_sumsq_q16,
+    output wire                              supported
 );
-    assign supported = 1'b0;
+    localparam integer LANES = AXI_DATA_WIDTH / 16;
+
+    localparam [1:0] S_IDLE  = 2'd0;
+    localparam [1:0] S_MUL_A = 2'd1;
+    localparam [1:0] S_MUL_B = 2'd2;
+    localparam [1:0] S_WRITE = 2'd3;
+
+    assign supported = 1'b1;
+
+    reg [1:0] state_r;
+    reg [2:0] lane_idx_r;
+    reg [AXI_DATA_WIDTH-1:0] input_word_r;
+    reg [AXI_DATA_WIDTH-1:0] weight_word_r;
+    reg [7:0] lane_valid_r;
+    reg [31:0] inv_rms_q15_r;
+    reg lane_active_r;
+    reg signed [31:0] value_ext_r;
+    reg signed [31:0] weight_ext_r;
+    reg signed [63:0] value_weight_r;
+    reg signed [63:0] norm_product_r;
+    reg [63:0] sumsq_product_r;
+
+    function signed [15:0] sat16;
+        input signed [63:0] value;
+        begin
+            if (value > 64'sd32767)
+                sat16 = 16'sd32767;
+            else if (value < -64'sd32768)
+                sat16 = -16'sd32768;
+            else
+                sat16 = value[15:0];
+        end
+    endfunction
 
     always @(posedge clk) begin
         if (!resetn) begin
+            state_r <= S_IDLE;
+            lane_idx_r <= 3'd0;
             busy <= 1'b0;
             done <= 1'b0;
+            result_word <= {AXI_DATA_WIDTH{1'b0}};
+            word_sumsq_q16 <= 64'd0;
+            input_word_r <= {AXI_DATA_WIDTH{1'b0}};
+            weight_word_r <= {AXI_DATA_WIDTH{1'b0}};
+            lane_valid_r <= 8'd0;
+            inv_rms_q15_r <= 32'd0;
+            lane_active_r <= 1'b0;
+            value_ext_r <= 32'sd0;
+            weight_ext_r <= 32'sd0;
+            value_weight_r <= 64'sd0;
+            norm_product_r <= 64'sd0;
+            sumsq_product_r <= 64'd0;
         end else begin
-            busy <= 1'b0;
-            done <= start;
+            done <= 1'b0;
+
+            case (state_r)
+                S_IDLE: begin
+                    busy <= 1'b0;
+                    if (start) begin
+                        busy <= 1'b1;
+                        lane_idx_r <= 3'd0;
+                        input_word_r <= input_word;
+                        weight_word_r <= weight_word;
+                        lane_valid_r <= lane_valid;
+                        inv_rms_q15_r <= inv_rms_q15;
+                        result_word <= {AXI_DATA_WIDTH{1'b0}};
+                        word_sumsq_q16 <= 64'd0;
+                        state_r <= S_MUL_A;
+                    end
+                end
+
+                S_MUL_A: begin
+                    busy <= 1'b1;
+                    lane_active_r <= lane_valid_r[lane_idx_r];
+                    value_ext_r <= {{16{input_word_r[16*lane_idx_r + 15]}},
+                                    input_word_r[16*lane_idx_r +: 16]};
+                    weight_ext_r <= {{16{weight_word_r[16*lane_idx_r + 15]}},
+                                     weight_word_r[16*lane_idx_r +: 16]};
+                    value_weight_r <=
+                        $signed({{16{input_word_r[16*lane_idx_r + 15]}},
+                                 input_word_r[16*lane_idx_r +: 16]}) *
+                        $signed({{16{weight_word_r[16*lane_idx_r + 15]}},
+                                 weight_word_r[16*lane_idx_r +: 16]});
+                    sumsq_product_r <=
+                        $signed({{16{input_word_r[16*lane_idx_r + 15]}},
+                                 input_word_r[16*lane_idx_r +: 16]}) *
+                        $signed({{16{input_word_r[16*lane_idx_r + 15]}},
+                                 input_word_r[16*lane_idx_r +: 16]});
+                    state_r <= S_MUL_B;
+                end
+
+                S_MUL_B: begin
+                    busy <= 1'b1;
+                    if (lane_active_r) begin
+                        word_sumsq_q16 <= word_sumsq_q16 + sumsq_product_r;
+                        norm_product_r <=
+                            value_weight_r *
+                            $signed({1'b0, inv_rms_q15_r[30:0]});
+                    end else begin
+                        norm_product_r <= 64'sd0;
+                    end
+                    state_r <= S_WRITE;
+                end
+
+                S_WRITE: begin
+                    busy <= 1'b1;
+                    if (lane_active_r)
+                        result_word[16*lane_idx_r +: 16] <=
+                            sat16(norm_product_r >>> 23);
+
+                    if (lane_idx_r == (LANES - 1)) begin
+                        busy <= 1'b0;
+                        done <= 1'b1;
+                        state_r <= S_IDLE;
+                    end else begin
+                        lane_idx_r <= lane_idx_r + 3'd1;
+                        state_r <= S_MUL_A;
+                    end
+                end
+
+                default: begin
+                    busy <= 1'b0;
+                    state_r <= S_IDLE;
+                end
+            endcase
         end
     end
 endmodule

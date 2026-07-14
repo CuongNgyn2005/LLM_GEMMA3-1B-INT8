@@ -2,10 +2,9 @@
   "schema": "xilinx.com:schema:json_instance:1.0",
   "ip_inst": {
     "xci_name": "mult_gen_0",
-    "cell_name": "u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[0].u_mult_gen_0/mult_gen_0",
     "component_reference": "xilinx.com:ip:mult_gen:12.0",
     "ip_revision": "18",
-    "gen_directory": "../../../../../../../../doan/datn_rtl/datn_vivado/project_1/tmp_edit_project.gen/sources_1/ip/mult_gen_0",
+    "gen_directory": "../../../../project_1.gen/sources_1/ip/mult_gen_0",
     "parameters": {
       "component_parameters": {
         "InternalUser": [ { "value": "0", "resolve_type": "user", "format": "long", "usage": "all" } ],
@@ -71,9 +70,9 @@
         "IPCONTEXT": [ { "value": "IP_Flow" } ],
         "IPREVISION": [ { "value": "18" } ],
         "MANAGED": [ { "value": "TRUE" } ],
-        "OUTPUTDIR": [ { "value": "../../../../../../../../doan/datn_rtl/datn_vivado/project_1/tmp_edit_project.gen/sources_1/ip/mult_gen_0" } ],
+        "OUTPUTDIR": [ { "value": "../../../../project_1.gen/sources_1/ip/mult_gen_0" } ],
         "SELECTEDSIMMODEL": [ { "value": "" } ],
-        "SHAREDDIR": [ { "value": "./" } ],
+        "SHAREDDIR": [ { "value": "." } ],
         "SWVERSION": [ { "value": "2022.2" } ],
         "SYNTHESISFLOW": [ { "value": "GLOBAL" } ]
       }
