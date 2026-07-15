@@ -1,0 +1,1725 @@
+# CẬP NHẬT 15-07-2026 — C0 V27: ZDMA `BYTE_CNT_OVRFL`, BẢN VÁ HOST V28 CHỜ XÁC NHẬN TRÊN BOARD
+
+## Trạng thái mới nhất
+
+Lần C0 mới nhất dùng host `zcu104-gemma3-q8-v27-zdma-done-gated-trace`,
+`FPGA_CONTRACT_CHECK=364`, `FPGA_CONTRACT_ABORT=1`, `FPGA_CONTRACT_RAW_REPAIR=0`
+và `FPGA_CONTRACT_RAW_RETRY=0`. Kết quả có ý nghĩa quan trọng:
+
+- Các `CONTRACT_VALUE_PASS` đã hoàn tất cho toàn bộ Q8 GEMV của layer 0--3 và
+  `blk.4.attn_q/k/v/output.weight`; tất cả có `max_abs=0`, `max_rel=0`.
+  Như vậy tại các phép đã chạy, raw INT32 từ VPU, layout packed Q8_0, đọc RESULT
+  và CPU dequantize hiện khớp CPU reference tuyệt đối.
+- C0 không dừng vì `RAW_MISMATCH`. Nó dừng trong `blk.4.ffn_gate.weight`
+  (`K=1152, N=6912, M=5`) khi ZDMA copy RESULT từ `0xA0200000` về
+  `0x800200000`, 36,864 byte:
+
+  ```text
+  status=0x00000002 state=2 isr=0x00000008 ctrl2=0x00000001
+  ```
+
+  Bit ISR `0x8` là `BYTE_CNT_OVRFL`; đây không phải thông báo model, lỗi sampler
+  hay raw-result mismatch. Kênh ZDMA báo lỗi trước khi host nhận được tile RESULT.
+- Với các FFN stage đã pass, ba cost lớn vẫn là `host_result_unpack` khoảng
+  148.8 ms, `ip_compute` khoảng 139.4 ms và `prep` khoảng 127.5 ms cho M=5.
+  Không tối ưu/pipeline các cost này trước khi C0 đi qua toàn bộ numerical gate;
+  nếu không sẽ làm khó phân biệt lỗi driver với sai số mới.
+
+## Nguyên nhân khả dĩ và sửa chữa v28
+
+`ZDMA_CH_TOTAL_BYTE` là bộ đếm theo *channel*, không thuộc riêng descriptor.
+Thanh ghi này là write-the-count-to-clear (WTC); API standalone chính thức
+`XZDma_TotalByteClear()` cũng đọc giá trị rồi ghi lại chính giá trị đó. Host v27
+không quản lý bộ đếm này, nên số byte có thể tích luỹ từ các transfer trước hoặc
+trạng thái cũ của channel và cuối cùng kích hoạt `BYTE_CNT_OVRFL`.
+
+`BASIC_SOC_COURSE.../FPGA_Driver.c` là reference tốt cho base address và linear
+descriptor, nhưng struct của nó che vùng `0x168..0x188` bằng `dmy1[9]` và driver
+one-shot không bao giờ WTC-clear `TOTAL_BYTE`. Không sao với demo transfer ngắn;
+không thể dùng nguyên xi cho chuỗi hàng nghìn ACT/WEIGHT/RESULT transfer của LLM.
+
+`fpga_host.cpp` v28 thực hiện các thay đổi có chủ đích sau:
+
+1. Mô tả đúng các thanh ghi ZDMA `CUR_PYLD`, `CUR_DSCR` và `TOTAL_BYTE` tại
+   offset `0x188`, có `static_assert` để chặn sai lệch struct/register map.
+2. Xoá `TOTAL_BYTE` theo WTC sau init và **trước mỗi descriptor transfer**;
+   không thay đổi bất kỳ địa chỉ ACT/WEIGHT/RESULT hay giao thức RTL nào.
+3. Coi `BYTE_CNT_OVRFL` và `DMA_PAUSE` là lỗi fatal; log giải mã tên từng bit.
+4. Khi transfer fail, dump 24 transfer gần nhất, gồm source/destination physical
+   address, số byte, ISR/status/CTRL2, byte counter trước/sau xoá, VPU
+   status/progress, current payload address và cả descriptor words.
+
+Đây là sửa driver PS/ZDMA; **không thay RTL và không chạy synthesis/implementation**
+trong cập nhật này. RTL canonical đã được đọc để đối chiếu map:
+`ACT 0x00010000`, `WEIGHT 0x00100000`, `RESULT 0x00200000`; các giá trị này khớp
+với địa chỉ trong C0. XSim không cần chạy lại khi RTL không đổi.
+
+## Tiêu chí xác nhận bắt buộc trên ZCU104
+
+Sau khi build `build_mem`, chạy lại đúng C0. Log phải có cả:
+
+```text
+ready version=zcu104-gemma3-q8-v28-zdma-bytecounter-trace
+ZDMA byte-counter policy clear=before_every_transfer
+```
+
+Mốc pass tối thiểu là đi qua `blk.4.ffn_gate.weight` mà không có
+`BYTE_CNT_OVRFL`. Nếu còn lỗi, giữ nguyên C0; log v28 sẽ có
+`DMA_TRACE_BEGIN reason=transfer_completion_failure` và `total_before_clear` /
+`total_after` để phân biệt counter stale với lỗi mới trên AXI/ZDMA. Chưa được
+chuyển primary command sang FPGA raw hoặc bật weight cache lớn cho đến khi C0
+qua numerical gate và lỗi transfer này được giải quyết.
+
+Tài liệu đối chiếu: AMD ZDMA `TOTAL_BYTE` register, Xilinx standalone ZDMA API,
+và Linux `zynqmp_dma` driver (ISR bit `BYTE_CNT_OVRFL`).
+
+---
+
+# BÁO CÁO HIỆN TRẠNG VÀ KẾ HOẠCH KHẮC PHỤC — GEMMA 3 1B Q8_0 TRÊN ZCU104
+
+**Ngày cập nhật:** 14-07-2026  
+**Clock PL đang sử dụng:** 187.500.000 Hz  
+**Lệnh chạy chính:**
+
+```bash
+sudo ./build_mem/bin/llama-cli \
+    -m ./models/gemma-3-1b-it-Q8_0.gguf \
+    -p "Please write about AI" \
+    -n 64
+```
+
+**Phạm vi của lần review:**
+
+- `DATN_RTL/fpga_debug.log` và `DATN_RTL/result_prompt.txt` mới nhất;
+- `llama.cpp/ggml/src/ggml-cpu/fpga_host.cpp`;
+- toàn bộ RTL active trong `DATN_RTL/RTL`;
+- source custom-IP mà `project_1` thực sự sử dụng;
+- report synthesis, implementation, timing, utilization, DRC, methodology,
+  route, control-set và power trong `DATN_RTL/DATN_VIVADO/project_1`;
+- tài liệu AMD về DSP48E2, UltraRAM và dataflow/PIPO;
+- các công trình FPGA-LLM/Transformer liên quan.
+
+Lần review này **không sửa RTL, không sửa host, không sửa project Vivado và
+không chạy synthesis/implementation**. File này là chẩn đoán và hướng dẫn sửa
+chi tiết cho các lượt triển khai tiếp theo.
+
+---
+
+## 1. Kết luận bắt buộc
+
+Project hiện có **hai vấn đề độc lập nhưng liên quan chặt chẽ**:
+
+1. **Correctness chưa đạt:** model sinh token có piece `[multimodal]` thay vì
+   ngôn ngữ tự nhiên. Đây không phải thông báo trạng thái của FPGA. Chuỗi này
+   không tồn tại trong source `llama.cpp` như một log cố định; nó được in từ
+   token do sampler chọn qua `common_token_to_piece()`. Vì vậy logits hoặc
+   hidden-state đang sai, hoặc ít nhất chưa được chứng minh đúng.
+
+2. **Throughput quá thấp:** decode đạt khoảng **0,082 token/s**, tương đương
+   **12,20 giây/token**. Nguyên nhân không nằm ở sampler; sampler chỉ mất khoảng
+   1,49 ms/token. Gần toàn bộ thời gian nằm trong đường Q8 GEMV FPGA hiện tại:
+   chuẩn bị weight, VPU stop/wait sau từng block Q8, trả raw INT32 khối lượng
+   lớn về PS, và CPU unpack/scale/accumulate.
+
+Không được tối ưu performance trước khi có numerical gate. Tăng tốc một đường
+tính đang sinh logits sai chỉ làm model trả lời sai nhanh hơn.
+
+---
+
+## 2. Hiện trạng được chứng minh từ log mới nhất
+
+### 2.1. Kết quả model
+
+`result_prompt.txt` cho thấy:
+
+```text
+user
+Please write about AI
+model
+[multimodal]
+```
+
+Performance của run:
+
+| Chỉ số | Giá trị |
+|---|---:|
+| Prompt eval | 110.181,53 ms / 13 token |
+| Prompt throughput | 0,12 token/s |
+| Decode eval | 561.011,82 ms / 46 lượt |
+| Decode latency | 12.195,91 ms/token |
+| Decode throughput | 0,08 token/s |
+| Sampler | 89,59 ms / 60 lượt |
+| Thời gian sampler trung bình | 1,49 ms/token |
+
+Model không bị treo trong VPU. Log có 46 lượt decode, các token boundary tiếp
+tục xuất hiện, không có timeout hoặc error. Người dùng đã interrupt sau khi thấy
+output không đúng và quá chậm.
+
+### 2.2. Binary/bitstream đang chạy trên board
+
+Header log:
+
+```text
+host_version = zcu104-gemma3-q8-safe-uio-readyvalid-v15-legacy-raw-compat
+limits       = 0x00800100
+caps         = 0x1000407b
+spu_caps     = 0x100003c3
+stream_protocol = 0x00000000
+bitstream_id    = 0x00000000
+expected_id     = 0x56505531
+scheduler       = 0
+pl_scale        = 0
+weight_cache    = 0
+activation_cache= 0
+contract_check  = 0
+```
+
+Ý nghĩa:
+
+- Board quảng bá hai bank và descriptor, nhưng không trả protocol/version và
+  identity mà host yêu cầu.
+- Host chủ động khóa đường PL-scale và ping-pong scheduler, sau đó chạy đường
+  compatibility: `raw INT32 -> CPU scale/accumulate -> F32`.
+- Vì `contract_check=0`, run này không chứng minh raw dot, scale Q8_0, layout
+  RESULT hoặc logits cuối khớp reference CPU.
+- Vì `weight_cache=0`, toàn bộ payload weight được pack lại cho từng token.
+
+### 2.3. Chênh lệch giữa RTL local và bitstream trên board
+
+RTL local hiện có:
+
+- `STREAM_PROTOCOL_VERSION = 1`;
+- `BITSTREAM_ID = 0x56505531` (`"VPU1"`);
+- ready/valid lossless từ VPU sang SPU;
+- FIFO raw stream depth 32;
+- hai bank ACT/WEIGHT/RESULT;
+- job ID, bank ID và descriptor.
+
+Source canonical `DATN_RTL/RTL/*.v` khớp hash **17/17** với source active của
+custom IP tại:
+
+```text
+DATN_RTL/DATN_VIVADO/project_1/project_1.gen/
+  sources_1/bd/SoC/ipshared/8a36/src/
+```
+
+Do đó local project đã chứa RTL mới. Tuy nhiên board trả protocol/id bằng 0,
+chứng minh bitstream đang chạy trên board là bản trung gian/cũ hoặc output
+products được nạp lên board chưa phải artifact mới nhất.
+
+Đây là blocker trực tiếp của ping-pong/PL-scale. Không được ép host bỏ qua ID;
+phải deploy đúng bitstream rồi đọc lại hai register.
+
+---
+
+## 3. Phân tích định lượng một decode token
+
+Đã phân tích các token hoàn chỉnh `seq=14..58`. Mỗi token có đúng 183 Q8 GEMV.
+Các token ổn định, không có xu hướng `ip_compute_ms` tăng dần theo sequence.
+
+### 3.1. Trung bình trên một token decode
+
+| Stage | Thời gian trung bình | Tỷ lệ xấp xỉ |
+|---|---:|---:|
+| Preparation | 3.631,82 ms | 29,9% |
+| DMA input | 422,60 ms | 3,5% |
+| IP compute | 3.501,20 ms | 28,8% |
+| DMA output | 345,61 ms | 2,8% |
+| Host result unpack | 3.738,54 ms | 30,7% |
+| Host scale/accumulate/store | 515,66 ms | 4,2% |
+| Tổng stage FPGA | 12.161,22 ms | gần 100% token |
+
+Traffic trung bình mỗi token:
+
+| Loại | Dung lượng |
+|---|---:|
+| Weight payload DDR -> IP | 953,44 MiB |
+| Raw INT32 RESULT IP -> DDR -> CPU | 119,18 MiB |
+| F32 output thực sự cần cho toàn bộ GEMV | khoảng 2,752 MiB |
+| Raw-result amplification | **43,31 lần** |
+| VPU/ZDMA jobs | khoảng **3.234 job/token** |
+
+### 3.2. Tensor tốn thời gian nhất
+
+Với token `seq=58`:
+
+| Nhóm tensor | VPU runs | Thời gian | Tỷ lệ token |
+|---|---:|---:|---:|
+| `token_embd.weight` / vocab projection | 1.024 | 3.661,52 ms | 30,1% |
+| 26 x `ffn_down` | 520 | 2.541,41 ms | 20,9% |
+| 26 x `ffn_gate` | 702 | 2.511,20 ms | 20,7% |
+| 26 x `ffn_up` | 702 | 2.510,81 ms | 20,7% |
+| Attention projections còn lại | phần còn lại | khoảng 0,9 s | 7,6% |
+
+`token_embd.weight` có shape:
+
+```text
+K=1152, N=262144, M=1
+weight_bytes = 301.989.888 byte
+result_bytes = 37.748.736 byte
+```
+
+Một tensor này đã tạo 1.024 tile row và chiếm khoảng 30% latency/token. Đây là
+output projection tạo logits, nên cũng là tensor correctness quan trọng nhất.
+
+### 3.3. Mô hình khả năng đạt 2,5 token/s
+
+Gemma 3 1B cần xấp xỉ 1 tỷ MAC mỗi decode token. Để đạt 2,5 token/s cần tối
+thiểu khoảng 2,5 GMAC/s sustained, chưa tính attention, norm và scheduler.
+
+PMAU hiện có 16 INT8 multiplier. Peak lý thuyết ở 187,5 MHz:
+
+```text
+16 MAC/cycle x 187,5 MHz = 3,0 GMAC/s
+```
+
+IP compute thực tế:
+
+```text
+~1,0 GMAC / 3,50 s = ~0,286 GMAC/s
+```
+
+Hiệu suất compute chỉ khoảng 9,5% peak. Single PMAU 16 lane chỉ có thể đạt mục
+tiêu 2,5 token/s nếu utilization trên 83% và mọi overhead gần bằng 0; điều này
+không đủ margin thực tế. Kiến trúc cần tối thiểu hai row-PE sau khi continuous
+stream đã hoạt động.
+
+Ngoài compute, weight INT8 đã là gần 953 MiB/token. Ở 2,5 token/s cần trên
+2,38 GiB/s weight payload sustained. Log hiện đo khoảng 2,2–2,3 GiB/s qua ZDMA.
+Vì vậy 2,5 token/s không thể đạt bằng cách chỉ thêm DSP; còn phải tăng hiệu quả
+DDR/ZDMA hoặc giảm traffic/transaction overhead.
+
+---
+
+## 4. Vì sao model sinh `[multimodal]`
+
+### 4.1. Đây là token do sampler chọn, không phải log FPGA
+
+Trong `llama.cpp/tools/main/main.cpp`:
+
+- dòng gần 751 gọi `common_sampler_sample()`;
+- dòng gần 786 gọi `common_token_to_piece()`;
+- dòng gần 789 in piece ra console.
+
+Không có chuỗi `[multimodal]` hard-code trong core `llama.cpp`. Vì vậy output
+này bắt nguồn từ vocabulary/tokenizer sau khi logits được tính.
+
+Gemma 3 1B trong workspace được dùng như model text-generation. File
+`tools/mtmd/README.md` cũng ghi chú biến thể 1B không có vision encoder. Token
+`[multimodal]` xuất hiện ở output không chứng minh model đang xử lý ảnh; nó là
+dấu hiệu sampler chọn một token không phù hợp.
+
+### 4.2. Self-test hiện tại chưa đủ
+
+Self-test basic/packed/row-limit chỉ chứng minh:
+
+- register map đọc/ghi được;
+- ZDMA chuyển được pattern nhỏ;
+- VPU tính đúng một số dot-product integer nhỏ;
+- row addressing cơ bản không sai.
+
+Nó không chứng minh:
+
+- 183 tensor Q8_0 của Gemma đều đúng;
+- mọi block scale `d_a * d_w` đúng;
+- row/block ordering của output projection đúng;
+- `dst` F32 có stride/layout đúng;
+- logits 262.144 phần tử là finite và khớp CPU;
+- token top-1/top-k khớp reference.
+
+### 4.3. Run hiện tại tắt contract checker
+
+`contract_check=0` là blocker P0. Trước khi sửa performance, phải chạy một
+diagnostic riêng, không thay thế primary command:
+
+```bash
+sudo env \
+  FPGA_CONTRACT_CHECK=364 \
+  FPGA_CONTRACT_ABORT=1 \
+  FPGA_CONTRACT_RAW_REPAIR=0 \
+  FPGA_CONTRACT_RAW_RETRY=0 \
+  FPGA_WEIGHT_CACHE=0 \
+  FPGA_FUSE_RAW_RESULT_ACCUM=0 \
+  FPGA_ACCELERATE_VOCAB=0 \
+  FPGA_CONTRACT_ATOL=1e-3 \
+  FPGA_CONTRACT_RTOL=1e-4 \
+  FPGA_LOG_FLUSH_EVERY=1 \
+  ./build_mem/bin/llama-cli \
+    -m ./models/gemma-3-1b-it-Q8_0.gguf \
+    -p "Please write about AI" \
+    -n 2 \
+    --no-warmup \
+    -no-cnv \
+    --temp 0 \
+    --seed 1
+```
+
+Giải thích giới hạn `364` của C0 hiện tại:
+
+- một graph evaluation có `26 x 7 = 182` block GEMV Q8_0;
+- `token_embd.weight` (vocabulary projection/logits) vẫn bị giữ ở CPU để bảo toàn
+  language correctness, nên không được tính là raw FPGA GEMV;
+- `-n 2` buộc một prefill (`M > 1`) và một decode đầu tiên (`M = 1`), do đó
+  `182 + 182 = 364` raw FPGA GEMV được kiểm tra.
+
+`183` là số tensor Q8_0 trong GGUF, không phải coverage FPGA C0 đúng khi vocab
+vẫn chạy CPU. C0 là diagnostic tạm thời; không thay primary command lâu dài.
+
+Không bật raw repair trong lần chứng minh correctness. Hiện
+`g_contract_raw_repair_enabled` mặc định true nếu contract được bật; điều này có
+thể che lỗi phần cứng bằng CPU golden. Cần đổi default thành false trong
+`fpga_host.cpp`, chỉ cho phép repair bằng một env diagnostic riêng.
+
+### 4.4. Phải A/B với CPU-only cùng source và cùng GGUF
+
+Tạo binary CPU reference, không sửa build FPGA đang dùng:
+
+```bash
+cmake -S . -B build_cpu_ref -DUSE_FPGA=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build_cpu_ref --target llama-cli -j4
+
+./build_cpu_ref/bin/llama-cli \
+  -m ./models/gemma-3-1b-it-Q8_0.gguf \
+  -p "Please write about AI" \
+  -n 1 --no-warmup -no-cnv --temp 0 --seed 1
+```
+
+So sánh cùng prompt tokens, logits top-k và token ID đầu tiên. Nếu CPU-only cũng
+sinh `[multimodal]`, lỗi thuộc model/chat-template/tokenizer hoặc bản llama.cpp.
+Nếu CPU trả tiếng Anh còn FPGA không, lỗi chắc chắn nằm trong offload path.
+
+### 4.5. Thêm token/logit trace đúng vị trí
+
+File cần sửa: `llama.cpp/tools/main/main.cpp`, ngay sau
+`common_sampler_sample()` gần dòng 751.
+
+Thêm trace chỉ bật khi `FPGA_TOKEN_TRACE=1`:
+
+- sampled token ID;
+- escaped token piece;
+- `llama_vocab_is_eog(vocab, id)`;
+- số logits finite/NaN/Inf;
+- min/max logits;
+- top-5 `{token_id, piece, logit}` trước sampler.
+
+API có sẵn:
+
+- `llama_get_logits_ith(ctx, -1)`;
+- `llama_vocab_n_tokens(vocab)`;
+- `llama_vocab_is_eog(vocab, token)`;
+- `common_token_to_piece()`.
+
+Expected result: xác định `[multimodal]` là token ID nào và top logits đã lệch
+từ trước sampler hay bị sampler policy biến đổi.
+
+---
+
+## 5. Bottleneck trong `fpga_host.cpp`
+
+### 5.1. Preparation pack lại gần 1 GiB weight mỗi token
+
+Đường raw hiện tại trong `fpga_dma_run_q8_group()`, vùng gần dòng 2996–3260:
+
+1. lặp `row`;
+2. lặp `group block`;
+3. lặp 2 beat/block;
+4. đọc `block_q8_0` từ model mmap;
+5. pack 16 byte qua `write_i8x16_to_ddr()`;
+6. mỗi beat thực hiện bốn volatile 32-bit stores vào DDR UIO mapping.
+
+Đây là lý do preparation khoảng 3,63 s/token.
+
+`weight_cache=0` nên code này lặp lại cho mọi token dù weight bất biến.
+
+#### Hướng sửa cụ thể
+
+File: `llama.cpp/ggml/src/ggml-cpu/fpga_host.cpp`.
+
+1. Giữ `WEIGHT_CACHE_BASE=0x01000000` và chỉ map trong reserved `ddr_high` đã
+   được device-tree/UIO xác nhận.
+2. Bật cache theo budget hữu hạn, đủ chứa payload Q8 đã pack. Log hiện đo
+   953,44 MiB/token; budget thử nghiệm nên 1.100 MiB, vẫn dưới cửa sổ 2 GiB.
+3. Build cache trong warmup/prefill, để decode chỉ dùng `tile.ddr_off` làm source
+   ZDMA; không copy model weight bằng CPU lần nữa.
+4. Sau khi diagnostic pass, đổi cache từ opt-in thành default-on khi UIO
+   `ddr_high` quảng bá đủ size; giữ `FPGA_WEIGHT_CACHE_DISABLE=1` làm opt-out.
+5. Nếu reserved region nhỏ hơn budget, fail init rõ ràng; không fallback sang
+   `/dev/mem` và không map vượt UIO size.
+
+#### Lỗi hiệu năng trong cache hiện có phải sửa trước khi bật
+
+`validate_weight_cache_entry()` gần dòng 2407 hiện tính lại CRC của **toàn bộ
+payload tensor trên mỗi cache hit**:
+
+```cpp
+fpga_crc32_ddr(entry->base_off, entry->bytes)
+```
+
+Nếu bật nguyên trạng, CPU sẽ đọc lại gần 1 GiB DDR mỗi token chỉ để CRC và có
+thể tạo bottleneck mới ngang preparation.
+
+Sửa thành:
+
+- CRC một lần sau build;
+- CRC một lần khi attach/recover cache ở process start;
+- mỗi hit chỉ kiểm tra header O(1), generation/epoch, tensor ID và bounds;
+- thêm `entry.validated_generation`;
+- chỉ full-CRC lại khi `FPGA_WEIGHT_CACHE_VERIFY=1`.
+
+Expected result: `weight_cache_hits` đạt gần toàn bộ 183 tensor trong decode,
+`weight_cache_misses=0` sau warmup, preparation giảm mạnh mà không quét DDR bằng
+CPU mỗi token.
+
+### 5.2. Activation quantization
+
+`ensure_quantized_activation_matrix()` quantize F32 activation thành Q8_0 cho
+mỗi matmul. Decode `M=1` nên khối lượng này nhỏ hơn weight packing, nhưng vẫn
+nằm trong preparation.
+
+Không bật lại pointer-only activation cache. GGML tái sử dụng buffer nên cùng
+pointer không đảm bảo cùng nội dung. Cache activation chỉ hợp lệ nếu key có:
+
+```text
+tensor pointer + data pointer + shape/stride + graph generation + seq_pos +
+content/version counter
+```
+
+Ưu tiên đúng là SPU tạo và giữ activation Q8_0 on-chip, sau đó forward trực tiếp
+sang VPU; không phải cache pointer trên CPU.
+
+### 5.3. Host result unpack đọc non-cacheable DDR theo từng word
+
+`ddr_read_i32x4()` gần dòng 737:
+
+```cpp
+volatile const uint32_t * src = ...;
+for (int w = 0; w < 4; ++w) out[w] = src[w];
+```
+
+Sau đó `fpga_dma_run_q8_group()` lặp từng 128-bit RESULT word, copy bốn lane vào
+`std::vector<int32_t> partial`.
+
+119,18 MiB raw result tốn 3,74 s, chỉ khoảng 31,9 MiB/s CPU read. Đây không phải
+giới hạn của ZDMA; đây là CPU đọc non-cacheable/UIO mapping bằng volatile scalar
+loads rồi copy lần hai.
+
+#### Fix tạm thời
+
+Chỉ dùng khi chưa có PL-scale:
+
+1. Xác nhận mapping `ddr_high` là Normal Non-cacheable hoặc DMA-coherent, không
+   phải Device memory cấm vector/burst load.
+2. Sau DMA completion và acquire fence, bulk-copy cả range sang cached vector
+   bằng routine 128-bit/NEON hoặc `memcpy` đã benchmark.
+3. Không gọi helper cho từng 16 byte.
+4. Gộp unpack và CPU accumulate để không ghi rồi đọc lại `partial`:
+   đọc block 128-bit, convert bốn raw values và cộng ngay vào accumulator.
+5. Nếu mapping không cho bulk read an toàn, dùng `dma-buf`/`udmabuf` có explicit
+   CPU-device sync thay vì bỏ `volatile` tùy tiện.
+
+Expected result tạm thời: tăng read bandwidth ít nhất vài trăm MiB/s. Tuy nhiên
+đây không phải kiến trúc cuối vì 119 MiB/token vẫn là traffic vô ích.
+
+#### Fix triệt để
+
+VPU raw stream phải đi thẳng sang SPU scale accumulator. CPU chỉ đọc một final
+F32/Q16.16 value mỗi output row:
+
+```text
+119,18 MiB raw/token -> khoảng 2,752 MiB final F32/token
+```
+
+Giảm traffic tối thiểu 43,31 lần và loại bỏ `partial` cùng hai vòng CPU
+scale/accumulate.
+
+### 5.4. CPU scale/accumulate vẫn nằm trong critical path
+
+Vùng gần dòng 3464–3474 thực hiện:
+
+```cpp
+accum[row] += raw * act_scale * weight_scale;
+```
+
+Đây là contract đúng cho Q8_0, nhưng tốn khoảng 516 ms/token và buộc raw result
+phải về PS. Sau khi PL-scale pass numerical contract, xóa đường này khỏi primary
+inference; chỉ giữ làm golden reference diagnostic.
+
+### 5.5. Mỗi tile là một chuỗi blocking hoàn toàn
+
+Đường raw hiện tại:
+
+```text
+CPU pack -> ACT DMA -> WEIGHT DMA -> START -> busy poll -> RESULT DMA
+-> CPU unpack -> CPU accumulate -> tile kế tiếp
+```
+
+Khoảng 3.234 job/token gây hàng nghìn lần program/poll ZDMA và VPU. Không có
+overlap preparation, transfer, compute và drain.
+
+### 5.6. Global mutex
+
+`fpga_try_matmul_extended()` khóa `g_mutex` từ trước GEMV đến sau toàn bộ GEMV.
+Điều này serial hóa mọi FPGA matmul. GGML graph có dependency nên không phải
+bottleneck P0, nhưng về sau mutex phải chỉ bảo vệ register submission/queue;
+không được giữ trong toàn bộ compute nếu hardware có job queue.
+
+---
+
+## 6. Ping-pong hiện có nhưng chưa hoạt động hiệu quả
+
+### 6.1. Trạng thái hiện tại
+
+| Thành phần | Có trong source | Có hoạt động trên run board |
+|---|---:|---:|
+| Hai bank ACT | Có | Không dùng scheduler |
+| Hai bank WEIGHT | Có | Không dùng scheduler |
+| Hai bank RESULT | Có | Không dùng scheduler |
+| Descriptor/job ID | Có | Capability có, scheduler khóa |
+| Host `slots[2]` | Có | Không gọi vì `pl_scale=0` |
+| VPU -> SPU ready/valid | RTL local có | Board protocol/id bằng 0 |
+| PL scale accumulation | RTL local có | `pl_scale=0` |
+
+Kết luận: primary run hiện tại **không có ping-pong thực tế**.
+
+### 6.2. Scheduler host hiện tại chưa phải full overlap
+
+Ngay cả khi bật, `fpga_hw_q8_0_matmul_dma_to_ip_pipelined()` hiện làm:
+
+```text
+prepare B trên CPU
+wait_and_drain A
+submit B
+accumulate A
+```
+
+Nó overlap được CPU preparation B với compute A và CPU accumulate A với compute
+B. Nhưng nó chưa overlap:
+
+- input DMA B với compute A;
+- output DMA A với compute B;
+- scale DMA B với compute A.
+
+Nguyên nhân: `wait_and_drain()` thực hiện RESULT/SPU_OUT DMA trước khi
+`submit()` job tiếp theo. Ngoài ra DDR staging ACT/WEIGHT/RESULT đang dùng cùng
+offset cho cả hai slot, nên chưa thể có hai job ở trạng thái DMA/ready độc lập.
+
+### 6.3. Ping-pong đúng cần hai tầng bank
+
+Không chỉ local RAM trong PL, mà DDR staging ở host cũng cần hai slot.
+
+Đề nghị tách offset DDR khỏi địa chỉ LMM/IP. Ví dụ bố trí trong 4 MiB scratch
+đang map, sau khi kiểm tra overlap bằng `range_fits`:
+
+| Vùng DDR staging | Slot 0 | Slot 1 | Dung lượng tối đa |
+|---|---:|---:|---:|
+| ACT | 0x000000 | 0x001000 | 2 KiB/slot |
+| WEIGHT | 0x010000 | 0x090000 | 512 KiB/slot |
+| SCALE | 0x110000 | 0x120000 | 64 KiB/slot |
+| RESULT | 0x130000 | 0x140000 | 64 KiB/slot |
+
+Các offset trên chỉ là layout đề nghị cho DDR reserved scratch; destination
+LMM vẫn là `ACT_BASE=0x10000`, `WEIGHT_BASE=0x100000`, v.v. Không dùng cùng một
+constant cho cả DDR source và IP destination nữa.
+
+### 6.4. FSM ownership bắt buộc
+
+Mỗi slot phải có state:
+
+```text
+FREE
+ -> CPU_PACKING
+ -> INPUT_DMA
+ -> READY
+ -> COMPUTING
+ -> RESULT_READY
+ -> OUTPUT_DMA
+ -> CPU_CONSUME
+ -> FREE
+```
+
+Metadata mỗi slot:
+
+```text
+job_id, tensor_id, token_id, row0, rows, k_block0, group_blocks,
+format, input_bytes, result_bytes, bank, valid, error, generation
+```
+
+Quy tắc consistency:
+
+- CPU chỉ ghi DDR slot ở `FREE/CPU_PACKING`;
+- ZDMA input chỉ đọc slot ở `INPUT_DMA`;
+- VPU chỉ compute local bank ở `COMPUTING`;
+- host chỉ drain đúng `{done_job_id, done_bank}`;
+- bank chỉ trở về FREE sau drain/consume ack;
+- timeout phải log cả owner/state/job của hai slot;
+- mọi transition phải có assertion trong testbench.
+
+### 6.5. Timeline full overlap với một ZDMA
+
+Vì chỉ có một ZDMA, input và output DMA không chạy đồng thời với nhau. Tuy nhiên
+DMA vẫn có thể chạy đồng thời với VPU compute:
+
+```text
+Thời gian    CPU                  ZDMA                    VPU
+t0           pack A               idle                    idle
+t1           pack B               input A                 idle
+t2           chuẩn bị descriptor  input B                 compute A
+t3           consume A            output A                compute B
+t4           pack C               input C                 compute B/A-next
+```
+
+Scheduler phải ưu tiên không để VPU đói:
+
+1. khi compute A bắt đầu, DMA input B ngay;
+2. chỉ drain A sau khi B đã READY hoặc B đã start;
+3. trong khi compute B, drain A rồi pack/input C;
+4. nếu result FIFO gần đầy, output DMA được ưu tiên để tránh deadlock.
+
+### 6.6. File cần sửa cho ping-pong
+
+`fpga_host.cpp`:
+
+- tách `fpga_submit_q8_tile_job()` thành:
+  - `fpga_stage_cpu(slot)`;
+  - `fpga_dma_input(slot)`;
+  - `fpga_start_compute(slot)`;
+  - `fpga_poll_done(slot)`;
+  - `fpga_dma_output(slot)`;
+  - `fpga_consume(slot)`;
+- tạo scheduler event loop hai slot;
+- dùng source DDR offset theo slot;
+- không giữ global mutex trong thời gian compute;
+- ghi timestamp transition và occupancy.
+
+`AXI4_Mapping.v`:
+
+- descriptor phải per-bank, không chỉ một bộ register global;
+- thêm commit/claim/release atomically;
+- status trả `{slot_state, active_job, done_job, error}`;
+- register write vào descriptor B không được thay metadata đã latch của A.
+
+`Matrix_Vector_Multiplication.v`:
+
+- local ACT/WEIGHT/RESULT đã có hai bank;
+- thêm assertion không write active bank;
+- result bank chỉ publish sau final write commit;
+- start chỉ claim bank ở READY.
+
+`tb_Matrix_Vector_Multiplication.v` hoặc testbench tương ứng:
+
+- randomize preparation, DMA-model và compute latency;
+- test A compute trong lúc B fill;
+- test A drain trong lúc B compute;
+- test job ID wrap, timeout, stale done và backpressure.
+
+Theo AMD UG1399, PIPO bảo đảm chứa trọn một iteration và phù hợp random access;
+FIFO phù hợp stream tuần tự nhưng depth sai có thể full/empty stall hoặc deadlock.
+Thiết kế này cần PIPO cho ACT/WEIGHT/RESULT bank và FIFO cho raw result stream.
+
+---
+
+## 7. Bottleneck trong RTL
+
+### 7.1. PMAU chính đã pipeline, nhưng controller phá throughput
+
+`PMAU_Full.v` có:
+
+- 16 `mult_gen_0` INT8 x INT8;
+- multiplier latency 3;
+- adder tree 4 tầng, mỗi tầng có register;
+- accumulator và result FIFO.
+
+PMAU có thể nhận gần một beat/cycle sau khi fill. Vấn đề nằm ở
+`Matrix_Vector_Multiplication.v` raw mode:
+
+- một Q8 block có 2 beat;
+- `wait_after_feed = feed_last_r` trong raw mode;
+- sau beat thứ hai, FSM chuyển `S_WAIT_RESULT`;
+- flush read pipeline;
+- chờ PMAU result;
+- ghi RESULT;
+- phát raw token sang SPU;
+- giữ `S_RAW_STREAM_HOLD` đến khi SPU ready;
+- sau đó mới chạy block tiếp theo.
+
+Với hàng nghìn row/block, pipeline bị fill/drain lại sau mỗi 32 phần tử. Đây là
+nguyên nhân chính khiến IP chỉ đạt khoảng 9,5% peak.
+
+### 7.2. Fix RTL P1: continuous raw-block issue/retire
+
+File: `DATN_RTL/RTL/Matrix_Vector_Multiplication.v`.
+
+Thay một FSM tuần tự bằng hai pipeline decoupled:
+
+```text
+Issue engine:
+  address -> BRAM read -> PMAU input
+
+Retire engine:
+  PMAU result -> metadata FIFO -> RESULT writer/SPU stream
+```
+
+Yêu cầu chi tiết:
+
+1. Không chuyển `S_WAIT_RESULT` sau mỗi `feed_last`.
+2. `feed_last` chỉ đánh dấu boundary block cho PMAU accumulator.
+3. Issue engine tiếp tục block/row kế tiếp nếu:
+   - read pipeline còn chỗ;
+   - PMAU input ready;
+   - metadata/result FIFO chưa gần full.
+4. Khi phát last beat của block, push metadata
+   `{row, block, group_blocks, last_block, clear, job, bank}` vào context FIFO.
+5. Retire engine pop context đúng lúc `pmau_result_valid`.
+6. RESULT BRAM writer và SPU raw stream chạy độc lập; backpressure chỉ dừng issue
+   khi FIFO đạt high-watermark, không flush cả pipeline.
+7. `done` chỉ assert khi:
+   - mọi beat đã issue;
+   - PMAU inflight bằng 0;
+   - context FIFO empty;
+   - result FIFO empty;
+   - SPU đã accept final token;
+   - final memory write đã commit.
+
+Depth ban đầu nên đủ một burst, ví dụ 64 hoặc 128 context. Sau simulation random
+stall mới giảm depth dựa trên occupancy, đúng khuyến nghị AMD.
+
+Expected result: raw result có thể xuất gần một block mỗi 2 cycle thay vì một
+block mỗi chuỗi fill/wait/drain dài.
+
+### 7.3. Bypass dequant multiplier khi chạy raw mode
+
+Trong `PMAU_Full.v`, dù scale bằng `FP16_ONE` và output cuối chọn raw, datapath
+vẫn thực hiện wide multiply ở `deq_s2_mul` rồi mới bypass.
+
+Sửa:
+
+- tách raw FIFO input trực tiếp từ `row_commit` qua một register;
+- chỉ enable dequant multiplier khi mode thực sự yêu cầu scale;
+- propagate valid/last riêng;
+- tăng result FIFO depth để hấp thụ burst continuous.
+
+Expected result: giảm latency block, giảm switching power và loại DPOP warning
+ở multiplier không cần dùng trong raw mode.
+
+### 7.4. SPU scale accumulator có throughput thấp hơn producer
+
+`SPU_Q8_Scale_Accum.v` xử lý một raw entry qua 7 state:
+
+```text
+IDLE -> SCALE -> PRODUCT_MUL -> CLAMP -> RAW_MUL -> CONTRIB -> ACCUM
+```
+
+Nó chỉ accept entry mới khi trở về IDLE. Trong khi continuous PMAU có thể sinh
+một raw block mỗi 2 cycle. FIFO depth 32 chỉ trì hoãn stall; không sửa mismatch
+throughput.
+
+Ngoài ra module dùng 64x64 và 32x65 multiply. Synthesis log khuyến nghị thêm
+16 và 8 pipeline register cho wide multiplier; DRC còn nhiều DPIP/DPOP warning.
+
+### 7.5. Fix RTL P2: pipelined scale engine II <= 2
+
+Ưu tiên block-major/row-major scheduling:
+
+```text
+block 0: row 0, row 1, ... row 255
+block 1: row 0, row 1, ... row 255
+...
+```
+
+Như vậy hai lần update cùng một row cách nhau hàng trăm entry, loại hazard
+read-after-write trong accumulator BRAM và cho phép pipeline sâu.
+
+Tạo `SPU_Q8_Scale_Pipeline.v`:
+
+```text
+S0 latch raw,row,flags,scale
+S1 FP16 -> fixed conversion
+S2 product scale DSP stage
+S3 raw x combined-scale DSP stage
+S4 shift/round/saturate
+S5 accumulator BRAM read
+S6 add
+S7 accumulator BRAM write/output
+```
+
+Mỗi stage giữ `valid,row,block,last,clear,job,bank`.
+
+Hai phương án scale:
+
+1. Giữ `d_a` và `d_w` FP16 trong PL, pipeline multiplier đúng chuẩn;
+2. Host/SPU quantizer tạo trước `combined_scale = d_a*d_w` ở format đã thống
+   nhất, giảm một wide multiply mỗi raw entry.
+
+Phương án 2 chỉ được dùng sau bit-accurate reference trên toàn dải scale của
+model. Không dùng global shift thay scale per block.
+
+Target initiation interval: II=2 hoặc II=1. Nếu một pipeline chưa đủ, instantiate
+2–4 lane scale và phân phối row độc lập.
+
+### 7.6. Row parallelism: dùng DSP dư đúng cách
+
+Report cho thấy DSP chỉ dùng 81/1728. Sau continuous stream, thêm parameter:
+
+```verilog
+parameter integer ROW_PE = 2;
+```
+
+Kiến trúc ROW_PE=2:
+
+- broadcast cùng activation beat cho hai PMAU;
+- đọc weight của hai row mỗi cycle;
+- hai adder tree/accumulator độc lập;
+- phát hai raw results kèm row ID;
+- peak compute = `2 x 16 x 187,5 MHz = 6,0 GMAC/s`.
+
+Không được duplicate toàn bộ weight RAM. URAM hiện dùng 64/96. Duplicate ngây
+thơ sẽ cần khoảng 128 URAM và không fit.
+
+Phải partition weight theo row lane:
+
+```text
+lane = row % ROW_PE
+local_row = row / ROW_PE
+address = local_row * active_col_beats + beat
+```
+
+Mỗi row lane sở hữu nhóm URAM riêng; tổng payload logic không đổi, chỉ thay
+banking/fragmentation. Bắt đầu ROW_PE=2, lấy utilization mới do người dùng chạy,
+sau đó mới quyết định ROW_PE=4.
+
+Files cần sửa:
+
+- `Matrix_Vector_Multiplication.v`: generate row lanes, issue/retire metadata;
+- `PMAU_Full.v`: instantiate theo generate ở GEMV hoặc tạo wrapper `PMAU_Array`;
+- `Dual_Port_BRAM.v`: hỗ trợ layout row-partition, giữ output register;
+- testbench: random dimensions, odd last row, lane mapping, two simultaneous
+  results, backpressure.
+
+### 7.7. Không ưu tiên tăng NUM_LANES lên 32 ngay
+
+NUM_LANES=32 yêu cầu 256-bit weight/activation mỗi cycle, trong khi local port
+và AXI datapath hiện là 128-bit. Việc này buộc thay address map hoặc dùng hai
+read port/beat, làm phức tạp ping-pong fill. ROW_PE=2 giữ giao thức 128-bit và
+tận dụng activation broadcast, phù hợp hơn cho bước đầu.
+
+### 7.8. Vocab projection cần đường riêng
+
+`token_embd.weight` chiếm 30,1% token. Các bước:
+
+1. Bắt buộc numerical contract cho tensor thứ 183.
+2. PL-scale để output chỉ còn 262.144 F32 = 1 MiB, thay vì 36 MiB raw partial.
+3. ROW_PE=2 để giảm compute row projection.
+4. Sau khi full logits đúng, có thể thêm streaming top-k 40 trong PL:
+   - mỗi row logit đi qua comparator tree;
+   - giữ top-40 `{id,value}`;
+   - CPU chỉ nhận top-k thay 1 MiB logits.
+
+Top-k PL đòi hỏi thay integration sampler vì GGML hiện mong full F32 `dst`.
+Không làm bước này trước khi full-logits mode pass reference.
+
+---
+
+## 8. Khả năng lưu trữ và reuse của SPU
+
+### 8.1. Hiện trạng
+
+`SPU_Local_Memory.v` có bốn vùng độc lập:
+
+```text
+SPU_IN, SPU_OUT, SPU_PARAM, SPU_SCRATCH
+WORD_DEPTH = 4096, width = 128 bit
+```
+
+Mỗi vùng chứa 64 KiB, tổng payload danh nghĩa 256 KiB. Hiện chưa có bank
+ownership/residency directory cho tensor sống qua nhiều command. Board hiện
+cũng không bật các SPU op trong inference (`spu_silu/rms/rope/softmax=0`).
+
+### 8.2. Resource headroom
+
+Report placed mới nhất:
+
+| Resource | Used | Available | Tỷ lệ |
+|---|---:|---:|---:|
+| LUT logic | 15.174 | 230.400 | 6,59% |
+| FF | 21.570 | 460.800 | 4,68% |
+| BRAM tile | 104,5 | 312 | 33,49% |
+| URAM | 64 | 96 | 66,67% |
+| DSP48E2 | 81 | 1.728 | 4,69% |
+
+BRAM còn nhiều để double-buffer vector/intermediate. URAM chỉ còn 32 block,
+không đủ giữ model 1 GiB và không được dùng để duplicate toàn bộ weight banks.
+
+### 8.3. Data nên giữ on-chip
+
+Ưu tiên theo lợi ích/dung lượng:
+
+1. activation Q8_0 hiện tại và activation kế tiếp;
+2. scale table của tile đang compute và tile kế tiếp;
+3. partial/final accumulator theo row;
+4. RMSNorm weight và RoPE parameter thường dùng;
+5. gate/up intermediate cho SiLU;
+6. tile KV đang active, không phải toàn KV cache.
+
+Không thể giữ:
+
+- toàn bộ 1B weight;
+- toàn bộ KV cache 38 MiB hiện tại;
+- vocab matrix 302 MiB.
+
+### 8.4. Residency directory bắt buộc
+
+Thêm bảng descriptor nhỏ trong BRAM/LUTRAM:
+
+```text
+valid, tensor_id, layer_id, token_id, generation,
+format, length, scale_format, bank, base, bytes,
+producer, consumer_count, dirty, last_use
+```
+
+SPU/VPU chỉ consume tensor khi descriptor valid và generation khớp. CPU chỉ
+được overwrite khi `consumer_count=0`.
+
+### 8.5. Kiến trúc SPU memory đề nghị
+
+Phase đầu:
+
+- bank đôi `SPU_IN[2]` và `SPU_OUT[2]`;
+- giữ `SPU_PARAM` persistent theo layer/tensor ID;
+- `SPU_SCRATCH` partition thành accumulator, softmax scratch và descriptor;
+- output SPU có direct-forward port sang ACT input VPU;
+- CPU readback chỉ khi graph cần F32 ở PS hoặc debug.
+
+Với BRAM còn khoảng 207,5 tile, tăng thêm khoảng 50–70 BRAM cho double-buffer
+SPU là khả thi về budget sơ bộ. Con số cuối phải lấy từ report sau synthesis do
+người dùng chạy; plan maker không tự chạy.
+
+---
+
+## 9. Report Vivado mới nhất và ý nghĩa
+
+Report dated 14-07-2026, design fully routed:
+
+| Hạng mục | Kết quả |
+|---|---:|
+| Setup WNS | +0,344 ns |
+| Setup TNS | 0 |
+| Setup failing endpoints | 0 |
+| Hold WHS | +0,010 ns |
+| Hold THS | 0 |
+| Pulse width slack | +1,166 ns |
+| Route | 0 unrouted nets |
+| Total on-chip power | 3,934 W, medium confidence |
+| Methodology violations | 0 |
+
+Timing đạt ở 187,5 MHz nhưng hold margin chỉ 10 ps. Khi tăng parallelism phải
+giữ output register, local control fanout và placement hợp lý; không tăng clock.
+
+DRC còn:
+
+- DPIP-2: 22 warning;
+- DPOP-3: 30 warning;
+- DPOP-4: 43 warning.
+
+Các warning tập trung vào SPU scale, RMSNorm, RoPE và PMAU dequant. Đây là bằng
+chứng phải bật/diễn tả AREG/BREG/MREG/PREG bằng register boundary thật.
+
+AMD UG579 mô tả MREG là register output multiplier và PREG là output register
+của DSP48E2. Khi sửa arithmetic, mỗi DSP stage phải có valid/metadata register
+tương ứng; không chỉ thêm attribute mà bỏ qua data alignment.
+
+AMD UG573 cho biết UltraRAM có hai port đồng bộ và tối đa nhiều output pipeline
+stage. Thiết kế weight partition phải dùng output registers/cascade hợp lý, và
+không giả định một URAM cung cấp tùy ý nhiều read port.
+
+---
+
+## 10. Roadmap triển khai bắt buộc theo phase
+
+### Phase C0 — Đóng numerical correctness
+
+**Files:**
+
+- `fpga_host.cpp`;
+- `tools/main/main.cpp`;
+- testbench VPU/SPU.
+
+**Công việc:**
+
+1. Deploy đúng bitstream có protocol=1/id=VPU1; xác nhận register.
+2. Chạy contract 7, sau đó 182 prefill, sau đó 364 (prefill + decode); repair tắt.
+3. A/B CPU-only cùng GGUF, seed, temp và prompt.
+4. Thêm token/logit top-5 trace.
+5. Lưu golden vector cho raw, scaled output và vocab logits.
+
+**Gate pass:**
+
+- raw mismatch = 0;
+- value mismatch = 0;
+- logits finite;
+- top-5 FPGA khớp CPU trong tolerance;
+- token đầu tiên khớp CPU và là text hợp lệ.
+
+Không qua gate này thì dừng mọi performance optimization.
+
+### Phase H1 — Weight prepack/cache an toàn
+
+**File chính:** `fpga_host.cpp`.
+
+1. Sửa full CRC per-hit thành validate-once/generation.
+2. Enable bounded cache 1.100 MiB trong reserved UIO DDR.
+3. Build cache trong warmup; decode phải 100% hit.
+4. Thêm counters `cache_lookup_us`, `cache_crc_us`, `pack_us` riêng.
+
+**Expected:** preparation giảm từ 3,63 s/token xuống còn activation/descriptor
+preparation; decode không CPU-copy 953 MiB weight.
+
+### Phase R1 — Continuous raw stream
+
+**Files:**
+
+- `Matrix_Vector_Multiplication.v`;
+- `PMAU_Full.v`;
+- VPU testbench.
+
+1. Issue/retire decoupled.
+2. Context FIFO 64/128.
+3. Không wait mỗi block.
+4. Raw bypass dequant multiplier.
+5. Random backpressure simulation.
+
+**Expected:** IP compute tiến gần 1 block/2 cycles, thay vì fill/drain mỗi block.
+
+### Phase R2 — SPU scale pipeline và compact output
+
+**Files:**
+
+- thay/refactor `SPU_Q8_Scale_Accum.v`;
+- `SPU_Top.v`;
+- `SPU_Local_Memory.v`;
+- `AXI4_Mapping.v`;
+- host PL-scale consume path.
+
+1. II <= 2.
+2. Schedule block-major/row-major để tránh accumulator hazard.
+3. Pack bốn final 32-bit output trên mỗi 128-bit word; không dùng 16 byte/row.
+4. CPU không nhận raw partial.
+
+**Expected:** result traffic giảm ít nhất 43 lần; host unpack và CPU accumulate
+ra khỏi critical path.
+
+### Phase H2 — Full ping-pong/DMA overlap
+
+**Files:** `fpga_host.cpp`, `AXI4_Mapping.v`, GEMV RTL, testbench.
+
+1. Hai DDR staging slot độc lập.
+2. Per-bank descriptors.
+3. Input B DMA trong compute A.
+4. Output A DMA trong compute B.
+5. Scheduler occupancy/timeline counters.
+
+**Expected:** steady-state tile time gần:
+
+```text
+max(T_input_DMA, T_compute, T_output_DMA)
+```
+
+thay vì tổng ba thời gian.
+
+### Phase R3 — ROW_PE=2
+
+**Files:** GEMV, PMAU array, weight memory partition, tests.
+
+1. Partition row, không duplicate payload.
+2. Hai PMAU và hai result lanes.
+3. Scale pipeline đủ throughput.
+4. Giữ timing 187,5 MHz.
+
+**Expected peak:** 6 GMAC/s, tạo margin cho mục tiêu 2,5 token/s.
+
+### Phase R4 — Vocab optimization
+
+1. PL-scale full logits trước.
+2. ROW_PE=2 cho vocab rows.
+3. Sau correctness, optional streaming top-k 40.
+
+### Phase S1 — SPU residency/fusion
+
+1. Bank đôi IN/OUT.
+2. Persistent PARAM/descriptor.
+3. Direct SPU->VPU activation forwarding.
+4. Fusion RMSNorm->Quant->GEMV và SiLU->Quant->GEMV.
+5. PS readback chỉ ở graph boundary bắt buộc.
+
+---
+
+## 11. KPI phải thêm và tiêu chí đạt mục tiêu
+
+Host log mỗi token cần có:
+
+```text
+weight_pack_bytes, weight_cache_hit_bytes,
+cpu_pack_ms, dma_input_ms, compute_ms, dma_output_ms,
+raw_result_bytes, final_result_bytes,
+slot0/slot1 occupancy, vpu_idle_cycles, dma_idle_cycles,
+pmau_input_stall_cycles, result_backpressure_cycles,
+spu_fifo_high_watermark, scale_pipeline_ii,
+macs, effective_GMAC/s, token_ms
+```
+
+RTL counter registers:
+
+- total cycles;
+- useful PMAU input fire cycles;
+- memory wait cycles;
+- PMAU/result FIFO stall;
+- SPU backpressure;
+- per-bank ready/compute/drain cycles;
+- raw tokens produced/accepted;
+- final rows committed.
+
+Milestone định lượng:
+
+| Milestone | Mục tiêu tối thiểu |
+|---|---:|
+| C0 | English token + 364 raw GEMV contract pass (182 prefill + 182 decode) |
+| H1 | prep < 0,5 s/token |
+| R1 | IP compute < 0,8 s/token |
+| R2 | raw result PS traffic = 0; host result < 0,15 s/token |
+| H2 | VPU idle giữa tile < 10% |
+| R3 | IP compute < 0,25 s/token |
+| Final | total decode <= 0,4 s/token = >=2,5 token/s |
+
+Các số trung gian là target engineering, phải điều chỉnh bằng log mới; không
+được tuyên bố đạt trước khi đo trên board.
+
+---
+
+## 12. Thứ tự ưu tiên và quyết định hiện tại
+
+Thứ tự đúng:
+
+1. **Correctness 182 GEMV cho prefill + 182 GEMV cho decode và logits/token trace.**
+2. **Deploy đúng bitstream identity/protocol.**
+3. **Sửa weight cache CRC và prepack weight.**
+4. **Continuous raw issue/retire.**
+5. **PL scale accumulation + compact final output.**
+6. **Full DMA ping-pong.**
+7. **ROW_PE=2.**
+8. **Vocab top-k và SPU fusion/residency.**
+
+Không nên làm trước:
+
+- không tăng clock trên 187,5 MHz;
+- không tăng NUM_LANES=32 trước khi giải quyết memory ports;
+- không duplicate toàn bộ weight URAM;
+- không bật cache hiện tại trước khi bỏ CRC per-hit;
+- không ép scheduler/PL-scale khi bitstream ID/protocol không khớp;
+- không dùng raw repair để gọi là correctness pass;
+- không tối ưu sampler vì sampler chỉ chiếm vài ms;
+- không dùng INT8 trần làm output mà thiếu scale metadata.
+
+---
+
+## 13. Nguồn kỹ thuật tham khảo
+
+1. AMD UG1399 — Dataflow Memory Channels/PIPO/FIFO:  
+   https://docs.amd.com/r/en-US/ug1399-vitis-hls/Configuring-Dataflow-Memory-Channels
+
+2. AMD UG1399 — DATAFLOW, task overlap:  
+   https://docs.amd.com/r/2024.2-English/ug1399-vitis-hls/pragma-HLS-dataflow
+
+3. AMD UG579 — DSP48E2, AREG/BREG/MREG/PREG:  
+   https://docs.amd.com/v/u/en-US/ug579-ultrascale-dsp
+
+4. AMD UG573 — UltraRAM two-port synchronous memory và output pipeline:  
+   https://docs.amd.com/r/en-US/ug573-ultrascale-memory-resources/UltraRAM-Summary
+
+5. LlamaF — asynchronous compute và fully-pipelined matrix-vector accelerator:  
+   https://arxiv.org/abs/2409.11424
+
+6. Tiled Transformer accelerator — persistent on-chip operand và two-level
+   tiling:  
+   https://arxiv.org/abs/2503.16731
+
+7. IEEE MCSoC — BRAM banking, double buffering và AXI bandwidth optimization:  
+   https://doi.org/10.1109/MCSoC67473.2025.00096
+
+8. Gemma 3 Technical Report:  
+   https://arxiv.org/abs/2503.19786
+
+---
+
+## 14. Kết luận cuối
+
+Hiện tượng chậm không phải một bottleneck đơn lẻ. Ba stage lớn gần bằng nhau:
+
+```text
+preparation ~3,63 s
+IP compute ~3,50 s
+host result unpack ~3,74 s
+```
+
+Ping-pong có trong source nhưng không hoạt động trên primary run; ngay cả code
+scheduler hiện có cũng mới overlap CPU preparation/accumulation, chưa overlap
+input/output DMA thật sự.
+
+Điểm chết RTL lớn nhất là raw mode stop/wait sau mỗi block Q8 hai beat. Điểm
+chết host lớn nhất là pack lại gần 1 GiB weight và đọc 119 MiB raw result bằng
+volatile scalar load mỗi token. Điểm correctness lớn nhất là contract checker
+tắt và bitstream board không khớp protocol/id local.
+
+Đường khả thi để đạt trên 2 token/s, hướng tới 2,5 token/s là:
+
+```text
+numerical contract pass
+-> weight prepack/cache không CRC mỗi hit
+-> continuous PMAU raw stream
+-> VPU->SPU scale accumulation, không raw round-trip
+-> full two-slot DMA ping-pong
+-> ROW_PE=2
+-> vocab projection optimization
+-> SPU on-chip residency/fusion
+```
+
+Thiếu bất kỳ mắt xích nào trong chuỗi trên thì mục tiêu 2,5 token/s khó đạt một
+cách bền vững ở W8A8/Q8_0 trên ZCU104.
+
+---
+
+## 15. Cập nhật 15-07-2026: v20 primary run, cache preflight và v21
+
+### 15.1. Cache 1.100 MiB không chồng Linux System RAM, nhưng chưa an toàn để dùng
+
+Read-only preflight trên board đã xác nhận đầy đủ:
+
+```text
+ddr_high UIO         = [0x800000000, 0x880000000)
+reserved-memory reg  = [0x800000000, 0x880000000)
+Linux System RAM     = [0x000000000, 0x070000000)
+cache payload        = 0x44c00000 (1100 MiB)
+cache payload range  = [0x801000000, 0x845c00000)
+```
+
+Vì vậy `FPGA_WEIGHT_CACHE_MB=1100` không vượt resource Device Tree và không
+ghi đè System RAM. Hai lần ZCU104 treo khi cache bật là bằng chứng về rủi ro
+khác: host đang ghi tuần tự hơn 1 GiB qua mapping UIO/O_SYNC vào DDR reserved,
+rồi tạo payload cache cho từng tensor. Preflight địa chỉ không đo được khả
+năng chịu tải của DDR interconnect, mapping cacheability hoặc coherency khi
+bulk write này diễn ra.
+
+Hành động đã áp dụng trong `fpga_host.cpp` v20/v21:
+
+1. Từ chối `FPGA_WEIGHT_CACHE_MB > 16` trước mọi mmap DDR/cache write trừ khi
+   operator tự xác nhận `FPGA_WEIGHT_CACHE_LARGE_CONFIRMED=1`.
+2. Không dùng cờ xác nhận đó cho đến khi cache thử dần 4 -> 16 -> 64 MiB và
+   mỗi bước có kernel log/FPGA log sạch.
+3. Không đưa `FPGA_WEIGHT_CACHE=1` vào primary command hiện tại.
+
+### 15.2. Primary run v20 đã dùng chat template đúng, nhưng logits vẫn sai
+
+`result_prompt.txt` mới ghi rõ:
+
+```text
+main: chat template is available, enabling conversation mode
+user
+Please write about AI
+model
+[multimodal]importThe
+```
+
+Vì vậy nguyên nhân không phải thiếu Gemma chat template. Bitstream trên board
+vẫn trả:
+
+```text
+stream_protocol = 0x00000000
+bitstream_id    = 0x00000000
+expected_id     = 0x56505531
+```
+
+Nó là legacy/unknown path, chưa phải artifact có protocol/id của RTL hiện tại.
+Primary run cũng bật `raw_accum_fused=1`, trong khi contract 183 trước đó chỉ
+kiểm tra đường partial -> scale -> accumulate không-fuse. Không được xem output
+`[multimodal]importThe` là sampling/formatting error.
+
+### 15.3. Thay đổi v21 correctness-first
+
+Files thay đổi:
+
+- `llama.cpp/ggml/src/ggml-cpu/fpga_host.cpp`;
+- `llama.cpp/tools/main/main.cpp`.
+
+Chính sách v21:
+
+1. Raw-result fusion mặc định tắt. Chỉ bật lại bằng
+   `FPGA_FUSE_RAW_RESULT_ACCUM=1` sau CPU/FPGA logit A/B pass.
+2. Tied embedding/vocabulary projection `N=262144` mặc định chạy CPU GGML.
+   182 GEMV block vẫn chạy FPGA. Chỉ thử tăng tốc vocabulary bằng
+   `FPGA_ACCELERATE_VOCAB=1` sau khi bitstream board trả protocol 1 và ID
+   `0x56505531`, đồng thời logit A/B pass.
+3. `LLAMA_LOGIT_TRACE=1` in finite/NaN/Inf, min/max, top-5 logits trước
+   sampler và token ID/piece escaped sau sampler. Trace không đổi computation.
+
+Build `llama-cli` local với `USE_FPGA=ON` đã pass. Chưa có xác nhận on-board;
+không được tuyên bố v21 tạo English cho đến khi primary command chạy với binary
+v21 và logit trace được kiểm tra.
+
+### 15.4. URAM không phải KV cache
+
+Routed utilization report dùng 64/96 URAM (66,67%), 104,5/312 BRAM tile
+(33,49%) và 81/1728 DSP (4,69%). URAM trong `Dual_Port_BRAM.v`/`Matrix_Vector_
+Multiplication.v` chứa weight tile hiện hành của một GEMV launch: AXI/DMA ghi
+port A, PMAU đọc port B. Nó không giữ model weight toàn cục, token history hay
+K/V cache. CPU hiện giữ K/V cache: non-SWA 16 MiB và SWA 22 MiB ở `n_ctx=4096`.
+
+KV cache CPU ảnh hưởng attention latency theo context length, không giải thích
+token decode 12,3 s gần như hằng số ở seq 14..46. Log cũng xác nhận attention
+path đang CPU-bypass; bottleneck đo được thuộc GEMV raw path. Đưa KV cache vào
+URAM hiện tại không khả thi: tổng URAM board chỉ 27 Mb và 66,67% đã được weight
+tile scratch dùng. Hướng đúng là tiling KV trong DDR/PS, rồi chỉ cache tile/head
+đang attention trong BRAM/URAM sau khi attention accelerator tồn tại.
+
+### 15.5. Cập nhật 15-07-2026: ZCU104-01/ZCU104-02, v21 raw mismatch và v22
+
+**Không được nhầm hai board.** ZCU104-01 dùng workspace
+`/home/debian/Cuong_test/GEMMA3.cpp-MODEL-IN-FPGA`; ZCU104-02 dùng
+`/home/debian/Cuong_test/Infrastructure_GEMMA3`. Kết quả preflight
+`ddr_high=[0x800000000,0x880000000)` và cache 1.100 MiB ở section 15.1
+**chỉ áp dụng cho ZCU104-01**. Phải chạy lại read-only address preflight trên
+ZCU104-02 trước khi bàn tới cache ở board đó.
+
+Log v21 mới nhất tại `DATN_RTL/fpga_debug.log` không phải log của C0 được nêu
+trong chat: header ghi `contract_check=0`, `contract_abort=0`. Tuy vậy v21 có
+một bug host: raw contract reference vẫn chạy khi `FPGA_CONTRACT_CHECK=0`; vì
+`abort=0` nó ghi `action=log_only` và cho raw value sai đi tiếp vào model.
+
+Sai lệch đã được chứng minh, không phải lỗi chat template/sampler:
+
+```text
+tensor=blk.7.ffn_up.weight layer=7
+CONTRACT_RAW_MISMATCH: got != expected
+CONTRACT_STAGING_AUDIT: act_first_bad=-1, weight_first_bad>=0
+```
+
+Activation staging còn đúng nhưng weight staging đã đổi byte. Vì mỗi raw dot
+sai làm logits sai, primary v21 có thể sampler nhiều token nhưng không in được
+English. Không được che điều này bằng `RAW_REPAIR`, sampling hoặc format
+newline.
+
+v22 trong `fpga_host.cpp` áp dụng ba chính sách:
+
+1. Raw reference chỉ chạy khi `FPGA_CONTRACT_CHECK>0` hoặc khi operator
+   explicit chọn `FPGA_CONTRACT_RAW_REPAIR=1`; primary không còn tách CPU
+   raw-dot để ghi `log_only` sai nghĩa.
+2. Khi contract abort bắt raw mismatch, host replay chính xác tile lỗi,
+   restage tối đa một tile và ghi pha `forensic_after_restage`,
+   `...after_act_dma`, `...after_weight_dma`, `...after_vpu`,
+   `...after_result_dma`, rồi `CONTRACT_FORENSIC_RAW`. Không có cache build
+   hay bulk DDR write trong forensic replay.
+3. Khi bitstream còn `bitstream_id=0`/protocol legacy và primary không yêu
+   cầu contract, block GEMV được bypass sang CPU để bảo toàn language
+   correctness. C0 có `FPGA_CONTRACT_CHECK=364` tự động tắt bypass để chỉ
+   hết FPGA; `FPGA_ALLOW_UNVERIFIED_LEGACY_RAW=1` là opt-in chỉ dùng
+   diagnostic. Đây là van an toàn correctness, **không phải acceleration**.
+
+Kỳ vọng header khi primary v22 chạy an toàn:
+
+```text
+legacy_raw_cpu_bypass=1
+legacy raw FPGA path bypassed to CPU
+```
+
+Kỳ vọng header khi C0 v22 chạy diagnostic:
+
+```text
+contract_check=364 contract_abort=1 contract_forensics=1
+legacy_raw_cpu_bypass=0
+```
+
+Nếu C0 mới vẫn ghi `contract_check=0`, không được kết luận FPGA pass/fail:
+command environment chưa đi vào binary hoặc file log copy không phải của run đó.
+
+### 15.6. Cập nhật 15-07-2026: primary v22 sinh English ổn định, nhưng chưa là FPGA acceleration
+
+`DATN_RTL/result_prompt.txt` ghi lần chạy primary mới nhất ở ZCU104-01 với
+`build_mem/bin/llama-cli` và đúng GGUF `gemma-3-1b-it-Q8_0.gguf`:
+
+```text
+model
+Okay, let's dive into the fascinating and rapidly evolving world of AI ...
+eval time = 37237.66 ms / 63 runs = 591.07 ms/token = 1.69 tokens/s
+```
+
+Người vận hành đã chạy lại 3--4 lần mà vẫn sinh English hợp lý. Đây là mốc
+correctness quan trọng: model, tokenizer, chat template và CPU graph có thể
+sinh ngôn ngữ bình thường. Nó thay thế kết luận `[multimodal]` cho binary/run
+này.
+
+`DATN_RTL/fpga_debug.log` trong workspace có timestamp cũ hơn
+`result_prompt.txt` và header v21, nên **không được dùng để đánh giá run
+English mới**. Log `/tmp/fpga_debug.log` của run mới chỉ có banner. Với v22,
+điều đó có thể xảy ra khi `legacy_raw_cpu_bypass=1`: primary không sinh stage
+FPGA, các dòng `INFO` được buffer theo chu kỳ 256, rồi interactive mode bị
+ngắt trước cleanup. Banner luôn xuất hiện vì được `fflush` ngay khi mở file.
+
+v23 thay đổi duy nhất về hành vi quan sát: các dòng policy, identity, `ready`,
+mapping, first CPU bypass và `cleanup` được `fflush` ngay. Không thay đổi
+matmul, layout, DMA/ZDMA, cache, RTL hoặc primary command. Khi primary v23
+chạy với bitstream ID 0, log bắt buộc phải có:
+
+```text
+ready version=zcu104-gemma3-q8-v23-contract-gated-audit-flush
+legacy_raw_cpu_bypass=1
+legacy raw FPGA path bypassed to CPU
+cleanup complete fpga_calls=0 vpu_runs=0 ... legacy_raw_cpu_bypass>0
+```
+
+Kết luận thực thi: throughput 1,69 token/s là đường CPU-correctness quarantine,
+không phải FPGA throughput. Tuyệt đối không bật `FPGA_WEIGHT_CACHE`,
+`FPGA_ACCELERATE_VOCAB`, `FPGA_FUSE_RAW_RESULT_ACCUM`,
+`FPGA_ALLOW_UNVERIFIED_LEGACY_RAW`, pipeline hoặc PL-scale ở phase này.
+
+Phase kế tiếp bị chặn bởi artifact board, không phải host setting:
+
+1. Nạp bitstream mà host đọc được `stream_protocol=1` và
+   `bitstream_id=0x56505531`.
+2. Chạy C0 (`FPGA_CONTRACT_CHECK=364`, `FPGA_CONTRACT_ABORT=1`, raw repair
+   off). Mọi `CONTRACT_STAGING_AUDIT` phải `integrity=pass`, raw mismatch phải
+   bằng 0 và logits/top-1 phải khớp CPU.
+3. Chỉ sau C0 mới mở tuần tự raw FPGA GEMV, rồi đo speed. Cache phải được thử
+   4 -> 16 -> 64 MiB với preflight riêng; không bao giờ quay lại 1100 MiB.
+
+### 15.7. C0 v23: FPGA raw GEMV chạy thật, lỗi nằm ở normal ZDMA sequencing
+
+C0 v23 đã chạy với `legacy_raw_cpu_bypass=0`, `contract_check=183`,
+`contract_abort=1`, raw repair tắt và cache tắt. Đây là bằng chứng FPGA GEMV
+thật đã được sử dụng, không phải CPU fallback. Raw values và final F32 value
+đã pass qua toàn bộ tensor từ `blk.0` đến `blk.7.ffn_up.weight`.
+
+Lỗi đầu tiên là:
+
+```text
+tensor=blk.7.ffn_down.weight layer=7 tile=20
+CONTRACT_RAW_SUMMARY ... mismatches=187 action=abort
+CONTRACT_STAGING_AUDIT phase=post_result integrity=fail
+```
+
+Audit chỉ ra ACT vẫn nguyên vẹn, còn byte weight staging ở DDR sai sau normal
+launch. Tuy nhiên forensic replay cùng `row=281`, `block=2` đã pass lần lượt:
+
+```text
+forensic_after_restage       integrity=pass
+forensic_after_act_dma       integrity=pass
+forensic_after_weight_dma    integrity=pass
+forensic_after_vpu           integrity=pass
+forensic_after_result_dma    integrity=pass
+CONTRACT_FORENSIC_RAW got=5534 expected=5534
+```
+
+Vì replay dùng đúng payload, ZDMA, VPU, RESULT DMA và raw dot, kết quả này
+loại trừ lỗi số học VPU cố định, lỗi layout Q8_0 cố định và tình trạng bitstream
+hỏng toàn cục. Nó cho thấy lỗi phụ thuộc trình tự normal launch.
+
+Host cũ kế thừa điều kiện completion `STATUS.state == 0 || state == 3` từ
+`BASIC_SOC_COURSE/.../FPGA_Driver.c`. Điều kiện đó không chứng minh ownership
+của descriptor đã được ZDMA nhả. Theo AMD UG1087, `ZDMA_CH_CTRL2.EN` được HW
+clear khi DMA operation hoàn tất, và descriptor phải ổn định khi channel đang
+enabled. Vì vậy v24 thay completion gate thành `CTRL2.EN == 0` cả trước khi
+ghi descriptor mới lẫn sau khi start; đồng thời clear `ZDMA_CH_ISR` bằng
+write-one-to-clear `0xFFF` trước mỗi descriptor.
+
+v24 không thêm `sleep`, không thay đổi RTL, địa chỉ, data layout, cache hoặc
+arithmetic. Nó chỉ loại bỏ một vi phạm contract xác định: host không được ghi
+descriptor mới khi ZDMA còn `EN=1`. Việc sửa này có loại bỏ toàn bộ mismatch
+hay không phải được xác nhận bằng C0 v24 trên board.
+
+Expected C0 v24 pass (old target; superseded by v25 after the supplied v24 board log):
+
+```text
+ready version=zcu104-gemma3-q8-v24-zdma-en-gated-contract
+legacy_raw_cpu_bypass=0
+CONTRACT_VALUE_PASS ... (old one-evaluation coverage)
+cleanup complete ... raw_mismatches=0
+```
+
+Nếu C0 v24 còn mismatch, không chạy primary raw FPGA. Giữ CPU quarantine và
+thêm normal boundary audit vào đúng tile bị lỗi; không bật cache để che timing
+hoặc làm board treo.
+
+### 15.8. Kết quả C0 v24, v25 và điều kiện chuyển primary command sang FPGA
+
+Log C0 v24 thực tế đã cho thấy thay completion gate sang `ZDMA_CH_CTRL2.EN == 0`
+chưa đủ để đóng lỗi sequencing. Mismatch đầu tiên đã di chuyển sang:
+
+```text
+tensor=blk.7.ffn_up.weight layer=7 tile=60
+row=3274 local_row=202 block=14 group_blocks=36 group_beats=72
+CONTRACT_RAW_SUMMARY ... mismatches=45 action=abort
+CONTRACT_STAGING_AUDIT phase=post_result integrity=fail
+```
+
+ACT staging vẫn nguyên vẹn, nhưng weight staging ở normal run bị thay đổi. Replay
+forensic với chính payload/tile đó lại pass ở mọi ranh giới và trả
+`CONTRACT_FORENSIC_RAW got=2942 expected=2942`. Vì vậy đây chưa phải bằng chứng
+cho phép primary command tiêu thụ raw PL result: nó là lỗi phụ thuộc ordering/
+visibility của normal ZDMA sequence, không phải kết luận rằng VPU arithmetic
+hoặc Q8 layout cố định sai.
+
+Host v25 (`zcu104-gemma3-q8-v25-zdma-readback-fenced-contract`) thêm một
+`fpga_ip_dma_readback_fence()` sau DMA ACT và sau DMA WEIGHT, ở cả normal run và
+forensic replay. Fence thực hiện CPU/MMIO barrier rồi đọc `REG_STATUS` và
+`REG_PROGRESS`; nó không sleep, không ghi DDR, không bật cache, không thay đổi
+RTL/address/data layout/arithmetic. Mục tiêu là giữ cùng visibility/order mà
+forensic audit vô tình có, rồi kiểm tra trực tiếp bằng C0.
+
+Chạy C0 v25 trên board (không bật bất kỳ cache/fusion/legacy override nào):
+
+```bash
+sudo env \
+  FPGA_CONTRACT_CHECK=364 \
+  FPGA_CONTRACT_ABORT=1 \
+  FPGA_CONTRACT_RAW_REPAIR=0 \
+  FPGA_CONTRACT_RAW_RETRY=0 \
+  FPGA_WEIGHT_CACHE=0 \
+  FPGA_FUSE_RAW_RESULT_ACCUM=0 \
+  FPGA_ACCELERATE_VOCAB=0 \
+  FPGA_LOG_FLUSH_EVERY=1 \
+  ./build_mem/bin/llama-cli \
+  -m ./models/gemma-3-1b-it-Q8_0.gguf \
+  -p "Please write about AI" \
+  -n 2 \
+  --no-warmup \
+  -no-cnv \
+  --temp 0 \
+  --seed 1
+```
+
+Gate pass là `legacy_raw_cpu_bypass=0`, tất cả audit integrity `pass`,
+`raw_mismatches=0`, `value_mismatches=0`, và có `CONTRACT_VALUE_PASS` cho cả
+prefill lẫn decode. C0 chỉ là qualification command trong giai đoạn phát triển.
+Nó không phải command production thứ hai.
+
+Sau khi gate này pass trên board, bước kế tiếp là v26: bỏ default
+`legacy_raw_cpu_bypass` đối với block GEMV trong code, nhưng không sửa
+`promp.md`. Khi đó primary command hiện hữu tự động gửi block Q8_0 GEMV qua
+ZDMA -> VPU -> ZDMA. CPU vẫn cần điều phối graph, KV cache/attention, norm,
+sampling và vocabulary projection; với RTL/bitstream hiện tại đó là kiến trúc
+FPGA offload đúng, không phải "toàn bộ model thuần FPGA". Không mở
+`FPGA_WEIGHT_CACHE`, `FPGA_FUSE_RAW_RESULT_ACCUM` hay vocabulary offload cho
+đến sau gate correctness và benchmark riêng.
+
+### 15.9. Update 15-07-2026: v29 C0 exposes a bounded-descriptor ZDMA fault candidate
+
+The latest C0 run is not a pass. It reaches `blk.9.ffn_down.weight`, layer 9,
+tile 20, then reports 160 raw mismatches and aborts. This is useful evidence:
+
+```text
+CONTRACT_RAW_MISMATCH row=475 block=46 got=-7801 expected=-7954
+CONTRACT_STAGING_AUDIT phase=post_result integrity=fail
+weight_first_bad=18 weight_expected=23 weight_actual=127
+```
+
+The activation staging bytes remain intact. Every immediately preceding ZDMA
+trace completes with `DMA_DONE`, `CTRL2.EN=0`, `status=0`, and no ZDMA error
+bits. The normal launch copies a 512 KiB WEIGHT payload. The same tile is then
+restaged and replayed by the forensic path; all replay audits pass and the raw
+value becomes exact:
+
+```text
+forensic_after_restage       integrity=pass
+forensic_after_act_dma       integrity=pass
+forensic_after_weight_dma    integrity=pass
+forensic_after_vpu           integrity=pass
+forensic_after_result_dma    integrity=pass
+CONTRACT_FORENSIC_RAW got=-7954 expected=-7954
+```
+
+This is not proof of a fixed PMAU arithmetic, Q8_0 layout, address window,
+timeout, or byte-counter failure. It is a normal-sequence-dependent
+data-integrity failure. The exact board-level cause remains to be confirmed;
+the remaining host-controlled suspect is a long 512 KiB ZDMA descriptor in a
+long-lived sequence.
+
+Host v30 changes only descriptor submission, not the VPU tile or arithmetic:
+
+1. `fpga_host.cpp` caps each ZDMA descriptor at 64 KiB by default. A 512 KiB
+   WEIGHT transfer becomes eight ordered contiguous copies, e.g.
+   `WEIGHT[1/8]` through `WEIGHT[8/8]`. The final IP address range and all
+   packed Q8 bytes are unchanged before `CTRL_START` is written.
+2. `ready` records `zdma_max_transfer_bytes=65536` and the policy line records
+   the active cap. On failure, the existing bounded DMA trace identifies the
+   exact chunk, source, destination, byte count, completion state, and VPU
+   status. No large weight cache, fusion, raw repair, or CPU fallback is
+   enabled by this change.
+3. The production primary command remains CPU-quarantined while the board
+   reports `bitstream_id=0`; it must not be used as a raw-FPGA correctness
+   result. Do not enable `FPGA_WEIGHT_CACHE`, `FPGA_FUSE_RAW_RESULT_ACCUM`,
+   `FPGA_ACCELERATE_VOCAB`, or `FPGA_ALLOW_UNVERIFIED_LEGACY_RAW`.
+
+Required board verification after building v30:
+
+```text
+ready version=zcu104-gemma3-q8-v30-zdma-bounded-descriptors
+zdma_max_transfer_bytes=65536
+CONTRACT_RAW_MISMATCH = 0
+CONTRACT_VALUE_NONFINITE = 0
+raw_mismatches=0
+value_mismatches=0
+```
+
+If C0 still aborts, retain the whole trace beginning with
+`CONTRACT_RAW_MISMATCH`; it will now contain `WEIGHT[x/8]` entries and directly
+distinguish a faulty sub-transfer from a post-transfer source-staging change.
+
+### 15.10. Update 15-07-2026: v30 fixes raw transport but exposes a GGML numerical-contract mismatch
+
+The supplied v30 board log changes the failure class. ZDMA bounded descriptors
+complete without an error and the raw INT32 contract has no mismatch through
+`blk.9.ffn_up.weight`. C0 then aborts at `blk.9.ffn_down.weight` because 365
+destination values are NaN:
+
+```text
+CONTRACT_VALUE_NONFINITE ... got=-nan expected=-nan
+CONTRACT_VALUE_SUMMARY ... checked=5760 bad=365 nonfinite=365 action=abort
+```
+
+This is not a C0 pass. The old value contract computed `expected` with the same
+private activation quantizer and the same host scales used to construct the
+FPGA result. Therefore `max_abs=0` proved only that RTL matched the host's own
+emulation. It did not prove equivalence with the ggml CPU backend.
+
+The concrete semantic divergence was introduced by v29/v30: activation `qs[]`
+were generated by a private `std::round` converter and host accumulation used
+the unrounded FP32 scale. The normal ggml Q8_0 path calls the architecture-
+selected `quantize_row_q8_0()`, stores each block scale in FP16, and the dot
+kernel consumes that stored FP16 scale. A backend that substitutes an FP32-only
+scale is numerically different and may accumulate hidden-state drift across
+transformer layers.
+
+Host v31 (`zcu104-gemma3-q8-v31-ggml-native-q8-contract`) corrects this boundary:
+
+1. Activation conversion calls `quantize_row_q8_0()` from `ggml-cpu/quants.h`.
+   This matches the AArch64 CPU backend's rounding and Q8_0 block layout.
+2. Raw FPGA results are scaled with the FP16 value stored in each activation
+   block, exactly as ggml does. An FP16-scale overflow is fatal; it is not
+   hidden with an FP32-only scale.
+3. C0 value checking calls `ggml_vec_dot_q8_0_q8_0()` for the reference. It no
+   longer compares the FPGA output with a second copy of host-private math.
+4. The 64 KiB descriptor cap, ZDMA `DMA_DONE && EN==0` gate, byte-counter clear,
+   raw mismatch forensics, large-cache safety guard, and CPU quarantine remain
+   unchanged.
+
+Required v31 board gate:
+
+```text
+ready version=zcu104-gemma3-q8-v31-ggml-native-q8-contract
+CONTRACT_VALUE_PASS ... reference=ggml_vec_dot_q8_0_q8_0
+CONTRACT_RAW_MISMATCH = 0
+CONTRACT_VALUE_NONFINITE = 0
+ACTIVATION_SCALE_FP16_OVERFLOW = 0
+raw_mismatches=0
+value_mismatches=0
+```
+
+Primary inference remains CPU-quarantined while the deployed bitstream reports
+protocol/id zero and before this v31 gate passes. Performance work on cache,
+fusion, PL scale, ping-pong, or vocabulary projection must not be enabled yet.
