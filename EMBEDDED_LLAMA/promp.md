@@ -39,5 +39,6 @@ sudo ./build_mem/bin/llama-cli \
     -m ./models/gemma-3-1b-it-Q8_0.gguf \
     -p "Please write about AI" \
     -n 64
+
 Lệnh set tần số clock cho FPGA:
-echo 200000000 | sudo tee /sys/devices/platform/fclk0/set_rate
+echo 187500000 | sudo tee /sys/devices/platform/fclk0/set_rate
