@@ -46,6 +46,16 @@ module tb_SPU_Top;
     wire [31:0] vpu_stream_last_accum_hi;
     wire [31:0] vpu_stream_last_job;
     wire [31:0] vpu_stream_last_bank;
+    reg vpu_raw_valid;
+    reg signed [31:0] vpu_raw_data;
+    reg [15:0] vpu_raw_row;
+    reg [15:0] vpu_raw_block;
+    reg [15:0] vpu_raw_group_blocks;
+    reg vpu_raw_last_block;
+    reg vpu_raw_clear_accum;
+    reg [31:0] vpu_raw_job_id;
+    reg vpu_raw_bank;
+    reg vpu_raw_done;
 
     reg                              mm_wr_en;
     reg [1:0]                        mm_wr_region;
@@ -86,17 +96,17 @@ module tb_SPU_Top;
         .spu_error       (spu_error),
         .spu_error_code  (spu_error_code),
         .spu_caps        (spu_caps),
-        .vpu_raw_valid   (1'b0),
+        .vpu_raw_valid   (vpu_raw_valid),
         .vpu_raw_ready   (vpu_raw_ready),
-        .vpu_raw_data    (32'sd0),
-        .vpu_raw_row     (16'd0),
-        .vpu_raw_block   (16'd0),
-        .vpu_raw_group_blocks(16'd1),
-        .vpu_raw_last_block(1'b0),
-        .vpu_raw_clear_accum(1'b0),
-        .vpu_raw_job_id  (32'd0),
-        .vpu_raw_bank    (1'b0),
-        .vpu_raw_done    (1'b0),
+        .vpu_raw_data    (vpu_raw_data),
+        .vpu_raw_row     (vpu_raw_row),
+        .vpu_raw_block   (vpu_raw_block),
+        .vpu_raw_group_blocks(vpu_raw_group_blocks),
+        .vpu_raw_last_block(vpu_raw_last_block),
+        .vpu_raw_clear_accum(vpu_raw_clear_accum),
+        .vpu_raw_job_id  (vpu_raw_job_id),
+        .vpu_raw_bank    (vpu_raw_bank),
+        .vpu_raw_done    (vpu_raw_done),
         .vpu_stream_count(vpu_stream_count),
         .vpu_stream_done_count(vpu_stream_done_count),
         .vpu_stream_drop_count(vpu_stream_drop_count),
@@ -494,6 +504,69 @@ module tb_SPU_Top;
         end
     endtask
 
+    // Drive one true ready/valid VPU raw-stream transfer.  The payload stays
+    // stable from the falling edge before acceptance through the following
+    // rising edge, matching the upstream VPU contract.
+    task stream_push_entry;
+        input signed [31:0] raw;
+        input [15:0] row;
+        input [15:0] block;
+        input [15:0] group_blocks;
+        input last_block;
+        input clear_accum;
+        input [31:0] job_id;
+        input bank;
+        begin
+            while (!vpu_raw_ready)
+                @(posedge clk);
+            @(negedge clk);
+            vpu_raw_data         = raw;
+            vpu_raw_row          = row;
+            vpu_raw_block        = block;
+            vpu_raw_group_blocks = group_blocks;
+            vpu_raw_last_block   = last_block;
+            vpu_raw_clear_accum  = clear_accum;
+            vpu_raw_job_id       = job_id;
+            vpu_raw_bank         = bank;
+            vpu_raw_valid        = 1'b1;
+            @(posedge clk);
+            if (!vpu_raw_ready)
+                fail("VPU raw ready deasserted during an accepted stream entry");
+            @(negedge clk);
+            vpu_raw_valid = 1'b0;
+        end
+    endtask
+
+    task wait_for_stream_error_count;
+        input [31:0] expected;
+        begin
+            timeout = 0;
+            while (vpu_stream_error_count != expected) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 300) begin
+                    fail("VPU raw stream error-count timeout");
+                    timeout = 0;
+                end
+            end
+        end
+    endtask
+
+    task wait_for_stream_out_count;
+        input [31:0] expected;
+        begin
+            timeout = 0;
+            while (vpu_stream_out_count != expected) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 500) begin
+                    fail("VPU raw stream output-count timeout");
+                    timeout = 0;
+                end
+            end
+        end
+    endtask
+
     task run_scale_accum_case;
         reg [DATA_WIDTH-1:0] out0;
         reg [DATA_WIDTH-1:0] out1;
@@ -606,6 +679,87 @@ module tb_SPU_Top;
             spu_clear_done <= 1'b1;
             @(posedge clk);
             spu_clear_done <= 1'b0;
+        end
+    endtask
+
+    task run_vpu_stream_scale_metadata_case;
+        reg [DATA_WIDTH-1:0] out_word;
+        reg signed [63:0] got_accum;
+        reg [31:0] stream_count_before;
+        reg [31:0] stream_out_before;
+        reg [31:0] stream_error_before;
+        reg [31:0] stream_drop_before;
+        begin
+            $display("[TB] VPU raw-stream precomputed scale metadata test");
+
+            // Linear scale indices 4..7 are in SPU_PARAM word 1.  The first
+            // two entries exercise FIFO back-to-back push/pop and accumulation
+            // for row=2/group_blocks=2; index 7 specifically covers lane 3.
+            mm_write(REGION_PARAM, 32'd1,
+                     {32'h3c00_3c00, 32'h3c00_3c00,
+                      32'h3c00_3c00, 32'h3c00_3c00});
+            // Linear index 63 is the final lane of word 15 for this 64-word
+            // SPU_PARAM test instance: row=63/group_blocks=1/block=0.
+            mm_write(REGION_PARAM, 32'd15,
+                     {32'h3c00_3c00, 32'h3c00_3c00,
+                      32'h3c00_3c00, 32'h3c00_3c00});
+
+            stream_count_before = vpu_stream_count;
+            stream_out_before   = vpu_stream_out_count;
+            stream_error_before = vpu_stream_error_count;
+            stream_drop_before  = vpu_stream_drop_count;
+
+            stream_push_entry(32'sd1, 16'd2, 16'd0, 16'd2,
+                              1'b0, 1'b1, 32'h0000_0101, 1'b0);
+            stream_push_entry(32'sd2, 16'd2, 16'd1, 16'd2,
+                              1'b1, 1'b0, 32'h0000_0101, 1'b0);
+            stream_push_entry(32'sd3, 16'd63, 16'd0, 16'd1,
+                              1'b1, 1'b1, 32'h0000_0102, 1'b1);
+
+            wait_for_stream_out_count(stream_out_before + 32'd2);
+
+            if (vpu_stream_count != stream_count_before + 32'd3)
+                fail("VPU raw stream accepted-count mismatch for FIFO push test");
+            else
+                pass_count = pass_count + 1;
+
+            if (vpu_stream_error_count != stream_error_before ||
+                vpu_stream_drop_count != stream_drop_before)
+                fail("valid VPU raw stream entry was reported as an error/drop");
+            else
+                pass_count = pass_count + 1;
+
+            mm_read(REGION_OUT, 32'd2, out_word);
+            got_accum = out_word[79:16];
+            if (out_word[15:0] !== 16'd2 || got_accum !== 64'sd196608)
+                fail("FIFO ordered row=2 scale accumulation mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            mm_read(REGION_OUT, 32'd63, out_word);
+            got_accum = out_word[79:16];
+            if (out_word[15:0] !== 16'd63 || got_accum !== 64'sd196608)
+                fail("boundary scale-word/lane row=63 accumulation mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            // Preserve the old invalid-entry semantics: entries are accepted
+            // into the FIFO, then rejected once dequeued, incrementing both
+            // error and drop counters without publishing an output row.
+            stream_push_entry(32'sd9, 16'd0, 16'd0, 16'd0,
+                              1'b1, 1'b1, 32'h0000_0103, 1'b0);
+            stream_push_entry(32'sd9, 16'd0, 16'd2, 16'd2,
+                              1'b1, 1'b1, 32'h0000_0104, 1'b0);
+            wait_for_stream_error_count(stream_error_before + 32'd2);
+
+            if (vpu_stream_drop_count != stream_drop_before + 32'd2)
+                fail("invalid VPU group/block entries did not increment drop count");
+            else
+                pass_count = pass_count + 1;
+            if (vpu_stream_out_count != stream_out_before + 32'd2)
+                fail("invalid VPU group/block entries unexpectedly published output");
+            else
+                pass_count = pass_count + 1;
         end
     endtask
 
@@ -837,6 +991,16 @@ module tb_SPU_Top;
         mm_rd_en = 1'b0;
         mm_rd_region = REGION_OUT;
         mm_rd_index = 32'd0;
+        vpu_raw_valid = 1'b0;
+        vpu_raw_data = 32'sd0;
+        vpu_raw_row = 16'd0;
+        vpu_raw_block = 16'd0;
+        vpu_raw_group_blocks = 16'd1;
+        vpu_raw_last_block = 1'b0;
+        vpu_raw_clear_accum = 1'b0;
+        vpu_raw_job_id = 32'd0;
+        vpu_raw_bank = 1'b0;
+        vpu_raw_done = 1'b0;
         pass_count = 0;
         fail_count = 0;
 
@@ -858,6 +1022,7 @@ module tb_SPU_Top;
         run_scale_accum_case();
         run_scale_accum_bad_scale_case();
         run_scale_accum_row_range_case();
+        run_vpu_stream_scale_metadata_case();
         run_silu_mul_case();
         run_rmsnorm_case();
         run_rope_case();

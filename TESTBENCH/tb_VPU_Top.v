@@ -20,6 +20,8 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] REG_MODE      = 40'h0000_0060;
     localparam [ADDR_WIDTH-1:0] REG_LIMITS    = 40'h0000_0070;
     localparam [ADDR_WIDTH-1:0] REG_CAPS      = 40'h0000_0090;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_AUX1  = 40'h0000_00E4;
+    localparam [ADDR_WIDTH-1:0] REG_SPU_CAPS  = 40'h0000_00F0;
     localparam [ADDR_WIDTH-1:0] REG_STREAM_PROTOCOL = 40'h0000_00F4;
     localparam [ADDR_WIDTH-1:0] REG_BITSTREAM_ID = 40'h0000_00F8;
     localparam [ADDR_WIDTH-1:0] REG_BANK      = 40'h0000_0100;
@@ -209,6 +211,15 @@ module tb_VPU_Top;
         begin
             word32 = {DATA_WIDTH{1'b0}};
             word32[31:0] = value;
+        end
+    endfunction
+
+    function [DATA_WIDTH-1:0] word32_at_addr;
+        input [ADDR_WIDTH-1:0] addr;
+        input [31:0] value;
+        begin
+            word32_at_addr = {DATA_WIDTH{1'b0}};
+            word32_at_addr[32*addr[3:2] +: 32] = value;
         end
     endfunction
 
@@ -433,6 +444,88 @@ module tb_VPU_Top;
         end
     endtask
 
+    task axi_write32;
+        input [ADDR_WIDTH-1:0] addr;
+        input [31:0] data;
+        input [3:0] strb;
+        integer timeout;
+        reg [DATA_WIDTH-1:0] lane_data;
+        reg [(DATA_WIDTH/8)-1:0] lane_strb;
+        begin
+            lane_data = word32_at_addr(addr, data);
+            lane_strb = {(DATA_WIDTH/8){1'b0}};
+            lane_strb[4*addr[3:2] +: 4] = strb;
+
+            @(posedge clk);
+            awid     <= {ID_WIDTH{1'b0}};
+            awaddr   <= addr;
+            awlen    <= 8'd0;
+            awsize   <= 3'd2;
+            awburst  <= 2'b01;
+            awlock   <= 1'b0;
+            awcache  <= 4'd0;
+            awprot   <= 3'd0;
+            awqos    <= 4'd0;
+            awregion <= 4'd0;
+            awuser   <= 1'b0;
+            awvalid  <= 1'b1;
+            wvalid   <= 1'b0;
+            bready   <= 1'b1;
+
+            timeout = 0;
+            while (!awready) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("AXI narrow write address timeout");
+                    timeout = 0;
+                end
+            end
+            @(posedge clk);
+            awvalid <= 1'b0;
+
+            @(posedge clk);
+            wdata    <= lane_data;
+            wstrb    <= lane_strb;
+            wlast    <= 1'b1;
+            wuser    <= 1'b0;
+            wvalid   <= 1'b1;
+
+            timeout = 0;
+            while (!wready) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("AXI narrow write data timeout");
+                    timeout = 0;
+                end
+            end
+            @(posedge clk);
+            wvalid <= 1'b0;
+
+            timeout = 0;
+            while (!bvalid) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("AXI narrow write response timeout");
+                    timeout = 0;
+                end
+            end
+
+            if (bresp != 2'b00)
+                fail("AXI narrow write response was not OKAY");
+
+            @(posedge clk);
+            while (bvalid)
+                @(posedge clk);
+            bready <= 1'b1;
+            wlast  <= 1'b0;
+            wstrb  <= {(DATA_WIDTH/8){1'b0}};
+            wdata  <= {DATA_WIDTH{1'b0}};
+        end
+    endtask
+
     task axi_read;
         input  [ADDR_WIDTH-1:0] addr;
         output [DATA_WIDTH-1:0] data;
@@ -501,6 +594,64 @@ module tb_VPU_Top;
         end
     endtask
 
+    task axi_read32;
+        input [ADDR_WIDTH-1:0] addr;
+        output [31:0] data;
+        integer timeout;
+        integer lane;
+        begin
+            @(posedge clk);
+            arid     <= {ID_WIDTH{1'b0}};
+            araddr   <= addr;
+            arlen    <= 8'd0;
+            arsize   <= 3'd2;
+            arburst  <= 2'b01;
+            arlock   <= 1'b0;
+            arcache  <= 4'd0;
+            arprot   <= 3'd0;
+            arqos    <= 4'd0;
+            arregion <= 4'd0;
+            aruser   <= 1'b0;
+            arvalid  <= 1'b1;
+            rready   <= 1'b1;
+
+            timeout = 0;
+            while (arvalid) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("AXI narrow read address timeout");
+                    arvalid <= 1'b0;
+                end
+                if (arvalid && arready)
+                    arvalid <= 1'b0;
+            end
+
+            timeout = 0;
+            while (!rvalid) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 200) begin
+                    fail("AXI narrow read data timeout");
+                    timeout = 0;
+                end
+            end
+
+            data = rdata[32*addr[3:2] +: 32];
+            if (rresp != 2'b00)
+                fail("AXI narrow read response was not OKAY");
+            if (!rlast)
+                fail("Single-beat AXI narrow read did not assert RLAST");
+            for (lane = 0; lane < DATA_WIDTH / 32; lane = lane + 1) begin
+                if ((lane != addr[3:2]) && (rdata[32*lane +: 32] !== 32'd0))
+                    fail("AXI narrow read returned data in an unselected lane");
+            end
+
+            @(posedge clk);
+            rready <= 1'b0;
+        end
+    endtask
+
     task init_case_data;
         input integer case_id;
         input integer rows;
@@ -524,6 +675,69 @@ module tb_VPU_Top;
                     weight[r*MAX_TEST_COLS + i] = value;
                 end
             end
+        end
+    endtask
+
+    task run_mmio_lane_case;
+        reg [31:0] rd32;
+        begin
+            $display("[TB] MMIO NARROW CASE: lane-steered register reads and writes");
+
+            axi_read32(REG_SPU_CAPS, rd32);
+            if (rd32 !== 32'h1000_03c3)
+                fail("SPU capability register narrow read mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read32(REG_STREAM_PROTOCOL, rd32);
+            if (rd32 !== 32'h0000_0001)
+                fail("Stream protocol narrow read mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read32(REG_BITSTREAM_ID, rd32);
+            if (rd32 !== 32'h5650_5531)
+                fail("Bitstream identity narrow read mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_write32(REG_SPU_AUX1, 32'ha5a5_5a5a, 4'b1111);
+            axi_read32(REG_SPU_AUX1, rd32);
+            if (rd32 !== 32'ha5a5_5a5a)
+                fail("Lane-1 AUX1 full-strobe write/read mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_write32(REG_SPU_AUX1, 32'h1122_3344, 4'b0101);
+            axi_read32(REG_SPU_AUX1, rd32);
+            if (rd32 !== 32'ha522_5a44)
+                fail("Lane-1 AUX1 partial-strobe write/read mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read32(REG_SPU_STREAM_COUNT, rd32);
+            if (rd32 == 32'd0)
+                fail("SPU stream count was not meaningful before narrow counter read");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read32(REG_SPU_STREAM_DONE, rd32);
+            if (rd32 == 32'd0)
+                fail("SPU stream done count narrow read was zero after completed stream");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read32(REG_SPU_STREAM_OUT, rd32);
+            if (rd32 == 32'd0)
+                fail("SPU stream output count narrow read was zero after completed stream");
+            else
+                pass_count = pass_count + 1;
+
+            axi_read32(REG_SPU_STREAM_ERROR, rd32);
+            if (rd32 !== 32'd0)
+                fail("SPU stream error counter was nonzero during narrow MMIO test");
+            else
+                pass_count = pass_count + 1;
         end
     endtask
 
@@ -616,6 +830,7 @@ module tb_VPU_Top;
         integer start_cycle;
         integer done_cycle;
         reg [DATA_WIDTH-1:0] rd_word;
+        reg [31:0] rd32;
         reg signed [31:0] got;
         reg signed [31:0] expected;
         reg [31:0] stream_count_before;
@@ -652,11 +867,11 @@ module tb_VPU_Top;
                 fail("SPU Q8 scale stream capability bit was not set");
             if (rd_word[15:8] !== 8'd64)
                 fail("REG_CAPS max_group_q8_blocks was not 64");
-            axi_read(REG_STREAM_PROTOCOL, rd_word);
-            if (rd_word[31:0] !== 32'h0000_0001)
+            axi_read32(REG_STREAM_PROTOCOL, rd32);
+            if (rd32 !== 32'h0000_0001)
                 fail("stream protocol version is not ready/valid FIFO v1");
-            axi_read(REG_BITSTREAM_ID, rd_word);
-            if (rd_word[31:0] !== 32'h5650_5531)
+            axi_read32(REG_BITSTREAM_ID, rd32);
+            if (rd32 !== 32'h5650_5531)
                 fail("bitstream identity register mismatch");
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
@@ -686,14 +901,11 @@ module tb_VPU_Top;
 
             axi_read(REG_SPU_STREAM_COUNT, rd_word);
             stream_count_before = rd_word[31:0];
-            axi_read(REG_SPU_STREAM_DONE, rd_word);
-            stream_done_before = rd_word[31:0];
+            axi_read32(REG_SPU_STREAM_DONE, stream_done_before);
             axi_read(REG_SPU_STREAM_DROP, rd_word);
             stream_drop_before = rd_word[31:0];
-            axi_read(REG_SPU_STREAM_OUT, rd_word);
-            stream_out_before = rd_word[31:0];
-            axi_read(REG_SPU_STREAM_ERROR, rd_word);
-            stream_error_before = rd_word[31:0];
+            axi_read32(REG_SPU_STREAM_OUT, stream_out_before);
+            axi_read32(REG_SPU_STREAM_ERROR, stream_error_before);
 
             start_cycle = cycle_count;
             axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
@@ -718,8 +930,7 @@ module tb_VPU_Top;
             timeout = 0;
             stream_out_after = stream_out_before;
             while (stream_out_after < (stream_out_before + rows)) begin
-                axi_read(REG_SPU_STREAM_OUT, rd_word);
-                stream_out_after = rd_word[31:0];
+                axi_read32(REG_SPU_STREAM_OUT, stream_out_after);
                 timeout = timeout + 1;
                 if (timeout > 100000) begin
                     fail("SPU raw stream accumulator did not emit all rows");
@@ -729,14 +940,11 @@ module tb_VPU_Top;
 
             axi_read(REG_SPU_STREAM_COUNT, rd_word);
             stream_count_after = rd_word[31:0];
-            axi_read(REG_SPU_STREAM_DONE, rd_word);
-            stream_done_after = rd_word[31:0];
+            axi_read32(REG_SPU_STREAM_DONE, stream_done_after);
             axi_read(REG_SPU_STREAM_DROP, rd_word);
             stream_drop_after = rd_word[31:0];
-            axi_read(REG_SPU_STREAM_OUT, rd_word);
-            stream_out_after = rd_word[31:0];
-            axi_read(REG_SPU_STREAM_ERROR, rd_word);
-            stream_error_after = rd_word[31:0];
+            axi_read32(REG_SPU_STREAM_OUT, stream_out_after);
+            axi_read32(REG_SPU_STREAM_ERROR, stream_error_after);
 
             if (stream_count_after !== (stream_count_before + rows * group_blocks))
                 fail("SPU raw stream accepted-count mismatch");
@@ -771,23 +979,23 @@ module tb_VPU_Top;
             else
                 pass_count = pass_count + 1;
 
-            axi_read(REG_SPU_STREAM_LAST_META, rd_word);
-            if ((rd_word[30] !== 1'b1) ||
-                (rd_word[31] !== (group_blocks == 1)) ||
-                (rd_word[29:16] != (group_blocks - 1)) ||
-                (rd_word[15:0] != (rows - 1)))
+            axi_read32(REG_SPU_STREAM_LAST_META, rd32);
+            if ((rd32[30] !== 1'b1) ||
+                (rd32[31] !== (group_blocks == 1)) ||
+                (rd32[29:16] != (group_blocks - 1)) ||
+                (rd32[15:0] != (rows - 1)))
                 fail("SPU raw stream last metadata mismatch");
             else
                 pass_count = pass_count + 1;
 
-            axi_read(REG_SPU_STREAM_LAST_JOB, rd_word);
-            if (rd_word[31:0] !== (32'h0000_1000 + case_id))
+            axi_read32(REG_SPU_STREAM_LAST_JOB, rd32);
+            if (rd32 !== (32'h0000_1000 + case_id))
                 fail("SPU raw stream last job id mismatch");
             else
                 pass_count = pass_count + 1;
 
-            axi_read(REG_SPU_STREAM_LAST_BANK, rd_word);
-            if (rd_word[0] !== 1'b0)
+            axi_read32(REG_SPU_STREAM_LAST_BANK, rd32);
+            if (rd32[0] !== 1'b0)
                 fail("SPU raw stream last bank mismatch");
             else
                 pass_count = pass_count + 1;
@@ -801,8 +1009,8 @@ module tb_VPU_Top;
             else
                 pass_count = pass_count + 1;
 
-            axi_read(REG_SPU_STREAM_ACCUM_HI, rd_word);
-            if (rd_word[31:0] !== expected_accum[63:32])
+            axi_read32(REG_SPU_STREAM_ACCUM_HI, rd32);
+            if (rd32 !== expected_accum[63:32])
                 fail("SPU raw stream accumulator high word mismatch");
             else
                 pass_count = pass_count + 1;
@@ -1271,6 +1479,7 @@ module tb_VPU_Top;
         run_case(1, 3, 64, 4);
         run_case(2, 2, 17, 0);
         run_group_case(3, 5, 3);
+        run_mmio_lane_case();
         run_group_case(4, 2, MAX_GROUP_Q8_BLOCKS);
         run_int8_result_case(5, 5, 3, 3);
         run_int8_accum_groups_case(6, 4, 2, 3, 4);
