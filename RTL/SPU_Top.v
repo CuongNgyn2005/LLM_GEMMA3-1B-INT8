@@ -61,6 +61,9 @@ module SPU_Top #(
     output wire [31:0]                       vpu_stream_last_accum_hi,
     output wire [31:0]                       vpu_stream_last_job,
     output wire [31:0]                       vpu_stream_last_bank,
+    // Read-only stream ownership status.  This is consumed by the host before
+    // it overwrites SPU_PARAM or drains SPU_OUT for a new P2 tile.
+    output wire [31:0]                       vpu_stream_status,
 
     input  wire                              mm_wr_en,
     input  wire [1:0]                        mm_wr_region,
@@ -244,6 +247,16 @@ module SPU_Top #(
     assign vpu_stream_last_accum_hi = vpu_stream_last_accum_hi_r;
     assign vpu_stream_last_job      = vpu_stream_last_job_r;
     assign vpu_stream_last_bank     = vpu_stream_last_bank_r;
+    // bit 0: dequeue FSM idle, bit 1: FIFO empty, bit 2: scale accumulator
+    // idle, bit 3: no SPU_OUT write in this cycle, bit 4: all of the above.
+    // The host requires bit 4 before it may reuse SPU_PARAM/SPU_OUT.
+    assign vpu_stream_status[0]     = stream_idle;
+    assign vpu_stream_status[1]     = stream_fifo_empty;
+    assign vpu_stream_status[2]     = !stream_accum_busy;
+    assign vpu_stream_status[3]     = !stream_result_write;
+    assign vpu_stream_status[4]     = stream_idle && stream_fifo_empty &&
+                                      !stream_accum_busy && !stream_result_write;
+    assign vpu_stream_status[31:5]  = 27'd0;
 
     always @(posedge clk) begin
         if (!resetn) begin

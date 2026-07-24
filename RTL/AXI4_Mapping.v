@@ -82,6 +82,13 @@ module AXI4_Mapping #(
         (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
     localparam [31:0] STREAM_PROTOCOL_VERSION = 32'h0000_0001;
     localparam [31:0] BITSTREAM_ID = 32'h5650_5531; // "VPU1"
+    // P2 ABI v1 proves the VPU->SPU path used by FPGA_PL_SCALE_ENABLE:
+    // SPU_PARAM is 128-bit words at 0x0038_0000, with four packed entries
+    // {weight_scale_fp16[31:16], act_scale_fp16[15:0]}, and SPU_OUT is
+    // 128-bit rows at 0x0034_0000 carrying {q16_16_accum[79:16], row_id}.
+    // A semantic VPU1/protocol1 image without this exact signature is not
+    // permitted to receive P2 SPU memory traffic from the host.
+    localparam [31:0] P2_STREAM_ABI_SIGNATURE = 32'h5032_0001; // "P2", ABI v1
 
     localparam [15:0] MAX_ROWS_16 = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16 = MAX_COL_BEATS;
@@ -333,6 +340,7 @@ module AXI4_Mapping #(
     wire [31:0] spu_stream_last_accum_hi;
     wire [31:0] spu_stream_last_job;
     wire [31:0] spu_stream_last_bank;
+    wire [31:0] spu_stream_status;
     wire status_error = core_error;
 
     // Register read map.  Offset 0x0000 acts as a control register on writes
@@ -383,6 +391,7 @@ module AXI4_Mapping #(
                 16'h00F0: reg_read_word32 = spu_caps;
                 16'h00F4: reg_read_word32 = STREAM_PROTOCOL_VERSION;
                 16'h00F8: reg_read_word32 = BITSTREAM_ID;
+                16'h00FC: reg_read_word32 = P2_STREAM_ABI_SIGNATURE;
                 16'h0100: reg_read_word32 = cfg_bank_reg;
                 16'h0110: reg_read_word32 = cfg_job_id_reg;
                 16'h0120: begin
@@ -414,6 +423,7 @@ module AXI4_Mapping #(
                 16'h01EC: reg_read_word32 = spu_stream_last_bank;
                 16'h01F0: reg_read_word32 = spu_stream_last_accum_lo;
                 16'h01F4: reg_read_word32 = spu_stream_last_accum_hi;
+                16'h01F8: reg_read_word32 = spu_stream_status;
                 default: reg_read_word32 = 32'd0;
             endcase
         end
@@ -805,6 +815,7 @@ module AXI4_Mapping #(
         .vpu_stream_last_accum_hi(spu_stream_last_accum_hi),
         .vpu_stream_last_job(spu_stream_last_job),
         .vpu_stream_last_bank(spu_stream_last_bank),
+        .vpu_stream_status(spu_stream_status),
         .mm_wr_en        (spu_wr_en_r),
         .mm_wr_region    (spu_wr_region_r),
         .mm_wr_index     (spu_wr_index_r),
