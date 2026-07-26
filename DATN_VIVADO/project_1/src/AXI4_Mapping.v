@@ -82,6 +82,13 @@ module AXI4_Mapping #(
         (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
     localparam [31:0] STREAM_PROTOCOL_VERSION = 32'h0000_0001;
     localparam [31:0] BITSTREAM_ID = 32'h5650_5531; // "VPU1"
+    // P2 ABI v1 proves the VPU->SPU path used by FPGA_PL_SCALE_ENABLE:
+    // SPU_PARAM is 128-bit words at 0x0038_0000, with four packed entries
+    // {weight_scale_fp16[31:16], act_scale_fp16[15:0]}, and SPU_OUT is
+    // 128-bit rows at 0x0034_0000 carrying {q16_16_accum[79:16], row_id}.
+    // A semantic VPU1/protocol1 image without this exact signature is not
+    // permitted to receive P2 SPU memory traffic from the host.
+    localparam [31:0] P2_STREAM_ABI_SIGNATURE = 32'h5032_0001; // "P2", ABI v1
 
     localparam [15:0] MAX_ROWS_16 = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16 = MAX_COL_BEATS;
@@ -333,91 +340,100 @@ module AXI4_Mapping #(
     wire [31:0] spu_stream_last_accum_hi;
     wire [31:0] spu_stream_last_job;
     wire [31:0] spu_stream_last_bank;
+    wire [31:0] spu_stream_status;
     wire status_error = core_error;
 
-    // Register read map.  The low 32 bits carry the useful information; the
-    // remaining bits of the 128-bit AXI data bus are returned as zero.  Offset
-    // 0x0000 acts as a control register on writes and as a status alias on
-    // reads.
+    // Register read map.  Offset 0x0000 acts as a control register on writes
+    // and as a status alias on reads.
+    function [31:0] reg_read_word32;
+        input [31:0] addr;
+        begin
+            reg_read_word32 = 32'd0;
+            case (addr[15:0])
+                16'h0000: reg_read_word32[2:0]   = {status_error, core_busy, core_done};
+                16'h0010: reg_read_word32[2:0]   = {status_error, core_busy, core_done};
+                16'h0020: reg_read_word32 = cfg_rows_reg;
+                16'h0030: reg_read_word32 = cfg_cols_reg;
+                16'h0040: reg_read_word32 = cfg_col_beats_reg;
+                16'h0050: reg_read_word32 = cfg_scale_reg;
+                16'h0060: reg_read_word32 = cfg_mode_reg;
+                16'h0070: begin
+                    reg_read_word32[15:0]  = MAX_ROWS_16;
+                    reg_read_word32[31:16] = MAX_COL_BEATS_16;
+                end
+                16'h0080: begin
+                    reg_read_word32[15:0]  = core_active_row;
+                    reg_read_word32[31:16] = core_active_col_beat;
+                end
+                16'h0090: begin
+                    reg_read_word32[0]      = 1'b1; // packed raw Q8 block mode is available
+                    reg_read_word32[1]      = 1'b1; // compact active-stride weight layout is available
+                    reg_read_word32[2]      = 1'b0; // Q8_0 output block with scale metadata is not integrated
+                    reg_read_word32[3]      = 1'b1; // two-bank VPU ping-pong storage is available
+                    reg_read_word32[4]      = 1'b1; // banked job descriptor/ownership registers are available
+                    reg_read_word32[5]      = 1'b1; // lossless VPU raw-result ready/valid stream
+                    reg_read_word32[6]      = 1'b1; // SPU applies Q8_0 scales and writes row outputs
+                    reg_read_word32[15:8]   = MAX_GROUP_Q8_BLOCKS_16[7:0];
+                    reg_read_word32[31:16]  = RESULT_WORD_DEPTH_32[15:0];
+                end
+                16'h00A0: begin
+                    reg_read_word32[2:0]    = {spu_error, spu_done, spu_busy};
+                    reg_read_word32[15:8]   = spu_error_code;
+                end
+                16'h00B0: begin
+                    reg_read_word32[2:0]    = {spu_error, spu_done, spu_busy};
+                    reg_read_word32[15:8]   = spu_error_code;
+                end
+                16'h00C0: reg_read_word32 = cfg_spu_mode_reg;
+                16'h00D0: reg_read_word32 = cfg_spu_len_reg;
+                16'h00E0: reg_read_word32 = cfg_spu_aux0_reg;
+                16'h00E4: reg_read_word32 = cfg_spu_aux1_reg;
+                16'h00F0: reg_read_word32 = spu_caps;
+                16'h00F4: reg_read_word32 = STREAM_PROTOCOL_VERSION;
+                16'h00F8: reg_read_word32 = BITSTREAM_ID;
+                16'h00FC: reg_read_word32 = P2_STREAM_ABI_SIGNATURE;
+                16'h0100: reg_read_word32 = cfg_bank_reg;
+                16'h0110: reg_read_word32 = cfg_job_id_reg;
+                16'h0120: begin
+                    reg_read_word32[0]      = cfg_bank_reg[0];   // write/next-compute bank
+                    reg_read_word32[1]      = cfg_bank_reg[1];   // result read bank
+                    reg_read_word32[8]      = core_active_bank;
+                    reg_read_word32[9]      = core_done_bank;
+                    reg_read_word32[16]     = core_busy;
+                    reg_read_word32[17]     = core_done;
+                    reg_read_word32[18]     = core_error;
+                end
+                16'h0130: reg_read_word32 = core_active_job_id;
+                16'h0140: reg_read_word32 = core_done_job_id;
+                16'h0150: reg_read_word32 = cfg_slot_state_reg;
+                16'h0160: reg_read_word32 = cfg_tensor_id_reg;
+                16'h0170: reg_read_word32 = cfg_row0_reg;
+                16'h0180: reg_read_word32 = cfg_k_block0_reg;
+                16'h0190: reg_read_word32 = cfg_group_blocks_reg;
+                16'h01A0: reg_read_word32 = cfg_token_id_reg;
+                16'h01B0: reg_read_word32 = cfg_desc_flags_reg;
+                16'h01C0: reg_read_word32 = spu_stream_count;
+                16'h01C4: reg_read_word32 = spu_stream_done_count;
+                16'h01D0: reg_read_word32 = spu_stream_drop_count;
+                16'h01D4: reg_read_word32 = spu_stream_out_count;
+                16'h01D8: reg_read_word32 = spu_stream_error_count;
+                16'h01E0: reg_read_word32 = spu_stream_last_raw;
+                16'h01E4: reg_read_word32 = spu_stream_last_meta;
+                16'h01E8: reg_read_word32 = spu_stream_last_job;
+                16'h01EC: reg_read_word32 = spu_stream_last_bank;
+                16'h01F0: reg_read_word32 = spu_stream_last_accum_lo;
+                16'h01F4: reg_read_word32 = spu_stream_last_accum_hi;
+                16'h01F8: reg_read_word32 = spu_stream_status;
+                default: reg_read_word32 = 32'd0;
+            endcase
+        end
+    endfunction
+
     function [AXI_DATA_WIDTH-1:0] reg_read_data;
         input [31:0] addr;
         begin
             reg_read_data = {AXI_DATA_WIDTH{1'b0}};
-            case (addr[15:0])
-                16'h0000: reg_read_data[2:0]   = {status_error, core_busy, core_done};
-                16'h0010: reg_read_data[2:0]   = {status_error, core_busy, core_done};
-                16'h0020: reg_read_data[31:0]  = cfg_rows_reg;
-                16'h0030: reg_read_data[31:0]  = cfg_cols_reg;
-                16'h0040: reg_read_data[31:0]  = cfg_col_beats_reg;
-                16'h0050: reg_read_data[31:0]  = cfg_scale_reg;
-                16'h0060: reg_read_data[31:0]  = cfg_mode_reg;
-                16'h0070: begin
-                    reg_read_data[15:0]  = MAX_ROWS_16;
-                    reg_read_data[31:16] = MAX_COL_BEATS_16;
-                end
-                16'h0080: begin
-                    reg_read_data[15:0]  = core_active_row;
-                    reg_read_data[31:16] = core_active_col_beat;
-                end
-                16'h0090: begin
-                    reg_read_data[0]      = 1'b1; // packed raw Q8 block mode is available
-                    reg_read_data[1]      = 1'b1; // compact active-stride weight layout is available
-                    reg_read_data[2]      = 1'b0; // Q8_0 output block with scale metadata is not integrated
-                    reg_read_data[3]      = 1'b1; // two-bank VPU ping-pong storage is available
-                    reg_read_data[4]      = 1'b1; // banked job descriptor/ownership registers are available
-                    reg_read_data[5]      = 1'b1; // lossless VPU raw-result ready/valid stream
-                    reg_read_data[6]      = 1'b1; // SPU applies Q8_0 scales and writes row outputs
-                    reg_read_data[15:8]   = MAX_GROUP_Q8_BLOCKS_16[7:0];
-                    reg_read_data[31:16]  = RESULT_WORD_DEPTH_32[15:0];
-                end
-                16'h00A0: begin
-                    reg_read_data[2:0]    = {spu_error, spu_done, spu_busy};
-                    reg_read_data[15:8]   = spu_error_code;
-                end
-                16'h00B0: begin
-                    reg_read_data[2:0]    = {spu_error, spu_done, spu_busy};
-                    reg_read_data[15:8]   = spu_error_code;
-                end
-                16'h00C0: reg_read_data[31:0] = cfg_spu_mode_reg;
-                16'h00D0: reg_read_data[31:0] = cfg_spu_len_reg;
-                16'h00E0: reg_read_data[31:0] = cfg_spu_aux0_reg;
-                16'h00E4: reg_read_data[31:0] = cfg_spu_aux1_reg;
-                16'h00F0: reg_read_data[31:0] = spu_caps;
-                16'h00F4: reg_read_data[31:0] = STREAM_PROTOCOL_VERSION;
-                16'h00F8: reg_read_data[31:0] = BITSTREAM_ID;
-                16'h0100: reg_read_data[31:0] = cfg_bank_reg;
-                16'h0110: reg_read_data[31:0] = cfg_job_id_reg;
-                16'h0120: begin
-                    reg_read_data[0]      = cfg_bank_reg[0];   // write/next-compute bank
-                    reg_read_data[1]      = cfg_bank_reg[1];   // result read bank
-                    reg_read_data[8]      = core_active_bank;
-                    reg_read_data[9]      = core_done_bank;
-                    reg_read_data[16]     = core_busy;
-                    reg_read_data[17]     = core_done;
-                    reg_read_data[18]     = core_error;
-                end
-                16'h0130: reg_read_data[31:0] = core_active_job_id;
-                16'h0140: reg_read_data[31:0] = core_done_job_id;
-                16'h0150: reg_read_data[31:0] = cfg_slot_state_reg;
-                16'h0160: reg_read_data[31:0] = cfg_tensor_id_reg;
-                16'h0170: reg_read_data[31:0] = cfg_row0_reg;
-                16'h0180: reg_read_data[31:0] = cfg_k_block0_reg;
-                16'h0190: reg_read_data[31:0] = cfg_group_blocks_reg;
-                16'h01A0: reg_read_data[31:0] = cfg_token_id_reg;
-                16'h01B0: reg_read_data[31:0] = cfg_desc_flags_reg;
-                16'h01C0: reg_read_data[31:0] = spu_stream_count;
-                16'h01C4: reg_read_data[31:0] = spu_stream_done_count;
-                16'h01D0: reg_read_data[31:0] = spu_stream_drop_count;
-                16'h01D4: reg_read_data[31:0] = spu_stream_out_count;
-                16'h01D8: reg_read_data[31:0] = spu_stream_error_count;
-                16'h01E0: reg_read_data[31:0] = spu_stream_last_raw;
-                16'h01E4: reg_read_data[31:0] = spu_stream_last_meta;
-                16'h01E8: reg_read_data[31:0] = spu_stream_last_job;
-                16'h01EC: reg_read_data[31:0] = spu_stream_last_bank;
-                16'h01F0: reg_read_data[31:0] = spu_stream_last_accum_lo;
-                16'h01F4: reg_read_data[31:0] = spu_stream_last_accum_hi;
-                default: reg_read_data = {AXI_DATA_WIDTH{1'b0}};
-            endcase
+            reg_read_data[32*addr[3:2] +: 32] = reg_read_word32(addr);
         end
     endfunction
 
@@ -433,29 +449,32 @@ module AXI4_Mapping #(
     wire [31:0] wr_decode_addr = wr_decode_addr_r;
     wire [AXI_DATA_WIDTH-1:0] wr_decode_data = wr_decode_data_r;
     wire [(AXI_DATA_WIDTH/8)-1:0] wr_decode_strb = wr_decode_strb_r;
+    wire [1:0] wr_lane = wr_decode_addr[3:2];
+    wire [31:0] wr_data32 = wr_decode_data[32*wr_lane +: 32];
+    wire [3:0] wr_strb4 = wr_decode_strb[4*wr_lane +: 4];
 
     // Writing bits 0/1 at register 0x0000 does not store a persistent value.
     // These bits generate one-cycle pulses that start GEMV or clear done/error.
     wire ctrl_start_hit =
         wr_decode_en && is_reg_addr(wr_decode_addr) &&
         (wr_decode_addr[15:0] == 16'h0000) &&
-        wr_decode_strb[0] && wr_decode_data[0];
+        wr_strb4[0] && wr_data32[0];
     wire ctrl_clear_done_hit =
         wr_decode_en && is_reg_addr(wr_decode_addr) &&
         (wr_decode_addr[15:0] == 16'h0000) &&
-        wr_decode_strb[0] && wr_decode_data[1];
+        wr_strb4[0] && wr_data32[1];
     wire spu_start_hit =
         wr_decode_en && is_reg_addr(wr_decode_addr) &&
         (wr_decode_addr[15:0] == 16'h00A0) &&
-        wr_decode_strb[0] && wr_decode_data[0];
+        wr_strb4[0] && wr_data32[0];
     wire spu_clear_done_hit =
         wr_decode_en && is_reg_addr(wr_decode_addr) &&
         (wr_decode_addr[15:0] == 16'h00A0) &&
-        wr_decode_strb[0] && wr_decode_data[1];
+        wr_strb4[0] && wr_data32[1];
     wire spu_soft_reset_hit =
         wr_decode_en && is_reg_addr(wr_decode_addr) &&
         (wr_decode_addr[15:0] == 16'h00A0) &&
-        wr_decode_strb[0] && wr_decode_data[2];
+        wr_strb4[0] && wr_data32[2];
     wire core_wr_hit =
         wr_decode_en && is_vpu_mem_addr(wr_decode_addr) &&
         mem_index_in_range(wr_decode_addr);
@@ -555,24 +574,24 @@ module AXI4_Mapping #(
 
             if (wr_decode_en && is_reg_addr(wr_decode_addr)) begin
                 case (wr_decode_addr[15:0])
-                    16'h0020: cfg_rows_reg      <= apply_wstrb32(cfg_rows_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0030: cfg_cols_reg      <= apply_wstrb32(cfg_cols_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0040: cfg_col_beats_reg <= apply_wstrb32(cfg_col_beats_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0050: cfg_scale_reg     <= apply_wstrb32(cfg_scale_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0060: cfg_mode_reg      <= apply_wstrb32(cfg_mode_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0100: cfg_bank_reg      <= apply_wstrb32(cfg_bank_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0110: cfg_job_id_reg    <= apply_wstrb32(cfg_job_id_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0150: cfg_slot_state_reg <= apply_wstrb32(cfg_slot_state_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0160: cfg_tensor_id_reg <= apply_wstrb32(cfg_tensor_id_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0170: cfg_row0_reg      <= apply_wstrb32(cfg_row0_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0180: cfg_k_block0_reg  <= apply_wstrb32(cfg_k_block0_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h0190: cfg_group_blocks_reg <= apply_wstrb32(cfg_group_blocks_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h01A0: cfg_token_id_reg  <= apply_wstrb32(cfg_token_id_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h01B0: cfg_desc_flags_reg <= apply_wstrb32(cfg_desc_flags_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h00C0: cfg_spu_mode_reg  <= apply_wstrb32(cfg_spu_mode_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h00D0: cfg_spu_len_reg   <= apply_wstrb32(cfg_spu_len_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h00E0: cfg_spu_aux0_reg  <= apply_wstrb32(cfg_spu_aux0_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
-                    16'h00E4: cfg_spu_aux1_reg  <= apply_wstrb32(cfg_spu_aux1_reg, wr_decode_data[31:0], wr_decode_strb[3:0]);
+                    16'h0020: cfg_rows_reg      <= apply_wstrb32(cfg_rows_reg, wr_data32, wr_strb4);
+                    16'h0030: cfg_cols_reg      <= apply_wstrb32(cfg_cols_reg, wr_data32, wr_strb4);
+                    16'h0040: cfg_col_beats_reg <= apply_wstrb32(cfg_col_beats_reg, wr_data32, wr_strb4);
+                    16'h0050: cfg_scale_reg     <= apply_wstrb32(cfg_scale_reg, wr_data32, wr_strb4);
+                    16'h0060: cfg_mode_reg      <= apply_wstrb32(cfg_mode_reg, wr_data32, wr_strb4);
+                    16'h0100: cfg_bank_reg      <= apply_wstrb32(cfg_bank_reg, wr_data32, wr_strb4);
+                    16'h0110: cfg_job_id_reg    <= apply_wstrb32(cfg_job_id_reg, wr_data32, wr_strb4);
+                    16'h0150: cfg_slot_state_reg <= apply_wstrb32(cfg_slot_state_reg, wr_data32, wr_strb4);
+                    16'h0160: cfg_tensor_id_reg <= apply_wstrb32(cfg_tensor_id_reg, wr_data32, wr_strb4);
+                    16'h0170: cfg_row0_reg      <= apply_wstrb32(cfg_row0_reg, wr_data32, wr_strb4);
+                    16'h0180: cfg_k_block0_reg  <= apply_wstrb32(cfg_k_block0_reg, wr_data32, wr_strb4);
+                    16'h0190: cfg_group_blocks_reg <= apply_wstrb32(cfg_group_blocks_reg, wr_data32, wr_strb4);
+                    16'h01A0: cfg_token_id_reg  <= apply_wstrb32(cfg_token_id_reg, wr_data32, wr_strb4);
+                    16'h01B0: cfg_desc_flags_reg <= apply_wstrb32(cfg_desc_flags_reg, wr_data32, wr_strb4);
+                    16'h00C0: cfg_spu_mode_reg  <= apply_wstrb32(cfg_spu_mode_reg, wr_data32, wr_strb4);
+                    16'h00D0: cfg_spu_len_reg   <= apply_wstrb32(cfg_spu_len_reg, wr_data32, wr_strb4);
+                    16'h00E0: cfg_spu_aux0_reg  <= apply_wstrb32(cfg_spu_aux0_reg, wr_data32, wr_strb4);
+                    16'h00E4: cfg_spu_aux1_reg  <= apply_wstrb32(cfg_spu_aux1_reg, wr_data32, wr_strb4);
                     default: begin
                     end
                 endcase
@@ -796,6 +815,7 @@ module AXI4_Mapping #(
         .vpu_stream_last_accum_hi(spu_stream_last_accum_hi),
         .vpu_stream_last_job(spu_stream_last_job),
         .vpu_stream_last_bank(spu_stream_last_bank),
+        .vpu_stream_status(spu_stream_status),
         .mm_wr_en        (spu_wr_en_r),
         .mm_wr_region    (spu_wr_region_r),
         .mm_wr_index     (spu_wr_index_r),

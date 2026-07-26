@@ -61,6 +61,9 @@ module SPU_Top #(
     output wire [31:0]                       vpu_stream_last_accum_hi,
     output wire [31:0]                       vpu_stream_last_job,
     output wire [31:0]                       vpu_stream_last_bank,
+    // Read-only stream ownership status.  This is consumed by the host before
+    // it overwrites SPU_PARAM or drains SPU_OUT for a new P2 tile.
+    output wire [31:0]                       vpu_stream_status,
 
     input  wire                              mm_wr_en,
     input  wire [1:0]                        mm_wr_region,
@@ -147,10 +150,15 @@ module SPU_Top #(
     reg [STREAM_FIFO_COUNT_WIDTH-1:0] stream_fifo_count_r;
     reg signed [31:0] stream_fifo_raw [0:STREAM_FIFO_DEPTH-1];
     reg [15:0] stream_fifo_row [0:STREAM_FIFO_DEPTH-1];
-    reg [15:0] stream_fifo_block [0:STREAM_FIFO_DEPTH-1];
-    reg [15:0] stream_fifo_group_blocks [0:STREAM_FIFO_DEPTH-1];
     reg stream_fifo_last_block [0:STREAM_FIFO_DEPTH-1];
     reg stream_fifo_clear_accum [0:STREAM_FIFO_DEPTH-1];
+    // Store the complete SPU_PARAM lookup result when the raw entry is
+    // accepted.  Do not recompute row * group_blocks + block from an
+    // asynchronously-read FIFO entry on the dequeue/FSM path: that was the
+    // reported setup-critical cone into stream_state_r.
+    reg [31:0] stream_fifo_scale_word_index [0:STREAM_FIFO_DEPTH-1];
+    reg [1:0] stream_fifo_scale_lane [0:STREAM_FIFO_DEPTH-1];
+    reg stream_fifo_scale_index_ok [0:STREAM_FIFO_DEPTH-1];
     reg [31:0] stream_fifo_job_id [0:STREAM_FIFO_DEPTH-1];
     reg stream_fifo_bank [0:STREAM_FIFO_DEPTH-1];
     reg [15:0] stream_test_lfsr_r;
@@ -166,17 +174,18 @@ module SPU_Top #(
         end
     endfunction
 
-    wire [31:0] stream_scale_index_w =
-        ({16'd0, stream_fifo_row[stream_fifo_rd_ptr_r]} *
-         {16'd0, stream_fifo_group_blocks[stream_fifo_rd_ptr_r]}) +
-        {16'd0, stream_fifo_block[stream_fifo_rd_ptr_r]};
-    wire [31:0] stream_scale_word_index_w =
-        stream_scale_index_w >> 2;
-    wire stream_scale_index_ok =
-        (stream_fifo_group_blocks[stream_fifo_rd_ptr_r] != 16'd0) &&
-        (stream_fifo_block[stream_fifo_rd_ptr_r] <
-         stream_fifo_group_blocks[stream_fifo_rd_ptr_r]) &&
-        (stream_scale_index_w < STREAM_SCALE_ENTRY_DEPTH_32);
+    // This arithmetic is intentionally on the enqueue data path.  It is
+    // captured in FIFO metadata only after ready/valid acceptance and is not
+    // part of vpu_raw_ready, FIFO count, or the dequeue FSM control cone.
+    wire [31:0] stream_enqueue_scale_index_w =
+        ({16'd0, vpu_raw_row} * {16'd0, vpu_raw_group_blocks}) +
+        {16'd0, vpu_raw_block};
+    wire [31:0] stream_enqueue_scale_word_index_w =
+        stream_enqueue_scale_index_w >> 2;
+    wire stream_enqueue_scale_index_ok =
+        (vpu_raw_group_blocks != 16'd0) &&
+        (vpu_raw_block < vpu_raw_group_blocks) &&
+        (stream_enqueue_scale_index_w < STREAM_SCALE_ENTRY_DEPTH_32);
     wire stream_idle = (stream_state_r == STREAM_IDLE);
     wire stream_fifo_empty = (stream_fifo_count_r == 0);
     wire stream_fifo_full = (stream_fifo_count_r == STREAM_FIFO_DEPTH);
@@ -238,6 +247,16 @@ module SPU_Top #(
     assign vpu_stream_last_accum_hi = vpu_stream_last_accum_hi_r;
     assign vpu_stream_last_job      = vpu_stream_last_job_r;
     assign vpu_stream_last_bank     = vpu_stream_last_bank_r;
+    // bit 0: dequeue FSM idle, bit 1: FIFO empty, bit 2: scale accumulator
+    // idle, bit 3: no SPU_OUT write in this cycle, bit 4: all of the above.
+    // The host requires bit 4 before it may reuse SPU_PARAM/SPU_OUT.
+    assign vpu_stream_status[0]     = stream_idle;
+    assign vpu_stream_status[1]     = stream_fifo_empty;
+    assign vpu_stream_status[2]     = !stream_accum_busy;
+    assign vpu_stream_status[3]     = !stream_result_write;
+    assign vpu_stream_status[4]     = stream_idle && stream_fifo_empty &&
+                                      !stream_accum_busy && !stream_result_write;
+    assign vpu_stream_status[31:5]  = 27'd0;
 
     always @(posedge clk) begin
         if (!resetn) begin
@@ -314,10 +333,14 @@ module SPU_Top #(
             if (stream_push) begin
                 stream_fifo_raw[stream_fifo_wr_ptr_r]          <= vpu_raw_data;
                 stream_fifo_row[stream_fifo_wr_ptr_r]          <= vpu_raw_row;
-                stream_fifo_block[stream_fifo_wr_ptr_r]        <= vpu_raw_block;
-                stream_fifo_group_blocks[stream_fifo_wr_ptr_r] <= vpu_raw_group_blocks;
                 stream_fifo_last_block[stream_fifo_wr_ptr_r]   <= vpu_raw_last_block;
                 stream_fifo_clear_accum[stream_fifo_wr_ptr_r]  <= vpu_raw_clear_accum;
+                stream_fifo_scale_word_index[stream_fifo_wr_ptr_r] <=
+                    stream_enqueue_scale_word_index_w;
+                stream_fifo_scale_lane[stream_fifo_wr_ptr_r] <=
+                    stream_enqueue_scale_index_w[1:0];
+                stream_fifo_scale_index_ok[stream_fifo_wr_ptr_r] <=
+                    stream_enqueue_scale_index_ok;
                 stream_fifo_job_id[stream_fifo_wr_ptr_r]       <= vpu_raw_job_id;
                 stream_fifo_bank[stream_fifo_wr_ptr_r]         <= vpu_raw_bank;
                 stream_fifo_wr_ptr_r <= stream_fifo_next_ptr(stream_fifo_wr_ptr_r);
@@ -355,13 +378,15 @@ module SPU_Top #(
             case (stream_state_r)
                 STREAM_IDLE: begin
                     if (stream_pop) begin
-                        if (stream_scale_index_ok) begin
+                        if (stream_fifo_scale_index_ok[stream_fifo_rd_ptr_r]) begin
                             stream_raw_r          <= stream_fifo_raw[stream_fifo_rd_ptr_r];
                             stream_row_r          <= stream_fifo_row[stream_fifo_rd_ptr_r];
                             stream_last_block_r   <= stream_fifo_last_block[stream_fifo_rd_ptr_r];
                             stream_clear_accum_r  <= stream_fifo_clear_accum[stream_fifo_rd_ptr_r];
-                            stream_scale_word_index_r <= stream_scale_word_index_w;
-                            stream_scale_lane_r   <= stream_scale_index_w[1:0];
+                            stream_scale_word_index_r <=
+                                stream_fifo_scale_word_index[stream_fifo_rd_ptr_r];
+                            stream_scale_lane_r   <=
+                                stream_fifo_scale_lane[stream_fifo_rd_ptr_r];
                             stream_state_r        <= STREAM_READ_SCALE;
                         end else begin
                             vpu_stream_error_count_r <= vpu_stream_error_count_r + 32'd1;

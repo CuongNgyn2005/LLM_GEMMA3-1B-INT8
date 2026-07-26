@@ -41,9 +41,6 @@
           "PSU_DDR_RAM_LOWADDR_OFFSET": {
             "value": "0x80000000"
           },
-          "PSU_MIO_7_INPUT_TYPE": {
-            "value": "cmos"
-          },
           "PSU_MIO_TREE_PERIPHERALS": {
             "value": [
               "Quad SPI Flash#Quad SPI Flash#Quad SPI Flash#Quad SPI Flash#Quad SPI Flash#Quad SPI Flash#Feedback Clk##########I2C 1#I2C 1#UART 0#UART 0#UART 1#UART 1###CAN 1#CAN",
@@ -865,7 +862,7 @@
             },
             "parameters": {
               "master_id": {
-                "value": "1"
+                "value": "2"
               }
             }
           },
@@ -880,7 +877,7 @@
             },
             "parameters": {
               "master_id": {
-                "value": "2"
+                "value": "1"
               }
             }
           }
