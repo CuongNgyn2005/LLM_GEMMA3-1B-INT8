@@ -19,6 +19,7 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] REG_SCALE     = 40'h0000_0050;
     localparam [ADDR_WIDTH-1:0] REG_MODE      = 40'h0000_0060;
     localparam [ADDR_WIDTH-1:0] REG_LIMITS    = 40'h0000_0070;
+    localparam [ADDR_WIDTH-1:0] REG_PROGRESS  = 40'h0000_0080;
     localparam [ADDR_WIDTH-1:0] REG_CAPS      = 40'h0000_0090;
     localparam [ADDR_WIDTH-1:0] REG_SPU_AUX1  = 40'h0000_00E4;
     localparam [ADDR_WIDTH-1:0] REG_SPU_CAPS  = 40'h0000_00F0;
@@ -28,6 +29,7 @@ module tb_VPU_Top;
     localparam [ADDR_WIDTH-1:0] REG_BANK      = 40'h0000_0100;
     localparam [ADDR_WIDTH-1:0] REG_JOB_ID    = 40'h0000_0110;
     localparam [ADDR_WIDTH-1:0] REG_BANK_STAT = 40'h0000_0120;
+    localparam [ADDR_WIDTH-1:0] REG_ACTIVE_JOB = 40'h0000_0130;
     localparam [ADDR_WIDTH-1:0] REG_DONE_JOB  = 40'h0000_0140;
     localparam [ADDR_WIDTH-1:0] REG_SLOT_STATE   = 40'h0000_0150;
     localparam [ADDR_WIDTH-1:0] REG_TENSOR_ID    = 40'h0000_0160;
@@ -133,6 +135,9 @@ module tb_VPU_Top;
     reg stream_hold_clear_accum;
     reg [31:0] stream_hold_job_id;
     reg stream_hold_bank;
+    reg preload_watch_enable;
+    integer preload_compute_write_overlap;
+    integer preload_busy_violation;
 
     VPU_Top #(
         .C_S00_AXI_ID_WIDTH     (ID_WIDTH),
@@ -206,6 +211,28 @@ module tb_VPU_Top;
             cycle_count <= 0;
         else
             cycle_count <= cycle_count + 1;
+    end
+
+    // A live preload is meaningful only if GEMV is still issuing reads while
+    // the opposite bank accepts ACT/WEIGHT writes.  Watch the canonical
+    // internal interfaces rather than inferring overlap from elapsed time.
+    always @(posedge clk) begin
+        if (!resetn) begin
+            preload_compute_write_overlap <= 0;
+            preload_busy_violation <= 0;
+        end else if (preload_watch_enable) begin
+            if (!dut.u_my_ip.u_axi4_mapping.core_busy)
+                preload_busy_violation <= 1;
+            if (dut.u_my_ip.u_axi4_mapping.u_gemv.compute_rd_en &&
+                dut.u_my_ip.u_axi4_mapping.wr_decode_en &&
+                ((dut.u_my_ip.u_axi4_mapping.wr_decode_addr >= ACT_BASE &&
+                  dut.u_my_ip.u_axi4_mapping.wr_decode_addr < ACT_BASE + 40'd2048) ||
+                 (dut.u_my_ip.u_axi4_mapping.wr_decode_addr >= WEIGHT_BASE &&
+                  dut.u_my_ip.u_axi4_mapping.wr_decode_addr < WEIGHT_BASE + 40'd16384)) &&
+                (dut.u_my_ip.u_axi4_mapping.cfg_bank_reg[0] !=
+                 dut.u_my_ip.u_axi4_mapping.core_active_bank))
+                preload_compute_write_overlap <= preload_compute_write_overlap + 1;
+        end
     end
 
     function [DATA_WIDTH-1:0] word32;
@@ -1614,6 +1641,266 @@ module tb_VPU_Top;
         end
     end
 
+    // Hold the VPU->SPU boundary while the other bank is filled.  This makes
+    // the observation decisive: any active-bank/progress/result/stream change
+    // is caused by the inactive-bank AXI traffic, not by normal retirement.
+    // The 64 Q8-block (128 AXI-beat) input is the largest legal tile width;
+    // each weight image is deliberately written in two halves.
+    task run_live_preload_isolation_case;
+        integer beat;
+        integer row;
+        integer block_id;
+        integer timeout;
+        reg [DATA_WIDTH-1:0] rd_word;
+        reg [DATA_WIDTH-1:0] saved_result;
+        reg [31:0] saved_bank_stat;
+        reg [31:0] saved_active_job;
+        reg [31:0] saved_progress;
+        reg [31:0] saved_stream_count;
+        reg [31:0] saved_stream_out;
+        reg [31:0] saved_stream_error;
+        reg [31:0] saved_stream_meta;
+        reg [31:0] saved_stream_job;
+        reg [31:0] saved_stream_bank;
+        reg [31:0] saved_rows;
+        reg [31:0] saved_cols;
+        reg [31:0] saved_col_beats;
+        reg [31:0] saved_scale;
+        reg [31:0] saved_mode;
+        reg [31:0] saved_slot_state;
+        reg [31:0] saved_tensor_id;
+        reg [31:0] saved_row0;
+        reg [31:0] saved_k_block0;
+        reg [31:0] saved_group_blocks;
+        reg [31:0] saved_token_id;
+        reg [31:0] saved_desc_flags;
+        reg [31:0] stream_done_before;
+        reg [31:0] stream_out_before;
+        reg signed [31:0] got;
+        reg signed [31:0] expected;
+        reg signed [63:0] expected_accum;
+        begin
+            $display("[TB] LIVE PRELOAD CASE: active bank isolation, PING->PONG->PING");
+            init_case_data(61, 8, MAX_TEST_COLS);
+
+            // Scale metadata is shared SPU storage, so establish it before
+            // either live preload.  There must be no SPU_PARAM/OUT write once
+            // the first VPU job has started.
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_ROWS, word32(8), 16'h000f);
+            axi_write(REG_COLS, word32(MAX_TEST_COLS), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(MAX_COL_BEATS), 16'h000f);
+            axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
+            axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8), 16'h000f);
+            axi_write(REG_SLOT_STATE, word32(32'h0000_0214), 16'h000f);
+            axi_write(REG_TENSOR_ID, word32(32'h0000_0055), 16'h000f);
+            axi_write(REG_ROW0, word32(32'h0000_0080), 16'h000f);
+            axi_write(REG_K_BLOCK0, word32(32'h0000_0007), 16'h000f);
+            axi_write(REG_GROUP_BLOCKS, word32(32'h0000_0040), 16'h000f);
+            axi_write(REG_TOKEN_ID, word32(32'h0000_004c), 16'h000f);
+            axi_write(REG_DESC_FLAGS, word32(32'h0000_0001), 16'h000f);
+            for (beat = 0; beat < 128; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+            for (row = 0; row < 8; row = row + 1)
+                for (beat = 0; beat < 128; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * 128) + beat) * 16,
+                              pack_weight(row, beat), 16'hffff);
+            for (beat = 0; beat < 128; beat = beat + 1)
+                axi_write(SPU_PARAM_BASE + beat * 16,
+                          pack_stream_scale_word(8, 64, beat), 16'hffff);
+
+            axi_write(REG_JOB_ID, word32(32'h0000_ca00), 16'h000f);
+            axi_read32(REG_SPU_STREAM_DONE, stream_done_before);
+            axi_read32(REG_SPU_STREAM_OUT, stream_out_before);
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+
+            // From here until each active job completes, the only AXI control
+            // write allowed by the host contract is REG_BANK.  Keep ready live
+            // so normal VPU/SPU retirement must make observable progress.
+            axi_read(REG_BANK_STAT, rd_word); saved_bank_stat = rd_word[31:0];
+            axi_read32(REG_ACTIVE_JOB, saved_active_job);
+            axi_read(REG_PROGRESS, rd_word); saved_progress = rd_word[31:0];
+            axi_read32(REG_ROWS, saved_rows); axi_read32(REG_COLS, saved_cols);
+            axi_read32(REG_COL_BEATS, saved_col_beats); axi_read32(REG_SCALE, saved_scale);
+            axi_read32(REG_MODE, saved_mode); axi_read32(REG_JOB_ID, saved_stream_job);
+            axi_read32(REG_SLOT_STATE, saved_slot_state); axi_read32(REG_TENSOR_ID, saved_tensor_id);
+            axi_read32(REG_ROW0, saved_row0); axi_read32(REG_K_BLOCK0, saved_k_block0);
+            axi_read32(REG_GROUP_BLOCKS, saved_group_blocks); axi_read32(REG_TOKEN_ID, saved_token_id);
+            axi_read32(REG_DESC_FLAGS, saved_desc_flags);
+
+            // PING active: preload PONG with a full ACT image and a split
+            // 8x128-beat WEIGHT image.  Do not touch SPU_PARAM or SPU_OUT.
+            axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
+            preload_compute_write_overlap = 0;
+            preload_busy_violation = 0;
+            preload_watch_enable = 1'b1;
+            init_case_data(62, 8, MAX_TEST_COLS);
+            for (beat = 0; beat < 128; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+            for (row = 0; row < 8; row = row + 1)
+                for (beat = 0; beat < 64; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * 128) + beat) * 16,
+                              pack_weight(row, beat), 16'hffff);
+            for (row = 0; row < 8; row = row + 1)
+                for (beat = 64; beat < 128; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * 128) + beat) * 16,
+                              pack_weight(row, beat), 16'hffff);
+            preload_watch_enable = 1'b0;
+
+            axi_read(REG_BANK_STAT, rd_word);
+            if (rd_word[18:8] !== saved_bank_stat[18:8]) fail("PONG preload changed active bank/status"); else pass_count = pass_count + 1;
+            if (rd_word[1] !== 1'b0) fail("PONG preload changed result-read bank"); else pass_count = pass_count + 1;
+            axi_read32(REG_ACTIVE_JOB, rd_word[31:0]);
+            if (rd_word[31:0] !== saved_active_job) fail("PONG preload changed active job id"); else pass_count = pass_count + 1;
+            axi_read(REG_PROGRESS, rd_word);
+            if (rd_word[31:0] === saved_progress) fail("PING made no progress during PONG preload"); else pass_count = pass_count + 1;
+            axi_read32(REG_ROWS, rd_word[31:0]); if (rd_word[31:0] !== saved_rows) fail("PONG preload changed rows");
+            axi_read32(REG_COLS, rd_word[31:0]); if (rd_word[31:0] !== saved_cols) fail("PONG preload changed cols");
+            axi_read32(REG_COL_BEATS, rd_word[31:0]); if (rd_word[31:0] !== saved_col_beats) fail("PONG preload changed col_beats");
+            axi_read32(REG_SCALE, rd_word[31:0]); if (rd_word[31:0] !== saved_scale) fail("PONG preload changed scale");
+            axi_read32(REG_MODE, rd_word[31:0]); if (rd_word[31:0] !== saved_mode) fail("PONG preload changed mode");
+            axi_read32(REG_JOB_ID, rd_word[31:0]); if (rd_word[31:0] !== saved_stream_job) fail("PONG preload changed job_id");
+            axi_read32(REG_SLOT_STATE, rd_word[31:0]); if (rd_word[31:0] !== saved_slot_state) fail("PONG preload changed slot_state");
+            axi_read32(REG_TENSOR_ID, rd_word[31:0]); if (rd_word[31:0] !== saved_tensor_id) fail("PONG preload changed tensor_id");
+            axi_read32(REG_ROW0, rd_word[31:0]); if (rd_word[31:0] !== saved_row0) fail("PONG preload changed row0");
+            axi_read32(REG_K_BLOCK0, rd_word[31:0]); if (rd_word[31:0] !== saved_k_block0) fail("PONG preload changed k_block0");
+            axi_read32(REG_GROUP_BLOCKS, rd_word[31:0]); if (rd_word[31:0] !== saved_group_blocks) fail("PONG preload changed group_blocks");
+            axi_read32(REG_TOKEN_ID, rd_word[31:0]); if (rd_word[31:0] !== saved_token_id) fail("PONG preload changed token_id");
+            axi_read32(REG_DESC_FLAGS, rd_word[31:0]); if (rd_word[31:0] !== saved_desc_flags) fail("PONG preload changed desc_flags");
+            if (preload_compute_write_overlap == 0) fail("PING/PONG preload had no compute-read/write overlap"); else pass_count = pass_count + 1;
+            if (preload_busy_violation != 0) fail("PING was not busy throughout PONG preload"); else pass_count = pass_count + 1;
+            timeout = 0; rd_word = 0;
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word); timeout = timeout + 1;
+                if (rd_word[2] || timeout > 200000) begin fail("PING job did not complete after PONG preload"); rd_word[0] = 1'b1; end
+            end
+            timeout = 0;
+            while (rd_word[4:0] !== 5'b1_1111) begin
+                axi_read32(REG_SPU_STREAM_STATUS, rd_word[31:0]); timeout = timeout + 1;
+                if (timeout > 200000) begin fail("PING SPU stream did not quiesce"); rd_word = 32'h0000_001f; end
+            end
+            init_case_data(61, 8, MAX_TEST_COLS);
+            axi_read32(REG_SPU_STREAM_LAST_JOB, rd_word[31:0]); if (rd_word[31:0] !== 32'h0000_ca00) fail("PING stream job id mismatch"); else pass_count = pass_count + 1;
+            axi_read32(REG_SPU_STREAM_LAST_BANK, rd_word[31:0]); if (rd_word[0] !== 1'b0) fail("PING stream bank mismatch"); else pass_count = pass_count + 1;
+            expected_accum = $signed(golden_q8_range(7, 0, 64)) * SPU_TEST_Q16_SCALE_PRODUCT;
+            axi_read(SPU_OUT_BASE + 7*16, rd_word);
+            if ((rd_word[15:0] !== 16'd7) || (rd_word[79:16] !== expected_accum)) fail("PING SPU_OUT Q16 mismatch"); else pass_count = pass_count + 1;
+
+            // Start PONG without re-writing ACT, WEIGHT, SPU_PARAM, or SPU_OUT.
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            axi_read(REG_BANK_STAT, rd_word); saved_bank_stat = rd_word[31:0];
+            axi_read32(REG_ACTIVE_JOB, saved_active_job);
+            axi_read(REG_PROGRESS, rd_word); saved_progress = rd_word[31:0];
+
+            // PONG active: repeat the inverse preload into PING, again split
+            // at the weight half boundary, then launch PING without a rewrite.
+            axi_write(REG_BANK, word32(32'h0000_0002), 16'h000f);
+            preload_compute_write_overlap = 0;
+            preload_busy_violation = 0;
+            preload_watch_enable = 1'b1;
+            init_case_data(63, 8, MAX_TEST_COLS);
+            for (beat = 0; beat < 128; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+            for (row = 0; row < 8; row = row + 1)
+                for (beat = 0; beat < 64; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * 128) + beat) * 16, pack_weight(row, beat), 16'hffff);
+            for (row = 0; row < 8; row = row + 1)
+                for (beat = 64; beat < 128; beat = beat + 1)
+                    axi_write(WEIGHT_BASE + ((row * 128) + beat) * 16, pack_weight(row, beat), 16'hffff);
+            preload_watch_enable = 1'b0;
+            axi_read(REG_BANK_STAT, rd_word); if (rd_word[18:8] !== saved_bank_stat[18:8]) fail("PING preload changed active PONG bank/status"); else pass_count = pass_count + 1;
+            if (rd_word[1] !== 1'b1) fail("PING preload changed result-read bank"); else pass_count = pass_count + 1;
+            axi_read32(REG_ACTIVE_JOB, rd_word[31:0]); if (rd_word[31:0] !== saved_active_job) fail("PING preload changed active PONG job id"); else pass_count = pass_count + 1;
+            axi_read(REG_PROGRESS, rd_word); if (rd_word[31:0] === saved_progress) fail("PONG made no progress during PING preload"); else pass_count = pass_count + 1;
+            axi_read32(REG_ROWS, rd_word[31:0]); if (rd_word[31:0] !== saved_rows) fail("PING preload changed rows");
+            axi_read32(REG_COLS, rd_word[31:0]); if (rd_word[31:0] !== saved_cols) fail("PING preload changed cols");
+            axi_read32(REG_COL_BEATS, rd_word[31:0]); if (rd_word[31:0] !== saved_col_beats) fail("PING preload changed col_beats");
+            axi_read32(REG_SCALE, rd_word[31:0]); if (rd_word[31:0] !== saved_scale) fail("PING preload changed scale");
+            axi_read32(REG_MODE, rd_word[31:0]); if (rd_word[31:0] !== saved_mode) fail("PING preload changed mode");
+            axi_read32(REG_JOB_ID, rd_word[31:0]); if (rd_word[31:0] !== saved_stream_job) fail("PING preload changed job_id");
+            axi_read32(REG_SLOT_STATE, rd_word[31:0]); if (rd_word[31:0] !== saved_slot_state) fail("PING preload changed slot_state");
+            axi_read32(REG_TENSOR_ID, rd_word[31:0]); if (rd_word[31:0] !== saved_tensor_id) fail("PING preload changed tensor_id");
+            axi_read32(REG_ROW0, rd_word[31:0]); if (rd_word[31:0] !== saved_row0) fail("PING preload changed row0");
+            axi_read32(REG_K_BLOCK0, rd_word[31:0]); if (rd_word[31:0] !== saved_k_block0) fail("PING preload changed k_block0");
+            axi_read32(REG_GROUP_BLOCKS, rd_word[31:0]); if (rd_word[31:0] !== saved_group_blocks) fail("PING preload changed group_blocks");
+            axi_read32(REG_TOKEN_ID, rd_word[31:0]); if (rd_word[31:0] !== saved_token_id) fail("PING preload changed token_id");
+            axi_read32(REG_DESC_FLAGS, rd_word[31:0]); if (rd_word[31:0] !== saved_desc_flags) fail("PING preload changed desc_flags");
+            if (preload_compute_write_overlap == 0) fail("PONG/PING preload had no compute-read/write overlap"); else pass_count = pass_count + 1;
+            if (preload_busy_violation != 0) fail("PONG was not busy throughout PING preload"); else pass_count = pass_count + 1;
+
+            timeout = 0; rd_word = 0;
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word); timeout = timeout + 1;
+                if (rd_word[2] || timeout > 200000) begin fail("PONG job did not complete after PING preload"); rd_word[0] = 1'b1; end
+            end
+            timeout = 0; rd_word = 0;
+            while (rd_word[4:0] !== 5'b1_1111) begin
+                axi_read32(REG_SPU_STREAM_STATUS, rd_word[31:0]); timeout = timeout + 1;
+                if (timeout > 200000) begin fail("PONG SPU stream did not quiesce"); rd_word = 32'h0000_001f; end
+            end
+            init_case_data(62, 8, MAX_TEST_COLS);
+            axi_read32(REG_SPU_STREAM_LAST_JOB, rd_word[31:0]); if (rd_word[31:0] !== 32'h0000_ca00) fail("PONG stream job id mismatch"); else pass_count = pass_count + 1;
+            axi_read32(REG_SPU_STREAM_LAST_BANK, rd_word[31:0]); if (rd_word[0] !== 1'b1) fail("PONG stream bank mismatch"); else pass_count = pass_count + 1;
+            expected_accum = $signed(golden_q8_range(7, 0, 64)) * SPU_TEST_Q16_SCALE_PRODUCT;
+            axi_read(SPU_OUT_BASE + 7*16, rd_word);
+            if ((rd_word[15:0] !== 16'd7) || (rd_word[79:16] !== expected_accum)) fail("PONG SPU_OUT Q16 mismatch"); else pass_count = pass_count + 1;
+            // PONG was launched solely from the first inactive-bank preload.
+            // Check its complete packed result image before selecting PING.
+            axi_write(REG_BANK, word32(32'h0000_0003), 16'h000f);
+            for (row = 0; row < 8; row = row + 1)
+                for (block_id = 0; block_id < 64; block_id = block_id + 1) begin
+                    axi_read(RESULT_BASE + ((row * 64 + block_id) / 4) * 16, rd_word);
+                    got = rd_word[32*((row * 64 + block_id) % 4) +: 32];
+                    expected = golden_q8_block(row, block_id);
+                    if (got !== expected) fail("preloaded PONG packed result mismatch"); else pass_count = pass_count + 1;
+                end
+            // Restore the exact bank selector programmed by the live PONG->PING preload.
+            axi_write(REG_BANK, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            timeout = 0; rd_word = 0;
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word); timeout = timeout + 1;
+                if (rd_word[2] || timeout > 200000) begin fail("re-preloaded PING job did not complete"); rd_word[0] = 1'b1; end
+            end
+            timeout = 0; rd_word = 0;
+            while (rd_word[4:0] !== 5'b1_1111) begin
+                axi_read32(REG_SPU_STREAM_STATUS, rd_word[31:0]); timeout = timeout + 1;
+                if (timeout > 200000) begin fail("re-preloaded PING SPU stream did not quiesce"); rd_word = 32'h0000_001f; end
+            end
+
+            // The final PING result comes from its second preload, not a
+            // rewrite after launch.  Sample every block to cover the full
+            // 128-beat/split-weight image.
+            init_case_data(63, 8, MAX_TEST_COLS);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            for (row = 0; row < 8; row = row + 1)
+                for (block_id = 0; block_id < 64; block_id = block_id + 1) begin
+                    axi_read(RESULT_BASE + ((row * 64 + block_id) / 4) * 16, rd_word);
+                    got = rd_word[32*((row * 64 + block_id) % 4) +: 32];
+                    expected = golden_q8_block(row, block_id);
+                    if (got !== expected) fail("re-preloaded PING packed result mismatch"); else pass_count = pass_count + 1;
+                end
+            axi_read32(REG_SPU_STREAM_LAST_JOB, rd_word[31:0]); if (rd_word[31:0] !== 32'h0000_ca00) fail("re-preloaded PING stream job id mismatch"); else pass_count = pass_count + 1;
+            axi_read32(REG_SPU_STREAM_LAST_BANK, rd_word[31:0]); if (rd_word[0] !== 1'b0) fail("re-preloaded PING stream bank mismatch"); else pass_count = pass_count + 1;
+            expected_accum = $signed(golden_q8_range(7, 0, 64)) * SPU_TEST_Q16_SCALE_PRODUCT;
+            axi_read(SPU_OUT_BASE + 7*16, rd_word);
+            if ((rd_word[15:0] !== 16'd7) || (rd_word[79:16] !== expected_accum)) fail("re-preloaded PING SPU_OUT Q16 mismatch"); else pass_count = pass_count + 1;
+            axi_read32(REG_SPU_STREAM_DONE, rd_word[31:0]);
+            if (rd_word[31:0] !== (stream_done_before + 3)) fail("live preload stream done count mismatch"); else pass_count = pass_count + 1;
+            axi_read32(REG_SPU_STREAM_OUT, rd_word[31:0]);
+            if (rd_word[31:0] !== (stream_out_before + 24)) fail("live preload stream output count mismatch"); else pass_count = pass_count + 1;
+
+            // The three launches and their SPU drain are complete above.
+            // Re-establish the suite's reset baseline before unrelated legacy
+            // cases so this focused ownership test cannot retain MMIO state.
+            resetn = 1'b0;
+            repeat (4) @(posedge clk);
+            resetn = 1'b1;
+            repeat (4) @(posedge clk);
+        end
+    endtask
+
     task run_pingpong_case;
         integer beat;
         integer row;
@@ -2021,6 +2308,9 @@ module tb_VPU_Top;
         pass_count = 0;
         fail_count = 0;
         cycle_count = 0;
+        preload_watch_enable = 1'b0;
+        preload_compute_write_overlap = 0;
+        preload_busy_violation = 0;
         init_rd_word = 0;
 
         repeat (8) @(posedge clk);
@@ -2042,6 +2332,7 @@ module tb_VPU_Top;
         run_group_case(4, 2, MAX_GROUP_Q8_BLOCKS);
         run_int8_result_case(5, 5, 3, 3);
         run_int8_accum_groups_case(6, 4, 2, 3, 4);
+        run_live_preload_isolation_case();
         run_pingpong_case();
         run_descriptor_commit_case();
         // Fill every SPU_OUT word through the canonical VPU->SPU Q16 path,
