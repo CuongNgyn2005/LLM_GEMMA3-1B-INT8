@@ -4,8 +4,8 @@ bây giờ dựa vào  cái file FPGA_Driver.c của ô Luân viết trong thư 
 đại loại là m phải prompt cho AI nó hiểu ngữ  cảnh mình đang làm bộ tăng tốc phần cứng cho mô hình ngôn ngữ lớn, mình chọn tăng tốc vector 
 
 yêu cầu về file fpga_host.cpp: 
-- Bản hiện tại đã quay lại flow DMA và không mmap vùng DDR reserved 0x70000000 - 0x7FFFFFFF trong fpga_host.cpp.
-- Nếu sau này nghiên cứu lại hướng DMA/AXI master thì mới cần xét vùng DDR physically-contiguous/reserved memory riêng. Với bản hiện tại chỉ dùng VPU base và các window AXI4-Full/MMIO.
+- Bản hiện tại dùng flow ZDMA DDR-to-IP và được phép mmap duy nhất vùng DDR reserved 0x70000000 - 0x7FFFFFFF (dạng half-open: [0x70000000, 0x80000000)) để làm vùng staging trong fpga_host.cpp.
+- Mọi truy cập, mapping, cửa sổ scratch và cache FPGA phải nằm hoàn toàn trong vùng DDR đã phê duyệt [0x70000000, 0x80000000); tuyệt đối không được thấp hơn 0x70000000 hoặc chạm/vượt 0x80000000. Host phải kiểm tra biên và xác nhận vùng này không chồng lấn Linux System RAM trước khi ZDMA hoạt động.
 - Có thể kiểm tra RAM/free memory trên ZCU104 bằng lệnh: cat /proc/meminfo | grep -E "MemTotal|MemFree|MemAvailable|Buffers|Cached|SReclaimable|CmaTotal|CmaFree"
 - Địa chỉ base của IP mình thiết kế là từ 0xA000_0000 đến 0xAFFF_FFFF ( m vào vivado mở design_1_wrapper,  cái mục address editor trong vivado là thấy). File host dựa vào địa chỉ IP này để cấp phát 
 - nên tạo log để debug dữ liệu xem nó đã đúng chưa, cái cũ t làm là fpga_debug.log (m prompt AI nó làm cho), sao cho khi ta chạy mô hình á, vì mày bấm một cái tab khác và nhập cái này tail -f /tmp/fpga_debug.log là nó sẽ hiện thông tin dữ liệu 
@@ -42,3 +42,7 @@ sudo ./build_mem/bin/llama-cli \
 
 Lệnh set tần số clock cho FPGA:
 echo 187500000 | sudo tee /sys/devices/platform/fclk0/set_rate
+Câu lệnh để chạy conversation mode (giống khi sử dụng các LLM khác):
+sudo ./build_mem/bin/llama-cli \
+  -m ./models/gemma-3-1b-it-Q8_0.gguf \
+  -cnv
