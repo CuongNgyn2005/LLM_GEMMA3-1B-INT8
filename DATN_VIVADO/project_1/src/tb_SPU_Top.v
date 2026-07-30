@@ -34,6 +34,7 @@ module tb_SPU_Top;
     wire        spu_error;
     wire [7:0]  spu_error_code;
     wire [31:0] spu_caps;
+    reg         stream_split_scale_enable;
     wire        vpu_raw_ready;
     wire [31:0] vpu_stream_count;
     wire [31:0] vpu_stream_done_count;
@@ -46,6 +47,13 @@ module tb_SPU_Top;
     wire [31:0] vpu_stream_last_accum_hi;
     wire [31:0] vpu_stream_last_job;
     wire [31:0] vpu_stream_last_bank;
+    wire [31:0] vpu_stream_status;
+    wire [31:0] vpu_stream_fifo_high_water;
+    wire [31:0] vpu_stream_raw_stall_cycles;
+    wire [31:0] vpu_stream_entry_done_count;
+    wire [31:0] vpu_stream_final_write_count;
+    wire [31:0] vpu_stream_p3_reject_count;
+    wire [31:0] vpu_stream_p3_status;
     reg vpu_raw_valid;
     reg signed [31:0] vpu_raw_data;
     reg [15:0] vpu_raw_row;
@@ -56,6 +64,12 @@ module tb_SPU_Top;
     reg [31:0] vpu_raw_job_id;
     reg vpu_raw_bank;
     reg vpu_raw_done;
+    reg vpu_raw_pair_valid;
+    reg signed [31:0] vpu_raw_pair_data;
+    reg [15:0] vpu_raw_pair_row, vpu_raw_pair_block, vpu_raw_pair_group_blocks;
+    reg vpu_raw_pair_last_block, vpu_raw_pair_clear_accum;
+    reg [31:0] vpu_raw_pair_job_id;
+    reg vpu_raw_pair_bank;
 
     reg                              mm_wr_en;
     reg [1:0]                        mm_wr_region;
@@ -80,7 +94,8 @@ module tb_SPU_Top;
 
     SPU_Top #(
         .AXI_DATA_WIDTH (DATA_WIDTH),
-        .WORD_DEPTH     (WORD_DEPTH)
+        .WORD_DEPTH     (WORD_DEPTH),
+        .STREAM_TEST_STALL_ENABLE (1)
     ) dut (
         .clk             (clk),
         .resetn          (resetn),
@@ -96,6 +111,7 @@ module tb_SPU_Top;
         .spu_error       (spu_error),
         .spu_error_code  (spu_error_code),
         .spu_caps        (spu_caps),
+        .stream_split_scale_enable(stream_split_scale_enable),
         .vpu_raw_valid   (vpu_raw_valid),
         .vpu_raw_ready   (vpu_raw_ready),
         .vpu_raw_data    (vpu_raw_data),
@@ -107,6 +123,11 @@ module tb_SPU_Top;
         .vpu_raw_job_id  (vpu_raw_job_id),
         .vpu_raw_bank    (vpu_raw_bank),
         .vpu_raw_done    (vpu_raw_done),
+        .vpu_raw_pair_valid(vpu_raw_pair_valid), .vpu_raw_pair_data(vpu_raw_pair_data),
+        .vpu_raw_pair_row(vpu_raw_pair_row), .vpu_raw_pair_block(vpu_raw_pair_block),
+        .vpu_raw_pair_group_blocks(vpu_raw_pair_group_blocks), .vpu_raw_pair_last_block(vpu_raw_pair_last_block),
+        .vpu_raw_pair_clear_accum(vpu_raw_pair_clear_accum), .vpu_raw_pair_job_id(vpu_raw_pair_job_id),
+        .vpu_raw_pair_bank(vpu_raw_pair_bank),
         .vpu_stream_count(vpu_stream_count),
         .vpu_stream_done_count(vpu_stream_done_count),
         .vpu_stream_drop_count(vpu_stream_drop_count),
@@ -118,6 +139,13 @@ module tb_SPU_Top;
         .vpu_stream_last_accum_hi(vpu_stream_last_accum_hi),
         .vpu_stream_last_job(vpu_stream_last_job),
         .vpu_stream_last_bank(vpu_stream_last_bank),
+        .vpu_stream_status(vpu_stream_status),
+        .vpu_stream_fifo_high_water(vpu_stream_fifo_high_water),
+        .vpu_stream_raw_stall_cycles(vpu_stream_raw_stall_cycles),
+        .vpu_stream_entry_done_count(vpu_stream_entry_done_count),
+        .vpu_stream_final_write_count(vpu_stream_final_write_count),
+        .vpu_stream_p3_reject_count(vpu_stream_p3_reject_count),
+        .vpu_stream_p3_status(vpu_stream_p3_status),
         .mm_wr_en        (mm_wr_en),
         .mm_wr_region    (mm_wr_region),
         .mm_wr_index     (mm_wr_index),
@@ -516,6 +544,7 @@ module tb_SPU_Top;
         input clear_accum;
         input [31:0] job_id;
         input bank;
+        reg accepted;
         begin
             while (!vpu_raw_ready)
                 @(posedge clk);
@@ -529,9 +558,15 @@ module tb_SPU_Top;
             vpu_raw_job_id       = job_id;
             vpu_raw_bank         = bank;
             vpu_raw_valid        = 1'b1;
-            @(posedge clk);
-            if (!vpu_raw_ready)
-                fail("VPU raw ready deasserted during an accepted stream entry");
+            // ready is allowed to change after a prior queue operation.  Hold
+            // the full payload until the real ready/valid handshake instead
+            // of assuming the next edge will accept it.
+            accepted = 1'b0;
+            while (!accepted) begin
+                @(posedge clk);
+                if (vpu_raw_ready)
+                    accepted = 1'b1;
+            end
             @(negedge clk);
             vpu_raw_valid = 1'b0;
         end
@@ -552,18 +587,302 @@ module tb_SPU_Top;
         end
     endtask
 
+    task run_vpu_stream_pair_case;
+        reg [DATA_WIDTH-1:0] out0, out1;
+        reg [31:0] count_before, out_before, err_before;
+        begin
+            $display("[TB] P2-v2 paired raw-stream dual-scale/output test");
+            // rows 0/1, one block each, distinct scales: 1.0 and 0.5.
+            mm_write(REGION_PARAM, 0,
+                     {32'h3c00_3c00, 32'h3c00_3c00, 32'h3c00_3800, 32'h3c00_3c00});
+            count_before = vpu_stream_count;
+            out_before = vpu_stream_out_count;
+            err_before = vpu_stream_error_count;
+            while (!vpu_raw_ready) @(posedge clk);
+            @(negedge clk);
+            vpu_raw_data = 32'sd3; vpu_raw_row = 16'd0; vpu_raw_block = 16'd0;
+            vpu_raw_group_blocks = 16'd1; vpu_raw_last_block = 1'b1;
+            vpu_raw_clear_accum = 1'b1; vpu_raw_job_id = 32'h55; vpu_raw_bank = 1'b1;
+            vpu_raw_pair_valid = 1'b1; vpu_raw_pair_data = -32'sd4;
+            vpu_raw_pair_row = 16'd1; vpu_raw_pair_block = 16'd0;
+            vpu_raw_pair_group_blocks = 16'd1; vpu_raw_pair_last_block = 1'b1;
+            vpu_raw_pair_clear_accum = 1'b1; vpu_raw_pair_job_id = 32'h55;
+            vpu_raw_pair_bank = 1'b1; vpu_raw_valid = 1'b1;
+            @(posedge clk);
+            if (!vpu_raw_ready) fail("P2-v2 pair was not atomically accepted");
+            @(negedge clk); vpu_raw_valid = 1'b0; vpu_raw_pair_valid = 1'b0;
+            wait_for_stream_out_count(out_before + 32'd2);
+            if (vpu_stream_count != count_before + 32'd2 ||
+                vpu_stream_error_count != err_before)
+                fail("P2-v2 pair count/error contract mismatch");
+            else pass_count = pass_count + 1;
+            mm_read(REGION_OUT, 0, out0); mm_read(REGION_OUT, 1, out1);
+            if (out0[15:0] !== 16'd0 || out0[79:16] !== 64'sd196608 ||
+                out1[15:0] !== 16'd1 || out1[79:16] !== -64'sd131072)
+                fail("P2-v2 pair dual-scale SPU_OUT mismatch");
+            else pass_count = pass_count + 1;
+        end
+    endtask
+
+    task run_vpu_stream_p3_split_scale_case;
+        reg [DATA_WIDTH-1:0] out_word;
+        reg [DATA_WIDTH-1:0] param_before;
+        reg [DATA_WIDTH-1:0] inactive_param_before;
+        reg [31:0] out_before;
+        reg [31:0] reject_before;
+        reg [31:0] done_before;
+        reg [31:0] stall_before;
+        reg        p3_pair_accepted;
+        begin
+            $display("[TB] P3 dense split-scale bank/ownership test");
+            // Bank 0, PARAM: row0=1.0, row1=0.5, row2=1.0.  SCRATCH
+            // block0=1.0, block1=min-subnormal.  Eight FP16 values occupy
+            // each 128-bit word; this is intentionally different from P2's
+            // four packed {weight,activation} 32-bit entries.
+            mm_write(REGION_PARAM, 0,
+                     {16'h0000,16'h0000,16'h0000,16'h0000,
+                      16'h0000,16'h0000,16'h3800,16'h3c00});
+            mm_write(REGION_PARAM, 1,
+                     {16'h0000,16'h0000,16'h0000,16'h0000,
+                      16'h0000,16'h0000,16'h3c00,16'h0000});
+            // Inactive bank sentinel for the explicit port-A arbitration
+            // regression below.  This must survive a colliding P3 pair read.
+            mm_write(REGION_PARAM, 32, 128'h1111_2222_3333_4444_5555_6666_7777_8888);
+            mm_write(REGION_SCRATCH, 0,
+                     {16'h0000,16'h0000,16'h0000,16'h0000,
+                      16'h0000,16'h0000,16'h0000,16'h0001});
+            // Correct lane order for the test vectors is written explicitly
+            // below: lane0=1.0 and lane1=min-subnormal.
+            mm_write(REGION_SCRATCH, 0,
+                     {16'h0000,16'h0000,16'h0000,16'h0000,
+                      16'h0000,16'h0000,16'h0001,16'h3c00});
+
+            stream_split_scale_enable = 1'b1;
+            repeat (2) @(posedge clk);
+            out_before = vpu_stream_out_count;
+            reject_before = vpu_stream_p3_reject_count;
+            done_before = vpu_stream_entry_done_count;
+            stall_before = vpu_stream_raw_stall_cycles;
+
+            // Atomic primary/companion pair, normal scales.
+            while (!vpu_raw_ready) @(posedge clk);
+            @(negedge clk);
+            vpu_raw_data = 32'sd3; vpu_raw_row = 16'd0; vpu_raw_block = 16'd0;
+            vpu_raw_group_blocks = 16'd1; vpu_raw_last_block = 1'b1;
+            vpu_raw_clear_accum = 1'b1; vpu_raw_job_id = 32'h5033_0001; vpu_raw_bank = 1'b0;
+            vpu_raw_pair_valid = 1'b1; vpu_raw_pair_data = -32'sd4;
+            vpu_raw_pair_row = 16'd1; vpu_raw_pair_block = 16'd0;
+            vpu_raw_pair_group_blocks = 16'd1; vpu_raw_pair_last_block = 1'b1;
+            vpu_raw_pair_clear_accum = 1'b1; vpu_raw_pair_job_id = 32'h5033_0001;
+            vpu_raw_pair_bank = 1'b0; vpu_raw_valid = 1'b1;
+            @(posedge clk);
+            @(negedge clk); vpu_raw_valid = 1'b0; vpu_raw_pair_valid = 1'b0;
+
+            // While the paired P3 PARAM reads own both PARAM ports, an MMIO
+            // write to otherwise-inactive PARAM bank1 is serialized/rejected.
+            // It must never reuse the core2 read address with MMIO strobes.
+            timeout = 0;
+            // Sample on the falling edge.  Sampling immediately after a
+            // rising edge observes pre-NBA state and can miss READ_SCALE.
+            while (dut.stream_state_r != 3'd1) begin
+                @(negedge clk); timeout = timeout + 1;
+                if (timeout > 50) begin
+                    fail("P3 paired PARAM read state was not reached");
+                    timeout = 0;
+                end
+            end
+            inactive_param_before = 128'h1111_2222_3333_4444_5555_6666_7777_8888;
+            mm_wr_region = REGION_PARAM;
+            mm_wr_index = 32'd32;
+            mm_wr_data = {DATA_WIDTH{1'b0}};
+            mm_wr_strb = 16'hffff;
+            mm_wr_en = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            mm_wr_en = 1'b0;
+            mm_wr_strb = 16'h0000;
+            if (vpu_stream_p3_reject_count != reject_before + 32'd1)
+                fail("P3 concurrent inactive PARAM write was not visibly serialized");
+            else
+                pass_count = pass_count + 1;
+            mm_read(REGION_PARAM, 32, out_word);
+            if (out_word !== inactive_param_before)
+                fail("P3 concurrent inactive PARAM write corrupted a core2 read address");
+            else
+                pass_count = pass_count + 1;
+            // The next check is an independent ownership violation, so use
+            // the counter value after the port-arbitration rejection above.
+            reject_before = vpu_stream_p3_reject_count;
+
+            // The bank is locked before completion.  A host PARAM write to
+            // that same bank must be rejected and must not alter the scale.
+            mm_read(REGION_PARAM, 0, param_before);
+            mm_write(REGION_PARAM, 0, {DATA_WIDTH{1'b1}});
+            @(posedge clk);
+            if (vpu_stream_p3_reject_count != reject_before + 32'd1)
+            begin
+                $display("[TB][DBG] P3 reject got=%0d expected=%0d lock=%b status=%h",
+                         vpu_stream_p3_reject_count, reject_before + 32'd1,
+                         vpu_stream_status[5], vpu_stream_p3_status);
+                fail("P3 active-bank PARAM write was not visibly rejected");
+            end
+            else
+                pass_count = pass_count + 1;
+            mm_read(REGION_PARAM, 0, out_word);
+            if (out_word !== param_before)
+                fail("P3 active-bank PARAM write corrupted immutable scale");
+            else
+                pass_count = pass_count + 1;
+
+            // Zero and subnormal activation scales are finite legal Q8_0
+            // scales.  Their small Q16.16 contribution rounds to zero, but
+            // they must not raise a scale-format error or lose final writes.
+            // Force producer backpressure in P3 mode and prove both members
+            // of the offered pair remain stable until the atomic handshake.
+            force dut.stream_test_stall_count_r = 6'd4;
+            @(negedge clk);
+            vpu_raw_data = 32'sd17; vpu_raw_row = 16'd2; vpu_raw_block = 16'd0;
+            vpu_raw_group_blocks = 16'd1; vpu_raw_last_block = 1'b1;
+            vpu_raw_clear_accum = 1'b1; vpu_raw_job_id = 32'h5033_0002; vpu_raw_bank = 1'b0;
+            vpu_raw_pair_valid = 1'b1; vpu_raw_pair_data = -32'sd9;
+            vpu_raw_pair_row = 16'd3; vpu_raw_pair_block = 16'd0;
+            vpu_raw_pair_group_blocks = 16'd1; vpu_raw_pair_last_block = 1'b1;
+            vpu_raw_pair_clear_accum = 1'b1; vpu_raw_pair_job_id = 32'h5033_0002;
+            vpu_raw_pair_bank = 1'b0; vpu_raw_valid = 1'b1;
+            repeat (3) begin
+                @(posedge clk);
+                if (vpu_raw_ready || vpu_raw_data !== 32'sd17 ||
+                    vpu_raw_row !== 16'd2 || vpu_raw_pair_data !== -32'sd9 ||
+                    vpu_raw_pair_row !== 16'd3 || !vpu_raw_pair_valid)
+                    fail("P3 raw pair changed or was accepted during forced backpressure");
+            end
+            release dut.stream_test_stall_count_r;
+            // Observe the actual handshake edge exactly once.  The producer
+            // remains valid during backpressure, so an extra clock here would
+            // enqueue the same pair twice.
+            p3_pair_accepted = 1'b0;
+            while (!p3_pair_accepted) begin
+                @(posedge clk);
+                if (vpu_raw_ready)
+                    p3_pair_accepted = 1'b1;
+            end
+            @(negedge clk); vpu_raw_valid = 1'b0; vpu_raw_pair_valid = 1'b0;
+            stream_push_entry(32'sd1, 16'd4, 16'd1, 16'd2,
+                              1'b1, 1'b1, 32'h5033_0003, 1'b0);
+            wait_for_stream_out_count(out_before + 32'd5);
+            if (vpu_stream_entry_done_count != done_before + 32'd5 ||
+                vpu_stream_final_write_count < out_before + 32'd5 ||
+                vpu_stream_raw_stall_cycles <= stall_before)
+            begin
+                $display("[TB][DBG] P3 done got=%0d before=%0d final=%0d out_before=%0d out=%0d err=%0d drop=%0d",
+                         vpu_stream_entry_done_count, done_before,
+                         vpu_stream_final_write_count, out_before,
+                         vpu_stream_out_count, vpu_stream_error_count,
+                         vpu_stream_drop_count);
+                fail("P3 entry/final-write counters did not retire every entry");
+            end
+            else
+                pass_count = pass_count + 1;
+            mm_read(REGION_OUT, 0, out_word);
+            if (out_word[79:16] !== 64'sd196608)
+                fail("P3 normal primary split-scale result mismatch");
+            else
+                pass_count = pass_count + 1;
+            mm_read(REGION_OUT, 1, out_word);
+            if (out_word[79:16] !== -64'sd131072)
+                fail("P3 normal companion split-scale result mismatch");
+            else
+                pass_count = pass_count + 1;
+
+            // Command-mode engines are blocked while P3 owns a scale bank.
+            @(negedge clk); spu_mode = SPU_MODE_COPY; spu_len = 32'd1; spu_start = 1'b1;
+            @(posedge clk); @(negedge clk); spu_start = 1'b0;
+            repeat (2) @(posedge clk);
+            if (spu_busy)
+                fail("P3 lock did not block SPU_Controller command start");
+            else
+                pass_count = pass_count + 1;
+
+            // The unit-level mode signal intentionally changes here to prove
+            // completion uses the latched P3 owner, not the live mode input.
+            // AXI-level mode-write rejection is covered in tb_VPU_Top.
+            stream_split_scale_enable = 1'b0;
+            if (!vpu_stream_status[5])
+                fail("P3 lock changed with live mode before raw done");
+            else
+                pass_count = pass_count + 1;
+
+            // Publish end-of-stream, then confirm the protected bank releases
+            // only after the pipeline has drained even though live mode is off.
+            @(negedge clk); vpu_raw_done = 1'b1;
+            @(posedge clk); @(negedge clk); vpu_raw_done = 1'b0;
+            timeout = 0;
+            while (vpu_stream_status[5]) begin
+                @(posedge clk); timeout = timeout + 1;
+                if (timeout > 200) begin
+                    fail("P3 bank lock did not release after final retirement");
+                    timeout = 0;
+                end
+            end
+
+            stream_split_scale_enable = 1'b1;
+            // Bank 1 dense-index boundary: entry row63*4+3=255 maps to
+            // PARAM word 32+31=63 lane7; activation block3 maps to SCRATCH
+            // word 32 lane3.  This is the maximum geometry practical for the
+            // reduced WORD_DEPTH=64 unit test.
+            mm_write(REGION_PARAM, 63,
+                     {16'h3c00,16'h0000,16'h0000,16'h0000,
+                      16'h0000,16'h0000,16'h0000,16'h0000});
+            mm_write(REGION_SCRATCH, 32,
+                     {16'h0000,16'h0000,16'h0000,16'h0000,
+                      16'h3c00,16'h0000,16'h0000,16'h0000});
+            stream_push_entry(-32'sd2, 16'd63, 16'd3, 16'd4,
+                              1'b1, 1'b1, 32'h5033_0004, 1'b1);
+            wait_for_stream_out_count(out_before + 32'd6);
+            mm_read(REGION_OUT, 63, out_word);
+            if (out_word[15:0] !== 16'd63 || out_word[79:16] !== -64'sd131072) begin
+                $display("[TB][DBG] P3 bank1 got_row=%0d got_q16=%0d word=%h",
+                         out_word[15:0], $signed(out_word[79:16]), out_word);
+                fail("P3 bank1 dense boundary result mismatch");
+            end else
+                pass_count = pass_count + 1;
+            @(negedge clk); vpu_raw_done = 1'b1;
+            @(posedge clk); @(negedge clk); vpu_raw_done = 1'b0;
+            timeout = 0;
+            while (vpu_stream_status[5]) begin
+                @(posedge clk); timeout = timeout + 1;
+                if (timeout > 200) begin
+                    fail("P3 bank1 lock did not release after final retirement");
+                    timeout = 0;
+                end
+            end
+
+            // P3 counters/ownership reset without clearing payload RAM.  This
+            // is the abort/reset contract used before a host can reuse either
+            // scale bank for a new descriptor.
+            @(negedge clk); spu_soft_reset = 1'b1;
+            @(posedge clk); @(negedge clk); spu_soft_reset = 1'b0;
+            @(posedge clk);
+            if (vpu_stream_count != 0 || vpu_stream_entry_done_count != 0 ||
+                vpu_stream_final_write_count != 0 ||
+                vpu_stream_p3_reject_count != 0 || vpu_stream_status[5])
+                fail("P3 counter/ownership reset did not clear stream state");
+            else
+                pass_count = pass_count + 1;
+            stream_split_scale_enable = 1'b0;
+        end
+    endtask
+
     task wait_for_stream_out_count;
         input [31:0] expected;
         begin
             timeout = 0;
-            while (vpu_stream_out_count != expected) begin
+            while ((vpu_stream_out_count != expected) && (timeout <= 500)) begin
                 @(posedge clk);
                 timeout = timeout + 1;
-                if (timeout > 500) begin
-                    fail("VPU raw stream output-count timeout");
-                    timeout = 0;
-                end
             end
+            if (vpu_stream_out_count != expected)
+                fail("VPU raw stream output-count timeout");
         end
     endtask
 
@@ -983,6 +1302,7 @@ module tb_SPU_Top;
         spu_len = 32'd0;
         spu_aux0 = 32'd0;
         spu_aux1 = 32'd0;
+        stream_split_scale_enable = 1'b0;
         mm_wr_en = 1'b0;
         mm_wr_region = REGION_IN;
         mm_wr_index = 32'd0;
@@ -1001,6 +1321,15 @@ module tb_SPU_Top;
         vpu_raw_job_id = 32'd0;
         vpu_raw_bank = 1'b0;
         vpu_raw_done = 1'b0;
+        vpu_raw_pair_valid = 1'b0;
+        vpu_raw_pair_data = 32'sd0;
+        vpu_raw_pair_row = 16'd0;
+        vpu_raw_pair_block = 16'd0;
+        vpu_raw_pair_group_blocks = 16'd1;
+        vpu_raw_pair_last_block = 1'b0;
+        vpu_raw_pair_clear_accum = 1'b0;
+        vpu_raw_pair_job_id = 32'd0;
+        vpu_raw_pair_bank = 1'b0;
         pass_count = 0;
         fail_count = 0;
 
@@ -1012,7 +1341,8 @@ module tb_SPU_Top;
             spu_caps[2] !== 1'b0 || spu_caps[3] !== 1'b0 ||
             spu_caps[4] !== 1'b0 || spu_caps[5] !== 1'b0 ||
             spu_caps[6] !== 1'b1 || spu_caps[7] !== 1'b1 ||
-            spu_caps[8] !== 1'b1 || spu_caps[9] !== 1'b1)
+            spu_caps[8] !== 1'b1 || spu_caps[9] !== 1'b1 ||
+            spu_caps[10] !== 1'b1 || spu_caps[11] !== 1'b1)
             fail("SPU capability bits do not match the integration-safe policy");
         else
             pass_count = pass_count + 1;
@@ -1023,6 +1353,8 @@ module tb_SPU_Top;
         run_scale_accum_bad_scale_case();
         run_scale_accum_row_range_case();
         run_vpu_stream_scale_metadata_case();
+        run_vpu_stream_pair_case();
+        run_vpu_stream_p3_split_scale_case();
         run_silu_mul_case();
         run_rmsnorm_case();
         run_rope_case();

@@ -69,6 +69,11 @@ module PMAU_Full #(
     input  wire [SCALE_WIDTH-1:0]            scale_factor,
     input  wire                              weight_valid,
     output wire                              weight_ready,
+    // Valid-independent admission predicate for a multi-PMAU producer.  The
+    // existing ready signals intentionally depend on the opposite valid;
+    // paired scheduling must inspect this predicate before offering either
+    // lane so one PMAU can never consume alone on a readiness skew.
+    output wire                              input_ready,
     input  wire                              weight_last,
 
     // Reserved for future AXPY mode
@@ -166,6 +171,9 @@ module PMAU_Full #(
         incoming_last_match &&
         ((!incoming_pair_last) ||
          (reserved_result_slots < FIFO_DEPTH_COUNT));
+
+    assign input_ready = (!activation_last) ||
+                         (reserved_result_slots < FIFO_DEPTH_COUNT);
 
     assign activation_ready = can_accept_pair && weight_valid;
     assign weight_ready     = can_accept_pair && activation_valid;

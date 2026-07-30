@@ -15,7 +15,8 @@
  *   generates one-cycle ctrl_start/ctrl_clear_done pulses;
  * - ACT_BASE_ADDR..ACT_END_ADDR writes activation beats into the GEMV local
  *   Activation BRAM;
- * - WEIGHT_BASE_ADDR..WEIGHT_END_ADDR writes flattened row-major weight beats
+ * - WEIGHT_BASE_ADDR..WEIGHT_END_ADDR writes compact pair-interleaved weight
+ *   beats; an odd final row carries one zero companion word per active beat
  *   into the GEMV Weight BRAM banks;
  * - RESULT_BASE_ADDR..RESULT_END_ADDR reads 128-bit result words from GEMV;
  * - SPU_IN/OUT/PARAM/SCRATCH windows expose the Scalar Processing Unit local
@@ -80,15 +81,23 @@ module AXI4_Mapping #(
     localparam integer MAX_RESULT_VALUES = MAX_ROWS * MAX_GROUP_Q8_BLOCKS;
     localparam integer RESULT_WORD_DEPTH =
         (MAX_RESULT_VALUES + RESULT_PACK_LANES - 1) / RESULT_PACK_LANES;
-    localparam [31:0] STREAM_PROTOCOL_VERSION = 32'h0000_0001;
-    localparam [31:0] BITSTREAM_ID = 32'h5650_5531; // "VPU1"
+    // Protocol 2/VPU2 require pair-interleaved WEIGHT payloads: each row-pair
+    // beat contains even then odd (or zero-padded odd-tail) words.  Register
+    // locations and memory windows are intentionally unchanged.
+    localparam [31:0] STREAM_PROTOCOL_VERSION = 32'h0000_0002;
+    localparam [31:0] BITSTREAM_ID = 32'h5650_5532; // "VPU2"
     // P2 ABI v1 proves the VPU->SPU path used by FPGA_PL_SCALE_ENABLE:
     // SPU_PARAM is 128-bit words at 0x0038_0000, with four packed entries
     // {weight_scale_fp16[31:16], act_scale_fp16[15:0]}, and SPU_OUT is
     // 128-bit rows at 0x0034_0000 carrying {q16_16_accum[79:16], row_id}.
     // A semantic VPU1/protocol1 image without this exact signature is not
     // permitted to receive P2 SPU memory traffic from the host.
-    localparam [31:0] P2_STREAM_ABI_SIGNATURE = 32'h5032_0001; // "P2", ABI v1
+    localparam [31:0] P2_STREAM_ABI_SIGNATURE = 32'h5032_0003; // "P2", ABI v3
+    // P3 is deliberately a distinct opt-in ABI.  It keeps the P2 register
+    // signature and packed-scale ABI intact while defining dense split scales:
+    // PARAM bank[0/1] = immutable FP16 weight scales (8/128b word), SCRATCH
+    // bank[0/1] = dynamic FP16 activation scales (8/128b word).
+    localparam [31:0] P3_SPLIT_SCALE_ABI_SIGNATURE = 32'h5033_0001; // "P3", ABI v1
 
     localparam [15:0] MAX_ROWS_16 = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16 = MAX_COL_BEATS;
@@ -303,6 +312,7 @@ module AXI4_Mapping #(
     reg [31:0] cfg_spu_len_reg;
     reg [31:0] cfg_spu_aux0_reg;
     reg [31:0] cfg_spu_aux1_reg;
+    reg [31:0] cfg_stream_mode_reg;
 
     wire core_busy;
     wire core_done;
@@ -329,6 +339,15 @@ module AXI4_Mapping #(
     wire [31:0] core_spu_raw_job_id;
     wire core_spu_raw_bank;
     wire core_spu_raw_done;
+    wire core_spu_raw_pair_valid;
+    wire signed [31:0] core_spu_raw_pair_data;
+    wire [15:0] core_spu_raw_pair_row;
+    wire [15:0] core_spu_raw_pair_block;
+    wire [15:0] core_spu_raw_pair_group_blocks;
+    wire core_spu_raw_pair_last_block;
+    wire core_spu_raw_pair_clear_accum;
+    wire [31:0] core_spu_raw_pair_job_id;
+    wire core_spu_raw_pair_bank;
     wire [31:0] spu_stream_count;
     wire [31:0] spu_stream_done_count;
     wire [31:0] spu_stream_drop_count;
@@ -341,6 +360,12 @@ module AXI4_Mapping #(
     wire [31:0] spu_stream_last_job;
     wire [31:0] spu_stream_last_bank;
     wire [31:0] spu_stream_status;
+    wire [31:0] spu_stream_fifo_high_water;
+    wire [31:0] spu_stream_raw_stall_cycles;
+    wire [31:0] spu_stream_entry_done_count;
+    wire [31:0] spu_stream_final_write_count;
+    wire [31:0] spu_stream_p3_reject_count;
+    wire [31:0] spu_stream_p3_status;
     wire status_error = core_error;
 
     // Register read map.  Offset 0x0000 acts as a control register on writes
@@ -367,12 +392,13 @@ module AXI4_Mapping #(
                 end
                 16'h0090: begin
                     reg_read_word32[0]      = 1'b1; // packed raw Q8 block mode is available
-                    reg_read_word32[1]      = 1'b1; // compact active-stride weight layout is available
+                    reg_read_word32[1]      = 1'b1; // protocol-2 pair-interleaved padded weight layout
                     reg_read_word32[2]      = 1'b0; // Q8_0 output block with scale metadata is not integrated
                     reg_read_word32[3]      = 1'b1; // two-bank VPU ping-pong storage is available
                     reg_read_word32[4]      = 1'b1; // banked job descriptor/ownership registers are available
                     reg_read_word32[5]      = 1'b1; // lossless VPU raw-result ready/valid stream
                     reg_read_word32[6]      = 1'b1; // SPU applies Q8_0 scales and writes row outputs
+                    reg_read_word32[7]      = 1'b1; // P2-v2 retained two-row VPU transport
                     reg_read_word32[15:8]   = MAX_GROUP_Q8_BLOCKS_16[7:0];
                     reg_read_word32[31:16]  = RESULT_WORD_DEPTH_32[15:0];
                 end
@@ -424,6 +450,15 @@ module AXI4_Mapping #(
                 16'h01F0: reg_read_word32 = spu_stream_last_accum_lo;
                 16'h01F4: reg_read_word32 = spu_stream_last_accum_hi;
                 16'h01F8: reg_read_word32 = spu_stream_status;
+                16'h01FC: reg_read_word32 = cfg_stream_mode_reg;
+                16'h0200: reg_read_word32 = P3_SPLIT_SCALE_ABI_SIGNATURE;
+                16'h0204: reg_read_word32 = spu_stream_fifo_high_water;
+                16'h0208: reg_read_word32 = spu_stream_raw_stall_cycles;
+                16'h020C: reg_read_word32 = spu_stream_count;
+                16'h0210: reg_read_word32 = spu_stream_entry_done_count;
+                16'h0214: reg_read_word32 = spu_stream_final_write_count;
+                16'h0218: reg_read_word32 = spu_stream_p3_reject_count;
+                16'h021C: reg_read_word32 = spu_stream_p3_status;
                 default: reg_read_word32 = 32'd0;
             endcase
         end
@@ -523,6 +558,7 @@ module AXI4_Mapping #(
             cfg_spu_len_reg   <= 32'd0;
             cfg_spu_aux0_reg  <= 32'd0;
             cfg_spu_aux1_reg  <= 32'd0;
+            cfg_stream_mode_reg <= 32'd0;
             wr_decode_en_r    <= 1'b0;
             wr_decode_addr_r  <= 32'd0;
             wr_decode_data_r  <= {AXI_DATA_WIDTH{1'b0}};
@@ -592,6 +628,12 @@ module AXI4_Mapping #(
                     16'h00D0: cfg_spu_len_reg   <= apply_wstrb32(cfg_spu_len_reg, wr_data32, wr_strb4);
                     16'h00E0: cfg_spu_aux0_reg  <= apply_wstrb32(cfg_spu_aux0_reg, wr_data32, wr_strb4);
                     16'h00E4: cfg_spu_aux1_reg  <= apply_wstrb32(cfg_spu_aux1_reg, wr_data32, wr_strb4);
+                    // Mode changes are accepted only when the raw stream is
+                    // fully quiescent.  This prevents one FIFO from mixing
+                    // the retained P2 packed-scale ABI with P3 split scales.
+                    16'h01FC: if (spu_stream_status[4] &&
+                                  !spu_stream_p3_status[4] && !spu_busy)
+                        cfg_stream_mode_reg <= apply_wstrb32(cfg_stream_mode_reg, wr_data32, wr_strb4);
                     default: begin
                     end
                 endcase
@@ -736,7 +778,7 @@ module AXI4_Mapping #(
         .cfg_cols          (cfg_cols_reg[15:0]),
         .cfg_col_beats     (cfg_col_beats_reg[15:0]),
         .cfg_scale         (cfg_scale_reg[SCALE_WIDTH-1:0]),
-        .compute_mode      (cfg_mode_reg[3:0]),
+        .compute_mode      (cfg_mode_reg[4:0]),
         .cfg_wr_bank       (cfg_bank_reg[0]),
         .cfg_rd_bank       (cfg_bank_reg[1]),
         .cfg_job_id        (cfg_job_id_reg),
@@ -760,6 +802,15 @@ module AXI4_Mapping #(
         .spu_raw_job_id    (core_spu_raw_job_id),
         .spu_raw_bank      (core_spu_raw_bank),
         .spu_raw_done      (core_spu_raw_done),
+        .spu_raw_pair_valid(core_spu_raw_pair_valid),
+        .spu_raw_pair_data (core_spu_raw_pair_data),
+        .spu_raw_pair_row  (core_spu_raw_pair_row),
+        .spu_raw_pair_block(core_spu_raw_pair_block),
+        .spu_raw_pair_group_blocks(core_spu_raw_pair_group_blocks),
+        .spu_raw_pair_last_block(core_spu_raw_pair_last_block),
+        .spu_raw_pair_clear_accum(core_spu_raw_pair_clear_accum),
+        .spu_raw_pair_job_id(core_spu_raw_pair_job_id),
+        .spu_raw_pair_bank(core_spu_raw_pair_bank),
         .mm_wr_en          (core_wr_en_r),
         .mm_wr_region      (core_wr_region_r),
         .mm_wr_index       (core_wr_index_r),
@@ -793,6 +844,7 @@ module AXI4_Mapping #(
         .spu_error       (spu_error),
         .spu_error_code  (spu_error_code),
         .spu_caps        (spu_caps),
+        .stream_split_scale_enable(cfg_stream_mode_reg[0]),
         .vpu_raw_valid   (core_spu_raw_valid),
         .vpu_raw_ready   (core_spu_raw_ready),
         .vpu_raw_data    (core_spu_raw_data),
@@ -804,6 +856,15 @@ module AXI4_Mapping #(
         .vpu_raw_job_id  (core_spu_raw_job_id),
         .vpu_raw_bank    (core_spu_raw_bank),
         .vpu_raw_done    (core_spu_raw_done),
+        .vpu_raw_pair_valid(core_spu_raw_pair_valid),
+        .vpu_raw_pair_data(core_spu_raw_pair_data),
+        .vpu_raw_pair_row(core_spu_raw_pair_row),
+        .vpu_raw_pair_block(core_spu_raw_pair_block),
+        .vpu_raw_pair_group_blocks(core_spu_raw_pair_group_blocks),
+        .vpu_raw_pair_last_block(core_spu_raw_pair_last_block),
+        .vpu_raw_pair_clear_accum(core_spu_raw_pair_clear_accum),
+        .vpu_raw_pair_job_id(core_spu_raw_pair_job_id),
+        .vpu_raw_pair_bank(core_spu_raw_pair_bank),
         .vpu_stream_count(spu_stream_count),
         .vpu_stream_done_count(spu_stream_done_count),
         .vpu_stream_drop_count(spu_stream_drop_count),
@@ -816,6 +877,12 @@ module AXI4_Mapping #(
         .vpu_stream_last_job(spu_stream_last_job),
         .vpu_stream_last_bank(spu_stream_last_bank),
         .vpu_stream_status(spu_stream_status),
+        .vpu_stream_fifo_high_water(spu_stream_fifo_high_water),
+        .vpu_stream_raw_stall_cycles(spu_stream_raw_stall_cycles),
+        .vpu_stream_entry_done_count(spu_stream_entry_done_count),
+        .vpu_stream_final_write_count(spu_stream_final_write_count),
+        .vpu_stream_p3_reject_count(spu_stream_p3_reject_count),
+        .vpu_stream_p3_status(spu_stream_p3_status),
         .mm_wr_en        (spu_wr_en_r),
         .mm_wr_region    (spu_wr_region_r),
         .mm_wr_index     (spu_wr_index_r),
