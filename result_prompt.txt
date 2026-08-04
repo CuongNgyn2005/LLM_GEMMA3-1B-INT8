@@ -1,28 +1,26 @@
-debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo ./build_mem/bin/llama-cli \
-  -m ./models/gemma-3-1b-it-Q8_0.gguf \
-  -cnv
+debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo ./build_mem/bin/llama-cli     -m ./models/gemma-3-1b-it-Q8_0.gguf     -cnv          -p "Please write about AI"     --single-turn     --temp 0
 build: 198 (b9d4df9) with cc (Debian 10.2.1-6) 10.2.1 20210110 for aarch64-linux-gnu
 main: llama backend init
 main: load the model and apply lora adapter, if any
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=config_loader_gate begin pl_scale=1
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=config_loader_gate policy=p2_uio_only my_ip_phys=0xa0000000 my_ip_offset=0 my_ip_required_size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=config_loader_gate pass p2_contract_limit=0 loader_validation=not_required
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=mapping begin
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=mapping_zdma begin policy=uio_only
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=mapping_zdma pass source=/dev/uio4(dma,O_SYNC) size=0x1000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=mapping_my_ip begin required_phys=0xa0000000 required_offset=0 required_size=0x400000 policy=uio_only
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=mapping_my_ip pass source=/dev/uio14(MY_IP,O_SYNC) phys=0xa0000000 offset=0 size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=mapping_ddr begin policy=uio_only phys=[0x70000000,0x80000000) required_size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=mapping_ddr pass source=/dev/uio15(fpga_ddr_low,O_SYNC) map_kind=uio_physical size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=mapping pass my_ip_source=/dev/uio14(MY_IP,O_SYNC) my_ip_size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=zdma_init begin
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=zdma_preinit ctrl2=0x00000000 status=0x00000000 isr=0x00000400 total_bytes=0x00000800 en=0 action=init_permitted
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=zdma_init pass
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=identity_reads begin
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=identity_reads pass limits=0x00800100 caps=0x100040fb spu_caps=0x10000fc3 protocol=0x00000002 bitstream_id=0x56505532 p2_abi=0x50320003 p3_abi=0x50330001 stream_status=0x0000001f
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=admission pass p2_abi_ok=1 quiescent=1 capacity_ok=1 vpu_two_row_transport_cap=1 spu_q8_scale_pair_stream_cap=1 two_row_transport_ok=1 stream_supported=1
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=data_plane_selftests skipped reason=p2_passive_init
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v84-p3-retire-timing phase=ready route=p2_single_bank init_data_plane=none pack_workers_requested=1 active=1
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=config_loader_gate begin pl_scale=1
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=config_loader_gate policy=p2_uio_only my_ip_phys=0xa0000000 my_ip_offset=0 my_ip_required_size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=config_loader_gate pass p2_contract_limit=0 loader_validation=not_required
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping begin
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_zdma begin policy=uio_only
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_zdma pass source=/dev/uio4(dma,O_SYNC) size=0x1000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_my_ip begin required_phys=0xa0000000 required_offset=0 required_size=0x400000 policy=uio_only
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_my_ip pass source=/dev/uio14(MY_IP,O_SYNC) phys=0xa0000000 offset=0 size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_ddr begin policy=uio_only phys=[0x70000000,0x80000000) required_size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_ddr pass source=/dev/uio15(fpga_ddr_low,O_SYNC) map_kind=uio_physical size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping pass my_ip_source=/dev/uio14(MY_IP,O_SYNC) my_ip_size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=zdma_init begin
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=zdma_preinit ctrl2=0x00000000 status=0x00000000 isr=0x00000400 total_bytes=0x00000800 en=0 action=init_permitted
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=zdma_init pass
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=identity_reads begin
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=identity_reads pass limits=0x00800100 caps=0x100040fb spu_caps=0x10000fc3 protocol=0x00000002 bitstream_id=0x56505532 p2_abi=0x50320003 p3_abi=0x50330001 stream_status=0x0000001f
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=admission pass p2_abi_ok=1 quiescent=1 capacity_ok=1 vpu_two_row_transport_cap=1 spu_q8_scale_pair_stream_cap=1 two_row_transport_ok=1 stream_supported=1
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=data_plane_selftests skipped reason=p2_passive_init
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=ready route=p2_single_bank init_data_plane=none pack_workers_requested=1 active=1
 main: FPGA host initialized (Bare-metal mode)
 llama_model_loader: loaded meta data with 38 key-value pairs and 340 tensors from ./models/gemma-3-1b-it-Q8_0.gguf (version GGUF V3 (latest))
 llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
@@ -154,6 +152,7 @@ common_init_from_params: setting dry_penalty_last_n to ctx_size = 4096
 common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
 [FPGA] Kernel ready!
 main: llama threadpool init, n_threads = 4
+*** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?
 main: chat template example:
 <start_of_turn>user
 You are a helpful assistant
@@ -168,109 +167,77 @@ How are you?<end_of_turn>
 
 system_info: n_threads = 4 (n_threads_batch = 4) / 4 | CPU : NEON = 1 | ARM_FMA = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 |
 
-main: interactive mode on.
-sampler seed: 620438584
+sampler seed: 2121187072
 sampler params:
         repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
         dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 4096
-        top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.800
+        top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
         mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000
 sampler chain: logits -> logit-bias -> penalties -> dry -> top-n-sigma -> top-k -> typical -> top-p -> min-p -> xtc -> temp-ext -> dist
 generate: n_ctx = 4096, n_batch = 2048, n_predict = -1, n_keep = 1
 
-== Running in interactive mode. ==
- - Press Ctrl+C to interject at any time.
- - Press Return to return control to the AI.
- - To return control without starting a new line, end your input with '/'.
- - If you want to submit another line, end your input with '\'.
- - Not using system message. To change it, set a different value via -sys PROMPT
-
-
-> please write about AI
-Okay, let’s dive into the fascinating and rapidly evolving world of AI (Artificial Intelligence). It’s a massive topic, so I’ll break it down into manageable sections, covering what it is, how it works, its current state, and what the future holds.
+user
+Please write about AI
+model
+Okay, let's dive into the fascinating and rapidly evolving world of AI (Artificial Intelligence). It’s a topic that’s both incredibly exciting and often surrounded by a lot of hype and misunderstanding. Here’s a breakdown of what AI is, what it can do, its current state, and some of the key considerations:
 
 **1. What is AI?**
 
-At its core, AI refers to the ability of a computer system to mimic human intelligence. This doesn’t necessarily mean creating robots with human-like bodies. Instead, it’s about equipping machines with the capability to perform tasks that typically require human cognitive abilities. These abilities include:
+At its core, AI is about creating computer systems that can perform tasks that typically require human intelligence. This includes things like:
 
-* **Learning:**  AI systems can analyze data and improve their performance over time without explicit programming for every scenario.
-* **Problem-Solving:**  They can identify solutions to complex problems.
-* **Decision-Making:**  They can make choices based on available information.
-* **Perception:**  They can “see” (through cameras), “hear” (through microphones), and “understand” (through natural language processing).
-* **Reasoning:**  They can draw logical conclusions from data.
-
-
-**2. How Does AI Work? – Different Approaches**
-
-There’  s no single “AI” technology. Instead, there are several different approaches:
-
-* **Machine Learning (ML):** This is currently the dominant form of AI.  Instead of being explicitly programmed, ML algorithms learn from data. They identify patterns, make predictions, and improve their accuracy over time.  There are different types of ML:
-    * **Supervised Learning:** The system is trained on labeled data – examples with the correct answers. (e.g., identifying cats in images.)
-    * **Unsupervised Learning:** The system is given unlabeled data and must find patterns and relationships on its own. (e.g., grouping customers based on purchase history.)
-    * **Reinforcement Learning:** The system learns by trial and error, receiving rewards for good actions and penalties for bad ones. (e.  e.g., training a robot to walk.)
-* **Deep Learning:** A subset of ML that uses artificial neural networks with multiple layers (hence "deep"). These networks are inspired by the structure of the human brain and are particularly effective for tasks like image recognition and natural language processing.
-* **Natural Language Processing (NLP):** Focuses on enabling computers to understand, interpret, and generate human language.  Examples include chatbots, translation tools, and sentiment analysis.
-* **Computer Vision:** Allows computers to “see” and interpret images and videos.
+* **Learning:**  The ability to identify patterns and improve performance based on data.
+* **Reasoning:**  The capacity to draw conclusions and solve problems.
+* **Problem-Solving:**  The ability to identify and address challenges.
+* **Perception:**  The ability to understand and interpret sensory input like images, sound, and text.
+* **Natural Language Processing (NLP):**  The ability to understand, interpret, and generate human language.
 
 
-**3. Current State of AI – What'  s Happening Now?**
+**2. Types of AI**
 
-* **Ubiquitous Applications:** AI is no longer confined to research labs. It’s integrated into countless aspects of our lives:
-    * **Recommendation Systems:** (Netflix, Amazon) – Suggesting what to watch or buy.
-    * **Voice Assistants:** (Siri, Alexa, Google Assistant) –  Responding to voice commands.
-    * **Self-Driving Cars:**  Still in development, but showing significant progress.
-    * **Medical Diagnosis:**  AI is being used to analyze medical images and help doctors diagnose diseases.
-    * **Fraud Detection:** Banks and companies use AI to identify and prevent fraudulent transactions.
-* **Generative AI:** This is a *huge* area of recent development. Models like ChatGPT, DALL-E 2, and Midjourney can generate original text, images, and other content based on prompts.
-* **Large Language Models (LLMs):** These are extremely large AI models trained on massive amounts of text data. They are capable of performing a wide range of tasks, including writing, translation, and even coding.
+There are several levels and categories of AI, often overlapping:
 
-
-**4.  Challenges and Concerns**
-
-* **Bias:** AI systems can inherit and amplify biases present in the data they are trained on, leading to unfair or discriminatory outcomes.
-* **Job Displacement:**  Automation powered by AI raises concerns about the potential for job losses in certain sectors.
-  * **Ethical Considerations:**  Questions about accountability, transparency, and the potential misuse of AI are increasingly important.
-* **Safety:** Ensuring that AI systems are safe and reliable is a significant challenge, especially as they become more autonomous.
-* **Privacy:** AI systems often rely on vast amounts of data, raising concerns about privacy and data security.
+* **Narrow or Weak AI:** This is the type of AI we largely see today. It’  is designed and trained for a specific task. Examples include:
+    * **Spam Filters:**  Identify and filter unwanted emails.
+    * **Voice Assistants (Siri, Alexa, Google Assistant):** Respond to voice commands and perform tasks.
+    * **Recommendation Systems (Netflix, Amazon):** Suggest products or content based on your past behavior.
+* **General or Strong AI:** This is the theoretical type of AI that possesses human-level intelligence – the ability to understand, learn, and apply knowledge across a wide range of tasks, just like a human.  We haven't achieved this yet.
+* **Super AI:**  A hypothetical AI that surpasses human intelligence in all aspects. This is largely the subject of science fiction.
 
 
-**5. The Future of AI**
+**3. Current State of AI – Where We Are Now**
 
-* **Artificial General Intelligence (AGI):**  The theoretical goal of creating AI systems that possess human-level intelligence – the ability to learn and apply knowledge across a wide range of domains.  This is still largely in the realm of speculation.
-* **Explainable AI (XAI):**  Developing AI systems that can explain their reasoning and decision-making processes, making them more transparent and trustworthy.
-  * **Continued Integration:** AI is expected to become even more deeply integrated into all aspects of our lives.
-* **Human-AI Collaboration:** The focus will shift from AI replacing humans to AI augmenting human capabilities.
-
-
-**Resources for Further Learning:**
-
-* **Google AI:** [https://ai.google/](https://ai.google/)
-* **OpenAI:** [https://openai.com/](https://openai.com/)
-* **DeepMind:** [https://www.deepmind.com/](https://www.deepmind.com/)
-* **Forbes - AI:** [https://www.forbes.com/sites/bernardmussakoff/2023/07/26/artificial-intelligence-explained/?dw=ai-123](https://www.forbes.com/sites/bernardmussakoff/2023/07/26/artificial-intelligence-explained/?dw=ai-123)
+* **Deep Learning:** A subset of AI that uses artificial neural networks with multiple layers (hence "deep") to analyze data and learn complex patterns. This is the driving force behind many recent advances.
+* **Large Language Models (LLMs):**  These are incredibly powerful AI models, like GPT-3, LaMDA, and others, that can generate human-quality text, translate languages, write different kinds of creative content, and answer your questions in an informative way.
+* **Image Recognition & Computer Vision:** AI can now identify objects, people, and scenes in images and videos with impressive accuracy.
+* **Autonomous Vehicles:**  AI is essential for self-driving cars, enabling them to perceive their surroundings, make decisions, and navigate.
 
 
----
+**4.  How AI is Being Used Today**
 
-To help me tailor my response to your interests, could you tell me:
+* **Healthcare:**  AI is being used for diagnosis, drug discovery, personalized treatment plans, and robotic surgery.
+* **Finance:**  Fraud detection, algorithmic trading, and customer service chatbots.
+  * **Retail:** Personalized recommendations, inventory management, and supply chain optimization.
+* **Manufacturing:**  Robotics and automation, predictive maintenance.
+* **Transportation:**  Self-driving trucks and logistics.
 
-*   **What specifically about AI are you most curious about?** (e.  e.g.,  AI in healthcare, AI art, the impact of AI on the job market, etc.)
-*   **What is your current level of understanding of AI?** (e.g., are you a beginner, or do you have some existing knowledge?)
 
->
-llama_perf_sampler_print:    sampling time =    2437.85 ms /  1315 runs   (    1.85 ms per token,   539.41 tokens per second)
+**5.  Challenges and Concerns**
+
+* **Bias:** AI systems are trained on data, and if that data reflects existing societal biases, the AI will perpetuate and even amplify those biases.
+* **Job Displacement:**  As AI becomes more capable, there are concerns
+llama_perf_sampler_print:    sampling time =    1305.80 ms /   729 runs   (    1.79 ms per token,   558.28 tokens per second)
 
 --- Detailed Function Profiling (within sampler print) ---
-llama_perf_sampler_print: Total_Attn_MHA       time =       4.07 ms ( 39.96 %)
-llama_perf_sampler_print: Total_FFN            time =       1.75 ms ( 17.21 %)
+llama_perf_sampler_print: Total_Attn_MHA       time =       2.77 ms ( 39.83 %)
+llama_perf_sampler_print: Total_FFN            time =       1.24 ms ( 17.84 %)
 llama_perf_sampler_print: Total_MoE_FFN        time =       0.00 ms (  0.00 %)
-llama_perf_sampler_print: Total_Norm           time =       4.36 ms ( 42.83 %)
-llama_perf_sampler_print: Total Profiled       time =      10.18 ms
+llama_perf_sampler_print: Total_Norm           time =       2.94 ms ( 42.33 %)
+llama_perf_sampler_print: Total Profiled       time =       6.95 ms
 ----------------------------------------------------------
-llama_perf_context_print:        load time =   10247.53 ms
-llama_perf_context_print: prompt eval time =   37757.19 ms /    13 tokens ( 2904.40 ms per token,     0.34 tokens per second)
-llama_perf_context_print:        eval time = 5317433.06 ms /  1302 runs   ( 4084.05 ms per token,     0.24 tokens per second)
-llama_perf_context_print:       total time = 6052860.93 ms /  1315 tokens
-llama_perf_context_print:    graphs reused =       1296
+llama_perf_context_print:        load time =   10054.65 ms
+llama_perf_context_print: prompt eval time =   35754.76 ms /    13 tokens ( 2750.37 ms per token,     0.36 tokens per second)
+llama_perf_context_print:        eval time = 2793767.15 ms /   715 runs   ( 3907.37 ms per token,     0.26 tokens per second)
+llama_perf_context_print:       total time = 2835494.66 ms /   728 tokens
+llama_perf_context_print:    graphs reused =        713
 Interrupted by user
 debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$
