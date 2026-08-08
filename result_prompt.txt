@@ -1,26 +1,7 @@
-debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo ./build_mem/bin/llama-cli     -m ./models/gemma-3-1b-it-Q8_0.gguf     -cnv          -p "Please write about AI"     --single-turn     --temp 0
+debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo ./build_mem/bin/llama-cli     -m ./models/gemma-3-1b-it-Q8_0.gguf     -p "Please write about AI"        --single-turn     --temp 0
 build: 198 (b9d4df9) with cc (Debian 10.2.1-6) 10.2.1 20210110 for aarch64-linux-gnu
 main: llama backend init
 main: load the model and apply lora adapter, if any
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=config_loader_gate begin pl_scale=1
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=config_loader_gate policy=p2_uio_only my_ip_phys=0xa0000000 my_ip_offset=0 my_ip_required_size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=config_loader_gate pass p2_contract_limit=0 loader_validation=not_required
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping begin
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_zdma begin policy=uio_only
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_zdma pass source=/dev/uio4(dma,O_SYNC) size=0x1000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_my_ip begin required_phys=0xa0000000 required_offset=0 required_size=0x400000 policy=uio_only
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_my_ip pass source=/dev/uio14(MY_IP,O_SYNC) phys=0xa0000000 offset=0 size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_ddr begin policy=uio_only phys=[0x70000000,0x80000000) required_size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping_ddr pass source=/dev/uio15(fpga_ddr_low,O_SYNC) map_kind=uio_physical size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=mapping pass my_ip_source=/dev/uio14(MY_IP,O_SYNC) my_ip_size=0x400000
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=zdma_init begin
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=zdma_preinit ctrl2=0x00000000 status=0x00000000 isr=0x00000400 total_bytes=0x00000800 en=0 action=init_permitted
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=zdma_init pass
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=identity_reads begin
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=identity_reads pass limits=0x00800100 caps=0x100040fb spu_caps=0x10000fc3 protocol=0x00000002 bitstream_id=0x56505532 p2_abi=0x50320003 p3_abi=0x50330001 stream_status=0x0000001f
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=admission pass p2_abi_ok=1 quiescent=1 capacity_ok=1 vpu_two_row_transport_cap=1 spu_q8_scale_pair_stream_cap=1 two_row_transport_ok=1 stream_supported=1
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=data_plane_selftests skipped reason=p2_passive_init
-[FPGA][P2_INIT] version=zcu104-gemma3-q8-v86-bottleneck-summary phase=ready route=p2_single_bank init_data_plane=none pack_workers_requested=1 active=1
 main: FPGA host initialized (Bare-metal mode)
 llama_model_loader: loaded meta data with 38 key-value pairs and 340 tensors from ./models/gemma-3-1b-it-Q8_0.gguf (version GGUF V3 (latest))
 llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
@@ -152,6 +133,7 @@ common_init_from_params: setting dry_penalty_last_n to ctx_size = 4096
 common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
 [FPGA] Kernel ready!
 main: llama threadpool init, n_threads = 4
+main: chat template is available, enabling conversation mode (disable it with -no-cnv)
 *** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?
 main: chat template example:
 <start_of_turn>user
@@ -167,7 +149,7 @@ How are you?<end_of_turn>
 
 system_info: n_threads = 4 (n_threads_batch = 4) / 4 | CPU : NEON = 1 | ARM_FMA = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 |
 
-sampler seed: 2121187072
+sampler seed: 2891782680
 sampler params:
         repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
         dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 4096
@@ -224,20 +206,36 @@ There are several levels and categories of AI, often overlapping:
 **5.  Challenges and Concerns**
 
 * **Bias:** AI systems are trained on data, and if that data reflects existing societal biases, the AI will perpetuate and even amplify those biases.
-* **Job Displacement:**  As AI becomes more capable, there are concerns
-llama_perf_sampler_print:    sampling time =    1305.80 ms /   729 runs   (    1.79 ms per token,   558.28 tokens per second)
+* **Job Displacement:**  As AI becomes more capable, there are concerns about the impact on jobs, particularly in roles involving repetitive tasks.
+  * **Ethical Considerations:**  Questions around accountability, transparency, and the potential misuse of AI are increasingly important.
+* **Security Risks:**  AI systems can be vulnerable to attacks and manipulation.
+* **Lack of Explainability (Black Box Problem):**  Some AI models, particularly deep learning models, are difficult to understand – it’s hard to know *why* they make certain desions.
+
+
+**6.  The Future of AI**
+
+* **Continued Advancement:**  AI is expected to continue to advance rapidly, with even more sophisticated capabilities.
+* **Human-AI Collaboration:**  The most likely future is one of collaboration between humans and AI, where AI handles routine tasks and humans focus on creativity, critical thiing, and complex decision-making.
+* **Personalized AI:**  AI will become increasingly tailored to individual needs and preferences.
+
+
+**Resources for Further Learning:**
+
+* **Google AI:** [https://ai.google/](https://ai.google/)
+* **OpenAI:** [https://openai.com/](https://openai.
+llama_perf_sampler_print:    sampling time =    1787.20 ms /   964 runs   (    1.85 ms per token,   539.39 tokens per second)
 
 --- Detailed Function Profiling (within sampler print) ---
-llama_perf_sampler_print: Total_Attn_MHA       time =       2.77 ms ( 39.83 %)
-llama_perf_sampler_print: Total_FFN            time =       1.24 ms ( 17.84 %)
+llama_perf_sampler_print: Total_Attn_MHA       time =       3.05 ms ( 39.45 %)
+llama_perf_sampler_print: Total_FFN            time =       1.36 ms ( 17.64 %)
 llama_perf_sampler_print: Total_MoE_FFN        time =       0.00 ms (  0.00 %)
-llama_perf_sampler_print: Total_Norm           time =       2.94 ms ( 42.33 %)
-llama_perf_sampler_print: Total Profiled       time =       6.95 ms
+llama_perf_sampler_print: Total_Norm           time =       3.32 ms ( 42.91 %)
+llama_perf_sampler_print: Total Profiled       time =       7.73 ms
 ----------------------------------------------------------
-llama_perf_context_print:        load time =   10054.65 ms
-llama_perf_context_print: prompt eval time =   35754.76 ms /    13 tokens ( 2750.37 ms per token,     0.36 tokens per second)
-llama_perf_context_print:        eval time = 2793767.15 ms /   715 runs   ( 3907.37 ms per token,     0.26 tokens per second)
-llama_perf_context_print:       total time = 2835494.66 ms /   728 tokens
-llama_perf_context_print:    graphs reused =        713
+llama_perf_context_print:        load time =    9826.93 ms
+llama_perf_context_print: prompt eval time =   34554.55 ms /    13 tokens ( 2658.04 ms per token,     0.38 tokens per second)
+llama_perf_context_print:        eval time = 3587650.93 ms /   950 runs   ( 3776.47 ms per token,     0.26 tokens per second)
+llama_perf_context_print:       total time = 3628292.45 ms /   963 tokens
+llama_perf_context_print:    graphs reused =        947
 Interrupted by user
 debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$
