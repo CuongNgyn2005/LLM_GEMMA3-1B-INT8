@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/llama-tts.dir/tts.cpp.o -o ../../bin/llama-tts  -Wl,-rpath,/home/debian/Cuong_test/Infrastructure_GEMMA3/build_mem/bin: ../../common/libcommon.a -pthread ../../bin/libllama.so ../../bin/libggml.so ../../bin/libggml-cpu.so ../../bin/libggml-base.so -pthread 

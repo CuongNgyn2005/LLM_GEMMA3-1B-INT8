@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/llama-simple.dir/simple.cpp.o -o ../../bin/llama-simple  -Wl,-rpath,/home/debian/Cuong_test/Infrastructure_GEMMA3/build_mem/bin: ../../bin/libllama.so -pthread ../../bin/libggml.so ../../bin/libggml-cpu.so ../../bin/libggml-base.so 
