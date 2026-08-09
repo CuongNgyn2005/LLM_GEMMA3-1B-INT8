@@ -69,6 +69,11 @@ module PMAU_Full #(
     input  wire [SCALE_WIDTH-1:0]            scale_factor,
     input  wire                              weight_valid,
     output wire                              weight_ready,
+    // Valid-independent admission predicate for a multi-PMAU producer.  The
+    // existing ready signals intentionally depend on the opposite valid;
+    // paired scheduling must inspect this predicate before offering either
+    // lane so one PMAU can never consume alone on a readiness skew.
+    output wire                              input_ready,
     input  wire                              weight_last,
 
     // Reserved for future AXPY mode
@@ -122,7 +127,13 @@ module PMAU_Full #(
 
     reg                         deq_s2_valid;
     reg                         deq_s2_last;
-    reg signed [ACC_WIDTH-1:0]  deq_s2_value;
+    reg                         deq_s2_bypass;
+    reg signed [ACC_WIDTH-1:0]  deq_s2_raw;
+    reg signed [DEQUANT_WIDTH-1:0] deq_s2_mul;
+
+    reg                         deq_s3_valid;
+    reg                         deq_s3_last;
+    reg signed [ACC_WIDTH-1:0]  deq_s3_value;
 
     // -------------------------------------------------------------------------
     // Result FIFO and input backpressure
@@ -160,6 +171,9 @@ module PMAU_Full #(
         incoming_last_match &&
         ((!incoming_pair_last) ||
          (reserved_result_slots < FIFO_DEPTH_COUNT));
+
+    assign input_ready = (!activation_last) ||
+                         (reserved_result_slots < FIFO_DEPTH_COUNT);
 
     assign activation_ready = can_accept_pair && weight_valid;
     assign weight_ready     = can_accept_pair && activation_valid;
@@ -311,19 +325,8 @@ module PMAU_Full #(
     wire signed [ACC_WIDTH-1:0] sum_final = sum_pipe[TREE_LEVELS-1][0];
     wire signed [ACC_WIDTH-1:0] result_commit = accumulator + sum_final;
 
-    wire signed [SCALE_EXT_WIDTH-1:0] scale_ext =
-        {1'b0, deq_s1_scale};
-    wire signed [DEQUANT_WIDTH-1:0] dequant_mul =
-        deq_s1_raw * scale_ext;
-    wire signed [ACC_WIDTH-1:0] result_dequant =
-        dequant_mul >>> SCALE_FRAC_BITS;
-
-    wire bypass_dequant = (deq_s1_scale == FP16_ONE);
-    wire signed [ACC_WIDTH-1:0] result_final_value =
-        bypass_dequant ? deq_s1_raw : result_dequant;
-
     wire row_commit = final_valid && final_last;
-    wire fifo_push  = deq_s2_valid;
+    wire fifo_push  = deq_s3_valid;
     wire fifo_pop   = result_fire;
 
     always @(posedge CLK) begin
@@ -335,7 +338,12 @@ module PMAU_Full #(
             deq_s1_scale <= {SCALE_WIDTH{1'b0}};
             deq_s2_valid <= 1'b0;
             deq_s2_last  <= 1'b0;
-            deq_s2_value <= {ACC_WIDTH{1'b0}};
+            deq_s2_bypass <= 1'b0;
+            deq_s2_raw <= {ACC_WIDTH{1'b0}};
+            deq_s2_mul <= {DEQUANT_WIDTH{1'b0}};
+            deq_s3_valid <= 1'b0;
+            deq_s3_last  <= 1'b0;
+            deq_s3_value <= {ACC_WIDTH{1'b0}};
             fifo_wr_ptr <= {FIFO_PTR_WIDTH{1'b0}};
             fifo_rd_ptr <= {FIFO_PTR_WIDTH{1'b0}};
             fifo_count  <= {FIFO_COUNT_WIDTH{1'b0}};
@@ -353,8 +361,8 @@ module PMAU_Full #(
                 fifo_rd_ptr <= fifo_rd_ptr + {{(FIFO_PTR_WIDTH-1){1'b0}}, 1'b1};
 
             if (fifo_push) begin
-                result_fifo_data[fifo_wr_ptr] <= deq_s2_value;
-                result_fifo_last[fifo_wr_ptr] <= deq_s2_last;
+                result_fifo_data[fifo_wr_ptr] <= deq_s3_value;
+                result_fifo_last[fifo_wr_ptr] <= deq_s3_last;
                 fifo_wr_ptr <= fifo_wr_ptr + {{(FIFO_PTR_WIDTH-1){1'b0}}, 1'b1};
             end
 
@@ -397,10 +405,23 @@ module PMAU_Full #(
 
             deq_s2_valid <= deq_s1_valid;
             deq_s2_last  <= deq_s1_last;
-            if (deq_s1_valid)
-                // Dequant stage 2 either bypasses raw INT32 for the configured
-                // 16'h3c00 test value or applies fixed-point scale and shift.
-                deq_s2_value <= result_final_value;
+            if (deq_s1_valid) begin
+                // Dequant stage 2 is the DSP multiply stage.
+                deq_s2_bypass <= (deq_s1_scale == FP16_ONE);
+                deq_s2_raw    <= deq_s1_raw;
+                deq_s2_mul    <= deq_s1_raw *
+                                  $signed({1'b0, deq_s1_scale});
+            end
+
+            deq_s3_valid <= deq_s2_valid;
+            deq_s3_last  <= deq_s2_last;
+            if (deq_s2_valid) begin
+                // Dequant stage 3 performs the shift/output selection after
+                // the multiplier result has crossed a register boundary.
+                deq_s3_value <= deq_s2_bypass ?
+                                deq_s2_raw :
+                                (deq_s2_mul >>> SCALE_FRAC_BITS);
+            end
         end
     end
 

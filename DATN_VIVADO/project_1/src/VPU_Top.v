@@ -1,11 +1,24 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : VPU_Top
- * Description : Project-facing AXI4-Full wrapper for the INT8 VPU.
+ * Description : AXI4-Full top-level wrapper for the INT8 VPU IP.
  *
- * VPU_Top is intentionally a thin alias around MY_IP so the Vivado block design
- * can keep using the familiar VPU top name while the implementation underneath
- * is a memory-mapped AXI4-Full slave.
+ * VPU_Top is the integration boundary that Vivado Block Design sees as the
+ * custom accelerator IP.  It exposes the AXI4-Full slave interface, clock,
+ * reset, user-side AXI metadata signals, and datapath sizing parameters, then
+ * forwards these signals into MY_IP without adding extra behavior.
+ *
+ * This module intentionally contains no register map, BRAM instance, compute
+ * FSM, or arithmetic datapath.  Its contribution to the RTL system is to keep
+ * the external IP interface stable while AXI protocol handling, address
+ * decoding, local memory storage, GEMV scheduling, and PMAU arithmetic remain
+ * implemented in the lower modules.
+ *
+ * Parameter groups:
+ * - C_S00_AXI_* define the external AXI ID, address, data, and USER widths.
+ * - NUM_LANES and data-width parameters define the INT8 MAC datapath shape.
+ * - MAX_ROWS, MAX_COL_BEATS, and MAX_GROUP_Q8_BLOCKS define the maximum local
+ *   tile capacity passed down to the GEMV implementation.
  *-----------------------------------------------------------------------------
  */
 
@@ -29,7 +42,9 @@ module VPU_Top #(
     parameter integer SCALE_FRAC_BITS        = 15,
     parameter integer RESULT_FIFO_DEPTH      = 8,
     parameter integer MAX_ROWS               = 256,
-    parameter integer MAX_COL_BEATS          = 32
+    parameter integer MAX_COL_BEATS          = 128,
+    parameter integer MAX_GROUP_Q8_BLOCKS    = 64,
+    parameter integer SPU_STREAM_TEST_STALL_ENABLE = 0
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
@@ -88,6 +103,9 @@ module VPU_Top #(
     input  wire                                  s00_axi_rready
 );
 
+    // This top wrapper does not modify AXI traffic.  All AW/W/B/AR/R channels
+    // and system parameters are passed directly into MY_IP so the AXI slave
+    // protocol implementation is maintained in a single lower-level module.
     MY_IP #(
         .C_S00_AXI_ID_WIDTH     (C_S00_AXI_ID_WIDTH),
         .C_S00_AXI_DATA_WIDTH   (C_S00_AXI_DATA_WIDTH),
@@ -105,7 +123,9 @@ module VPU_Top #(
         .SCALE_FRAC_BITS        (SCALE_FRAC_BITS),
         .RESULT_FIFO_DEPTH      (RESULT_FIFO_DEPTH),
         .MAX_ROWS               (MAX_ROWS),
-        .MAX_COL_BEATS          (MAX_COL_BEATS)
+        .MAX_COL_BEATS          (MAX_COL_BEATS),
+        .MAX_GROUP_Q8_BLOCKS    (MAX_GROUP_Q8_BLOCKS),
+        .SPU_STREAM_TEST_STALL_ENABLE (SPU_STREAM_TEST_STALL_ENABLE)
     ) u_my_ip (
         .s00_axi_aclk       (s00_axi_aclk),
         .s00_axi_aresetn    (s00_axi_aresetn),

@@ -5,14 +5,14 @@
    "ExpandedHierarchyInLayout":"",
    "guistr":"# # String gsaved with Nlview 7.0r6  2020-01-29 bk=1.5227 VDI=41 GEI=36 GUI=JA:10.0 non-TLS
 #  -string -flagsOSRD
-preplace inst zynq_ultra_ps_e_0 -pg 1 -lvl 1 -x 330 -y 90 -defaultsOSRD
 preplace inst VPU_Top_0 -pg 1 -lvl 3 -x 1040 -y 110 -defaultsOSRD
+preplace inst zynq_ultra_ps_e_0 -pg 1 -lvl 1 -x 330 -y 90 -defaultsOSRD
 preplace inst axi_smc -pg 1 -lvl 2 -x 790 -y 90 -defaultsOSRD
-preplace inst rst_ps8_0_100M -pg 1 -lvl 1 -x 330 -y 290 -defaultsOSRD
-preplace netloc zynq_ultra_ps_e_0_pl_clk0 1 0 3 20 190 640 180 930J
-preplace netloc zynq_ultra_ps_e_0_pl_resetn0 1 0 2 30 180 630
-preplace netloc rst_ps8_0_100M_peripheral_aresetn 1 1 2 650 190 940
-preplace netloc zynq_ultra_ps_e_0_M_AXI_HPM0_FPD 1 1 1 N 60
+preplace inst rst_ps8_0_96M -pg 1 -lvl 1 -x 330 -y 290 -defaultsOSRD
+preplace netloc zynq_ultra_ps_e_0_pl_clk0 1 0 3 20 180 640 180 930J
+preplace netloc zynq_ultra_ps_e_0_pl_resetn0 1 0 2 30 190 630
+preplace netloc rst_ps8_0_96M_peripheral_aresetn 1 1 2 650 190 940
+preplace netloc zynq_ultra_ps_e_0_M_AXI_HPM0_LPD 1 1 1 N 60
 preplace netloc axi_smc_M00_AXI 1 2 1 N 90
 preplace netloc zynq_ultra_ps_e_0_M_AXI_HPM1_FPD 1 1 1 N 80
 levelinfo -pg 1 0 330 790 1040 1150
@@ -20,6 +20,6 @@ pagesize -pg 1 -db -bbox -sgen 0 0 1150 390
 "
 }
 {
-   "da_axi4_cnt":"2",
+   "da_axi4_cnt":"3",
    "da_zynq_ultra_ps_e_cnt":"1"
 }
