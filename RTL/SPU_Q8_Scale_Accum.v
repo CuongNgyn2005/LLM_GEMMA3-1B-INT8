@@ -68,7 +68,11 @@ module SPU_Q8_Scale_Accum #(
     reg [63:0] act_scale_q32_r;
     reg [63:0] weight_scale_q32_r;
     reg [127:0] product_scale_full_r;
-    reg [63:0] product_scale_q32_r;
+    // Keep this architectural pipeline boundary as fabric flip-flops.  If the
+    // register is absorbed into the following multiplier's DSP A/B input,
+    // product_scale_full_r drives the clamp logic and the distant DSP input in
+    // one cycle, creating the routed scale-product critical path.
+    (* dont_touch = "yes" *) reg [63:0] product_scale_q32_r;
     reg signed [96:0] contribution_full_r;
     reg signed [ACC_WIDTH-1:0] contribution_q16_r;
 
