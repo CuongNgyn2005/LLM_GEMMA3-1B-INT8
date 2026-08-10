@@ -473,7 +473,6 @@ module AXI4_Mapping #(
     endfunction
 
     wire [31:0] wr_addr_local = local32(map_wr_addr);
-    wire [31:0] rd_addr_local = local32(map_rd_addr);
 
     reg wr_decode_en_r;
     reg [31:0] wr_decode_addr_r;
@@ -641,14 +640,21 @@ module AXI4_Mapping #(
         end
     end
 
+    // MY_IP serializes map_rd_* requests.  Capture each request before decode
+    // so the inbound address has a registered timing boundary; all read decode,
+    // register-data capture, and memory read issue use this aligned request.
+    reg rd_req_en_r;
+    reg [AXI_ADDR_WIDTH-1:0] rd_req_addr_r;
+    wire [31:0] rd_req_addr_local = local32(rd_req_addr_r);
+
     // The read path only forwards Result-window reads to GEMV.  Activation and
     // Weight windows are input-loading paths, so reading them back reports an
     // error through map_rd_error.
     wire mmio_core_rd_en_w =
-        map_rd_en && is_result_addr(rd_addr_local) &&
-        mem_index_in_range(rd_addr_local);
-    wire [1:0] mmio_core_rd_region_w = mem_region(rd_addr_local);
-    wire [31:0] mmio_core_rd_index_w = mem_index(rd_addr_local);
+        rd_req_en_r && is_result_addr(rd_req_addr_local) &&
+        mem_index_in_range(rd_req_addr_local);
+    wire [1:0] mmio_core_rd_region_w = mem_region(rd_req_addr_local);
+    wire [31:0] mmio_core_rd_index_w = mem_index(rd_req_addr_local);
     reg core_rd_en_r;
     reg [1:0] core_rd_region_r;
     reg [31:0] core_rd_index_r;
@@ -660,10 +666,10 @@ module AXI4_Mapping #(
     wire core_rd_error;
 
     wire mmio_spu_rd_en_w =
-        map_rd_en && is_spu_mem_addr(rd_addr_local) &&
-        spu_mem_index_in_range(rd_addr_local);
-    wire [1:0] spu_rd_region_w = spu_mem_region(rd_addr_local);
-    wire [31:0] spu_rd_index_w = spu_mem_index(rd_addr_local);
+        rd_req_en_r && is_spu_mem_addr(rd_req_addr_local) &&
+        spu_mem_index_in_range(rd_req_addr_local);
+    wire [1:0] spu_rd_region_w = spu_mem_region(rd_req_addr_local);
+    wire [31:0] spu_rd_index_w = spu_mem_index(rd_req_addr_local);
     reg mmio_spu_rd_en_r;
     reg [1:0] spu_rd_region_r;
     reg [31:0] spu_rd_index_r;
@@ -685,9 +691,10 @@ module AXI4_Mapping #(
          ((rd_pending_kind_r == RD_KIND_CORE) && core_rd_valid) ||
          ((rd_pending_kind_r == RD_KIND_SPU) && spu_rd_valid));
 
-    // Read response pipeline.  Register reads can return after one cycle using
-    // rd_pending_reg_data_r; Result reads must wait for GEMV/Result BRAM to
-    // assert core_rd_valid before map_rd_valid is returned to MY_IP.
+    // Read response pipeline.  Register reads return after the registered
+    // request/decode stage using rd_pending_reg_data_r; Result reads must wait
+    // for GEMV/Result BRAM to assert core_rd_valid before map_rd_valid is
+    // returned to MY_IP.
     always @(posedge clk) begin
         if (!resetn) begin
             map_rd_data <= {AXI_DATA_WIDTH{1'b0}};
@@ -697,6 +704,8 @@ module AXI4_Mapping #(
             rd_pending_kind_r <= RD_KIND_REG;
             rd_pending_error_r <= 1'b0;
             rd_pending_reg_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            rd_req_en_r <= 1'b0;
+            rd_req_addr_r <= {AXI_ADDR_WIDTH{1'b0}};
             core_rd_en_r <= 1'b0;
             core_rd_region_r <= REGION_RESULT;
             core_rd_index_r <= 32'd0;
@@ -707,6 +716,9 @@ module AXI4_Mapping #(
             map_rd_valid <= 1'b0;
             map_rd_error <= 1'b0;
             map_rd_data  <= {AXI_DATA_WIDTH{1'b0}};
+            rd_req_en_r <= map_rd_en;
+            if (map_rd_en)
+                rd_req_addr_r <= map_rd_addr;
             core_rd_en_r <= mmio_core_rd_en_w;
             mmio_spu_rd_en_r <= mmio_spu_rd_en_w;
             if (mmio_core_rd_en_w) begin
@@ -718,22 +730,22 @@ module AXI4_Mapping #(
                 spu_rd_index_r  <= spu_rd_index_w;
             end
 
-            if (map_rd_en) begin
+            if (rd_req_en_r) begin
                 rd_pending_r <= 1'b1;
-                if (is_result_addr(rd_addr_local) && mem_index_in_range(rd_addr_local))
+                if (is_result_addr(rd_req_addr_local) && mem_index_in_range(rd_req_addr_local))
                     rd_pending_kind_r <= RD_KIND_CORE;
-                else if (is_spu_mem_addr(rd_addr_local) && spu_mem_index_in_range(rd_addr_local))
+                else if (is_spu_mem_addr(rd_req_addr_local) && spu_mem_index_in_range(rd_req_addr_local))
                     rd_pending_kind_r <= RD_KIND_SPU;
-                else if (is_reg_addr(rd_addr_local))
+                else if (is_reg_addr(rd_req_addr_local))
                     rd_pending_kind_r <= RD_KIND_REG;
                 else
                     rd_pending_kind_r <= RD_KIND_ERROR;
-                rd_pending_error_r <= (!is_reg_addr(rd_addr_local)) &&
-                                      (!(is_result_addr(rd_addr_local) &&
-                                         mem_index_in_range(rd_addr_local))) &&
-                                      (!(is_spu_mem_addr(rd_addr_local) &&
-                                         spu_mem_index_in_range(rd_addr_local)));
-                rd_pending_reg_data_r <= reg_read_data(rd_addr_local);
+                rd_pending_error_r <= (!is_reg_addr(rd_req_addr_local)) &&
+                                       (!(is_result_addr(rd_req_addr_local) &&
+                                          mem_index_in_range(rd_req_addr_local))) &&
+                                       (!(is_spu_mem_addr(rd_req_addr_local) &&
+                                          spu_mem_index_in_range(rd_req_addr_local)));
+                rd_pending_reg_data_r <= reg_read_data(rd_req_addr_local);
             end else if (rd_pending_ready) begin
                 rd_pending_r <= 1'b0;
             end
