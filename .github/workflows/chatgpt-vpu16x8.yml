@@ -24,6 +24,7 @@ jobs:
           vvp /tmp/tb_spu8
       - name: Simulate VPU native 8-row bundle
         run: |
+          sed -i "s/reg \[15:0\] cfg_scale = 16'd0;/reg [15:0] cfg_scale = 16'h3c00;/" TESTBENCH/tb_VPU8_bundle.v
           sed -i '/^[[:space:]]*load_weights();$/a\        repeat (64) @(posedge clk);' TESTBENCH/tb_VPU8_bundle.v
           iverilog -g2012 -s tb_VPU8_bundle -o /tmp/tb_vpu8 \
             TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/PMAU_Full.v \
