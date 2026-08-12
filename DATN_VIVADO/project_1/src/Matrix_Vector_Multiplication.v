@@ -92,6 +92,10 @@ module Matrix_Vector_Multiplication #(
     output reg                               spu_raw_clear_accum,
     output reg  [31:0]                       spu_raw_job_id,
     output reg                               spu_raw_bank,
+    // The result/scale index is already formed by the VPU result-address
+    // path.  Registering it with the raw token avoids recomputing
+    // row*group_blocks in SPU_Top's ready/valid timing cone.
+    output reg  [31:0]                       spu_raw_scale_index,
     output reg                               spu_raw_done,
     // In P2-v2 this is the retained companion lane of spu_raw_*.  Both
     // lanes are accepted atomically through spu_raw_ready.
@@ -104,6 +108,7 @@ module Matrix_Vector_Multiplication #(
     output reg                               spu_raw_pair_clear_accum,
     output reg  [31:0]                       spu_raw_pair_job_id,
     output reg                               spu_raw_pair_bank,
+    output reg  [31:0]                       spu_raw_pair_scale_index,
 
     input  wire                              mm_wr_en,
     input  wire [1:0]                        mm_wr_region,
@@ -1259,6 +1264,7 @@ module Matrix_Vector_Multiplication #(
             spu_raw_clear_accum <= 1'b0;
             spu_raw_job_id      <= 32'd0;
             spu_raw_bank        <= 1'b0;
+            spu_raw_scale_index <= 32'd0;
             spu_raw_done        <= 1'b0;
             spu_raw_pair_valid  <= 1'b0;
             spu_raw_pair_data   <= 32'sd0;
@@ -1269,6 +1275,7 @@ module Matrix_Vector_Multiplication #(
             spu_raw_pair_clear_accum <= 1'b0;
             spu_raw_pair_job_id <= 32'd0;
             spu_raw_pair_bank <= 1'b0;
+            spu_raw_pair_scale_index <= 32'd0;
             feed_valid_r        <= 1'b0;
             feed_last_r         <= 1'b0;
             feed_group_last_r   <= 1'b0;
@@ -1566,6 +1573,7 @@ module Matrix_Vector_Multiplication #(
                                 spu_raw_clear_accum    <= (block_idx_r == 16'd0);
                                 spu_raw_job_id         <= active_job_id_r;
                                 spu_raw_bank           <= active_bank_r;
+                                spu_raw_scale_index   <= result_value_index;
                                 spu_raw_pair_valid     <= pair_lane1_valid;
                                 spu_raw_pair_data      <= $signed(pmau2_result_data);
                                 spu_raw_pair_row       <= row_idx_r + 16'd1;
@@ -1575,6 +1583,7 @@ module Matrix_Vector_Multiplication #(
                                 spu_raw_pair_clear_accum <= (block_idx_r == 16'd0);
                                 spu_raw_pair_job_id    <= active_job_id_r;
                                 spu_raw_pair_bank      <= active_bank_r;
+                                spu_raw_pair_scale_index <= pair_result_value_index;
                                 state_r                <= S_RAW_STREAM_HOLD;
                             end else begin
                                 error_r <= 1'b1;
@@ -1656,6 +1665,7 @@ module Matrix_Vector_Multiplication #(
                             spu_raw_clear_accum <= (block_idx_r == 16'd0);
                             spu_raw_job_id <= active_job_id_r;
                             spu_raw_bank <= active_bank_r;
+                            spu_raw_scale_index <= quad2_result_value_index;
                             spu_raw_pair_valid <= pair_lane3_valid;
                             spu_raw_pair_data <= result_row3_data_r;
                             spu_raw_pair_row <= row_idx_r + 16'd3;
@@ -1665,6 +1675,7 @@ module Matrix_Vector_Multiplication #(
                             spu_raw_pair_clear_accum <= (block_idx_r == 16'd0);
                             spu_raw_pair_job_id <= active_job_id_r;
                             spu_raw_pair_bank <= active_bank_r;
+                            spu_raw_pair_scale_index <= quad3_result_value_index;
                         end else if (raw_second_packet_r) begin
                             spu_raw_valid <= 1'b0;
                             spu_raw_pair_valid <= 1'b0;

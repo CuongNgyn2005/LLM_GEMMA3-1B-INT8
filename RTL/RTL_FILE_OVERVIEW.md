@@ -360,15 +360,26 @@ Host chỉ ghi `FREE/FILLING`; PL chỉ đọc `READY/COMPUTING`; không bên n�
 
 ## 9. Bottleneck RTL và timing
 
-Implementation now meets the 187.5 MHz setup/hold gate in the routed
-checkpoint: WNS `+0.661 ns`, TNS `0 ns`, zero setup failures, WHS
-`+0.010 ns`, THS `0 ns`, and zero hold failures. The formal report is
-`DATN_VIVADO/project_1/project_1.runs/impl_1/SoC_wrapper_timing_summary_task010_fast5.rpt`.
+The current authoritative routed report is
+`DATN_VIVADO/project_1/project_1.runs/impl_1/SoC_wrapper_timing_summary_routed.rpt`
+(2026-08-12 11:45:10). It reports setup WNS `+0.415 ns`, TNS `0 ns`,
+zero setup failures, hold WHS `+0.010 ns`, THS `0 ns`, and pulse-width
+slack `+1.166 ns`. The design is timing-clean in that checkpoint, but it
+does not yet meet the requested `+0.500 ns` WNS margin. The older
+`task010_fast5` value `+0.661 ns` is not the current canonical report and
+must not be used as signoff evidence.
 
-- synthesis uses 164 DSP48E2 (the stored TASK-010 baseline is 124, +40),
-  64 URAM, and 104.5 BRAM tiles; no storage-capacity change was made;
-- route status reports zero routing errors, zero unrouted nets, and zero
-  partially routed nets; DRC reports zero errors;
+The latest RTL-only timing iteration is simulation-validated but has not
+been synthesized or implemented. It registers the VPU result/scale index
+with each raw token and makes production `SPU_Top` consume that index
+directly, removing the row*group_blocks arithmetic from the SPU
+ready/valid-to-DSP input cone. New WNS and resource counts are pending a
+fresh owner-run synthesis and implementation.
+
+- the previous routed checkpoint reported 164 DSP48E2, 64 URAM, and 104.5
+  BRAM tiles; no storage-capacity change was made;
+- the previous route status reported zero routing errors, zero unrouted
+  nets, and zero partially routed nets; DRC reported zero errors;
 - P2 now issues one activation beat to four PMAUs (`16 lane × 4 PMAU = 64`
   INT8 multiplications per accepted beat), then serializes the four raw
   results into the existing result/stream protocol;
@@ -376,7 +387,8 @@ checkpoint: WNS `+0.661 ns`, TNS `0 ns`, zero setup failures, WHS
   write staging, removing the old long combinational address/fanout path;
 - SPU_Q8_Scale_Accum uses four registered 32×32 partial products and staged
   reconstruction, while SPU_RMSNorm registers the lane product before write;
-- the current routed checkpoint produced `SoC_wrapper_task010_fast5.bit`.
+- the current source change has no new bitstream; the owner must rerun
+  synthesis and implementation before hardware use.
 
 ## 10. Tiêu chí production
 
