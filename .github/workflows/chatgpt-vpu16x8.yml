@@ -17,7 +17,17 @@ jobs:
           ref: chatgpt/vpu16x8-spu8
           fetch-depth: 0
       - name: Apply RTL transformation
-        run: python3 TESTBENCH/apply_vpu16x8.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('TESTBENCH/apply_vpu16x8.py')
+          s=p.read_text()
+          old='s = regex_rep(s, rf"wire(\\s+){name}(\\s*=)", rf"wire\\1legacy_{name}\\2", f"rename {name}")'
+          new='s = regex_rep(s, rf"(wire(?:\\s+\\[[^\\]]+\\])?\\s+){name}(\\s*=)", rf"\\1legacy_{name}\\2", f"rename {name}")'
+          assert old in s
+          p.write_text(s.replace(old,new,1))
+          PY
+          python3 TESTBENCH/apply_vpu16x8.py
       - name: Install Icarus Verilog
         run: sudo apt-get update && sudo apt-get install -y iverilog
       - name: Compile VPU x8 core
