@@ -5,9 +5,6 @@ on:
     branches: [chatgpt/vpu16x8-spu8]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   rtl:
     runs-on: ubuntu-latest
@@ -15,7 +12,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: chatgpt/vpu16x8-spu8
-          fetch-depth: 0
       - name: Install Icarus Verilog
         run: sudo apt-get update && sudo apt-get install -y iverilog
       - name: Compile integrated AXI/VPU/SPU RTL
@@ -28,19 +24,8 @@ jobs:
           vvp /tmp/tb_spu8
       - name: Simulate VPU native 8-row bundle
         run: |
-          sed -i "s/reg \[15:0\] cfg_scale = 16'd0;/reg [15:0] cfg_scale = 16'h3c00;/" TESTBENCH/tb_VPU8_bundle.v
-          sed -i '/^[[:space:]]*load_weights();$/a\        repeat (64) @(posedge clk);' TESTBENCH/tb_VPU8_bundle.v
           iverilog -g2012 -s tb_VPU8_bundle -o /tmp/tb_vpu8 \
             TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/PMAU_Full.v \
             RTL/VPU_Result_Requantizer.v RTL/Matrix_Vector_Multiplication.v \
             TESTBENCH/tb_VPU8_bundle.v
           vvp /tmp/tb_vpu8
-      - name: Persist validated VPU testbench
-        run: |
-          git config user.name "chatgpt-rtl"
-          git config user.email "chatgpt-rtl@users.noreply.github.com"
-          git add TESTBENCH/tb_VPU8_bundle.v
-          if ! git diff --cached --quiet; then
-            git commit -m "test: finalize VPU 8-row bundle regression"
-            git push origin HEAD:chatgpt/vpu16x8-spu8
-          fi
