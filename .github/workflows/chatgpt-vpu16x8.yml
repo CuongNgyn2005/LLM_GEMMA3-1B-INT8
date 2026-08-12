@@ -16,16 +16,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y iverilog
       - name: Compile integrated AXI/VPU/SPU RTL
         run: iverilog -g2012 -tnull -s AXI4_Mapping TESTBENCH/vendor_stubs.v RTL/*.v
-      - name: Simulate VPU native 8-row bundle
-        run: |
-          iverilog -g2012 -s tb_VPU8_bundle -o /tmp/tb_vpu8 \
-            TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/PMAU_Full.v \
-            RTL/VPU_Result_Requantizer.v RTL/Matrix_Vector_Multiplication.v \
-            TESTBENCH/tb_VPU8_bundle.v
-          vvp /tmp/tb_vpu8
       - name: Simulate SPU 8-lane scale accumulation
         run: |
           iverilog -g2012 -s tb_SPU_Stream8 -o /tmp/tb_spu8 \
             RTL/Dual_Port_BRAM.v RTL/SPU_Local_Memory.v RTL/SPU_Q8_Scale_Accum.v \
             RTL/SPU_VPU_Stream8.v TESTBENCH/tb_SPU_Stream8.v
           vvp /tmp/tb_spu8
+      - name: Simulate VPU native 8-row bundle
+        run: |
+          sed -i '/^[[:space:]]*load_weights();$/a\        repeat (64) @(posedge clk);' TESTBENCH/tb_VPU8_bundle.v
+          iverilog -g2012 -s tb_VPU8_bundle -o /tmp/tb_vpu8 \
+            TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/PMAU_Full.v \
+            RTL/VPU_Result_Requantizer.v RTL/Matrix_Vector_Multiplication.v \
+            TESTBENCH/tb_VPU8_bundle.v
+          vvp /tmp/tb_vpu8
