@@ -1,6 +1,6 @@
 # Tổng quan RTL và dataflow VPU–SPU
 
-**Cập nhật:** 11-08-2026
+**Cập nhật:** 12-08-2026
 **Nguồn mô tả:** RTL canonical trong thư mục này. Các thay đổi phải được đồng bộ qua flow nguồn IP trước khi tạo bitstream mới; thư mục generated của `project_1` không được sửa trực tiếp.
 
 ## 1. Mục tiêu kiến trúc
@@ -153,11 +153,29 @@ không phát result hoặc metadata cho row padding.
 
 Scale FP16 không nằm trong hai payload beat. Production raw path để host giữ `d_a`, đọc `d_w` từ Q8_0 weight và scale trên CPU. Stream path mới nạp pair scale vào `SPU_PARAM`.
 
+#### TASK-010 internal four-row mapping
+
+TASK-010 preserves the external P2 index above. On every WEIGHT write the VPU
+captures the configured `col_beats` and decodes:
+
+```text
+pair       = floor(index / (2 * col_beats))
+beat       = floor((index mod (2 * col_beats)) / 2)
+row_slot   = 2 * (pair mod 2) + (index mod 2)
+local_addr = floor(pair / 2) * col_beats + beat
+```
+
+This is equivalent to `row_slot = row[1:0]` and
+`local_addr = (row >> 2) * col_beats + beat`. Each 32-bit weight shard now
+uses four independent 8K SDP URAM leaves rather than two 16K parity leaves;
+the total stored weight capacity is unchanged. The mapping must not be reduced
+to `index[1:0]` and `index>>2`, which aliases four-row reads.
+
 ### 5.3 Read pipeline
 
 FSM phát ACT/WEIGHT read request. Dữ liệu RAM đi qua valid pipeline D/Q/X để align latency activation, weight shard và flag last. Chỉ khi `feed_valid && activation_ready && weight_ready`, beat mới được PMAU nhận.
 
-### 5.4 Datapath INT8 16×2
+### 5.4 Pre-TASK-010 datapath INT8 16×2
 
 ```mermaid
 flowchart LR
@@ -207,6 +225,25 @@ Quy tắc điều khiển:
 - activation beat được broadcast; weight của hai row được đọc đồng thời từ leaf even/odd;
 - tile có row lẻ: chỉ `u_pmau` chạy row cuối, companion bị vô hiệu hóa và không sinh result;
 - `32 phép nhân/beat` là peak issue, không phải throughput toàn hệ thống; FSM, FIFO, SPU và DMA vẫn có thể tạo stall.
+
+#### TASK-010 P2 16x4 datapath
+
+P2 broadcasts one 128-bit activation beat to four PMAUs for logical rows
+`r..r+3`. Every valid PMAU must be ready before issue, and all valid PMAU
+results must be present before group retirement. Invalid odd/tail rows do not
+issue a PMAU and do not create a result.
+
+```text
+ACT beat -> PMAU[r], PMAU[r+1], PMAU[r+2], PMAU[r+3]
+         -> four raw INT32 results
+         -> serial Result-BRAM writes r, r+1, r+2, r+3
+         -> existing P2 packet r/r+1, then existing P2 packet r+2/r+3
+```
+
+The ready/valid payload remains stable during SPU backpressure. The scheduler
+does not advance row/block until the second packet (when present) has
+handshaken and the final Result-BRAM write has committed. The official XSim
+regression passed VPU `27584/27584` checks and SPU `94/94` checks.
 
 ### 5.5 Result path
 
@@ -323,18 +360,23 @@ Host chỉ ghi `FREE/FILLING`; PL chỉ đọc `READY/COMPUTING`; không bên n�
 
 ## 9. Bottleneck RTL và timing
 
-Implementation hiện đạt setup timing 187,5 MHz (`WNS +0,604 ns`), nhưng:
+Implementation now meets the 187.5 MHz setup/hold gate in the routed
+checkpoint: WNS `+0.661 ns`, TNS `0 ns`, zero setup failures, WHS
+`+0.010 ns`, THS `0 ns`, and zero hold failures. The formal report is
+`DATN_VIVADO/project_1/project_1.runs/impl_1/SoC_wrapper_timing_summary_task010_fast5.rpt`.
 
-- hold margin chỉ +0,010 ns;
-- 83 DSP pipeline warnings;
-- raw mode tạo một result cho từng block và dừng/chuyển state nhiều lần;
-- datapath có peak issue `16 lane × 2 PMAU = 32` phép nhân INT8 mỗi paired beat,
-  nhưng FSM dừng ở cuối block để chờ result/stream và toàn hệ thống còn chịu
-  DMA/control overhead; peak arithmetic không phải sustained throughput;
-- Q8 scale path không streaming một entry/cycle;
-- output projection cần 1024 run/token ở host v9.
-
-Sau khi sửa correctness, pipeline DSP input/MREG/PREG tại PMAU dequant, stream scale index, Q8 scale accumulator, RMSNorm và RoPE. Metadata valid/job/row/block phải được delay đúng số stage.
+- synthesis uses 164 DSP48E2 (the stored TASK-010 baseline is 124, +40),
+  64 URAM, and 104.5 BRAM tiles; no storage-capacity change was made;
+- route status reports zero routing errors, zero unrouted nets, and zero
+  partially routed nets; DRC reports zero errors;
+- P2 now issues one activation beat to four PMAUs (`16 lane × 4 PMAU = 64`
+  INT8 multiplications per accepted beat), then serializes the four raw
+  results into the existing result/stream protocol;
+- the weight write remapper is a 14-stage restoring divider plus per-bank
+  write staging, removing the old long combinational address/fanout path;
+- SPU_Q8_Scale_Accum uses four registered 32×32 partial products and staged
+  reconstruction, while SPU_RMSNorm registers the lane product before write;
+- the current routed checkpoint produced `SoC_wrapper_task010_fast5.bit`.
 
 ## 10. Tiêu chí production
 
