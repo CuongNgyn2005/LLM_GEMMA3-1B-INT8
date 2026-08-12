@@ -350,6 +350,10 @@ module AXI4_Mapping #(
     wire [31:0] core_spu_raw_pair_job_id;
     wire core_spu_raw_pair_bank;
     wire [31:0] core_spu_raw_pair_scale_index;
+    wire [7:0] core_spu_raw_lane_valid;
+    wire [8*32-1:0] core_spu_raw_lane_data;
+    wire [8*16-1:0] core_spu_raw_lane_row;
+    wire [8*32-1:0] core_spu_raw_lane_scale_index;
     wire [31:0] spu_stream_count;
     wire [31:0] spu_stream_done_count;
     wire [31:0] spu_stream_drop_count;
@@ -827,6 +831,10 @@ module AXI4_Mapping #(
         .spu_raw_pair_job_id(core_spu_raw_pair_job_id),
         .spu_raw_pair_bank(core_spu_raw_pair_bank),
         .spu_raw_pair_scale_index(core_spu_raw_pair_scale_index),
+        .spu_raw_lane_valid(core_spu_raw_lane_valid),
+        .spu_raw_lane_data(core_spu_raw_lane_data),
+        .spu_raw_lane_row(core_spu_raw_lane_row),
+        .spu_raw_lane_scale_index(core_spu_raw_lane_scale_index),
         .mm_wr_en          (core_wr_en_r),
         .mm_wr_region      (core_wr_region_r),
         .mm_wr_index       (core_wr_index_r),
@@ -845,7 +853,8 @@ module AXI4_Mapping #(
         .WORD_DEPTH     (SPU_WORD_DEPTH),
         .SCALE_ACCUM_ROWS (MAX_ROWS),
         .PRECOMPUTED_SCALE_INDEX (1),
-        .STREAM_TEST_STALL_ENABLE (SPU_STREAM_TEST_STALL_ENABLE)
+        .STREAM_TEST_STALL_ENABLE (SPU_STREAM_TEST_STALL_ENABLE),
+        .VPU_BUNDLE8_ENABLE (1)
     ) u_spu (
         .clk             (clk),
         .resetn          (resetn),
@@ -884,6 +893,10 @@ module AXI4_Mapping #(
         .vpu_raw_pair_job_id(core_spu_raw_pair_job_id),
         .vpu_raw_pair_bank(core_spu_raw_pair_bank),
         .vpu_raw_pair_scale_index(core_spu_raw_pair_scale_index),
+        .vpu_raw_lane_valid(core_spu_raw_lane_valid),
+        .vpu_raw_lane_data(core_spu_raw_lane_data),
+        .vpu_raw_lane_row(core_spu_raw_lane_row),
+        .vpu_raw_lane_scale_index(core_spu_raw_lane_scale_index),
         .vpu_stream_count(spu_stream_count),
         .vpu_stream_done_count(spu_stream_done_count),
         .vpu_stream_drop_count(spu_stream_drop_count),

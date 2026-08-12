@@ -21,7 +21,8 @@ module SPU_Top #(
     parameter integer SCALE_ACCUM_ROWS = 256,
     parameter integer STREAM_FIFO_DEPTH = 32,
     parameter integer PRECOMPUTED_SCALE_INDEX = 0,
-    parameter integer STREAM_TEST_STALL_ENABLE = 0
+    parameter integer STREAM_TEST_STALL_ENABLE = 0,
+    parameter integer VPU_BUNDLE8_ENABLE = 0
 ) (
     input  wire                              clk,
     input  wire                              resetn,
@@ -69,6 +70,10 @@ module SPU_Top #(
     input  wire                              vpu_raw_pair_bank,
     input  wire [31:0]                       vpu_raw_scale_index,
     input  wire [31:0]                       vpu_raw_pair_scale_index,
+    input  wire [7:0]                        vpu_raw_lane_valid,
+    input  wire [8*32-1:0]                   vpu_raw_lane_data,
+    input  wire [8*16-1:0]                   vpu_raw_lane_row,
+    input  wire [8*32-1:0]                   vpu_raw_lane_scale_index,
     output wire [31:0]                       vpu_stream_count,
     output wire [31:0]                       vpu_stream_done_count,
     output wire [31:0]                       vpu_stream_drop_count,
@@ -320,7 +325,7 @@ module SPU_Top #(
     wire stream_fifo_full = (stream_fifo_count_r == STREAM_FIFO_DEPTH);
     wire stream_test_stall = (STREAM_TEST_STALL_ENABLE != 0) &&
                             (stream_test_stall_count_r != 0);
-    wire stream_push = vpu_raw_valid && vpu_raw_ready;
+    wire stream_push = (VPU_BUNDLE8_ENABLE == 0) && vpu_raw_valid && legacy_vpu_raw_ready;
     wire stream_pop = stream_idle && !stream_fifo_empty;
     wire stream_p3_bank_mismatch = stream_split_scale_enable &&
                                    stream_p3_bank_lock_valid_r &&
@@ -329,7 +334,7 @@ module SPU_Top #(
     // owns its core memory port.  Once a P3 lock exists, command starts are
     // blocked below, so controller traffic cannot write PARAM/SCRATCH behind
     // the stream's ownership protocol.
-    assign vpu_raw_ready = resetn && !stream_fifo_full && !stream_test_stall &&
+    wire legacy_vpu_raw_ready = resetn && !stream_fifo_full && !stream_test_stall &&
                            !stream_p3_bank_mismatch &&
                            (!stream_split_scale_enable || !spu_busy);
     wire stream_result_write = stream_accum_out_valid;
@@ -346,40 +351,87 @@ module SPU_Top #(
         {{(AXI_DATA_WIDTH-80){1'b0}},
          stream_accum_pair_out_q16,
          stream_accum_pair_out_row_id};
-    wire                              core_mem_en =
+    wire                              legacy_core_mem_en =
         stream_result_write ? 1'b1 :
         stream_scale_read   ? 1'b1 : ctrl_mem_en;
-    wire                              core_mem_we =
+    wire                              legacy_core_mem_we =
         stream_result_write ? 1'b1 :
         stream_scale_read   ? 1'b0 : ctrl_mem_we;
-    wire [1:0]                        core_mem_region =
+    wire [1:0]                        legacy_core_mem_region =
         stream_result_write ? REGION_OUT :
         stream_scale_port   ? REGION_PARAM : ctrl_mem_region;
-    wire [31:0]                       core_mem_index =
+    wire [31:0]                       legacy_core_mem_index =
         stream_result_write ? {16'd0, stream_accum_out_row_id} :
         stream_scale_port   ? stream_scale_word_index_r : ctrl_mem_index;
-    wire [AXI_DATA_WIDTH-1:0]         core_mem_wdata =
+    wire [AXI_DATA_WIDTH-1:0]         legacy_core_mem_wdata =
         stream_result_write ? stream_result_wdata : ctrl_mem_wdata;
-    wire [(AXI_DATA_WIDTH/8)-1:0]     core_mem_wstrb =
+    wire [(AXI_DATA_WIDTH/8)-1:0]     legacy_core_mem_wstrb =
         stream_result_write ? 16'h03ff : ctrl_mem_wstrb;
-    wire                              core_mem2_en =
+    wire                              legacy_core_mem2_en =
         stream_pair_result_write ? 1'b1 :
         ((stream_state_r == STREAM_READ_SCALE) && stream_pair_valid_r);
-    wire                              core_mem2_we = stream_pair_result_write;
-    wire [1:0]                        core_mem2_region =
+    wire                              legacy_core_mem2_we = stream_pair_result_write;
+    wire [1:0]                        legacy_core_mem2_region =
         stream_pair_result_write ? REGION_OUT : REGION_PARAM;
-    wire [31:0]                       core_mem2_index =
+    wire [31:0]                       legacy_core_mem2_index =
         stream_pair_result_write ? {16'd0, stream_accum_pair_out_row_id} :
         stream_pair_scale_word_index_r;
-    wire [AXI_DATA_WIDTH-1:0]         core_mem2_wdata = stream_pair_result_write ?
+    wire [AXI_DATA_WIDTH-1:0]         legacy_core_mem2_wdata = stream_pair_result_write ?
         stream_pair_result_wdata : {AXI_DATA_WIDTH{1'b0}};
-    wire [(AXI_DATA_WIDTH/8)-1:0]     core_mem2_wstrb = stream_pair_result_write ?
+    wire [(AXI_DATA_WIDTH/8)-1:0]     legacy_core_mem2_wstrb = stream_pair_result_write ?
         16'h03ff : {(AXI_DATA_WIDTH/8){1'b0}};
     wire [AXI_DATA_WIDTH-1:0]         core_mem2_rdata;
-    wire                              core_mem3_scratch_en =
+    wire                              legacy_core_mem3_scratch_en =
         stream_p3_r && (stream_state_r == STREAM_READ_SCALE);
-    wire [31:0]                       core_mem3_scratch_index =
+    wire [31:0]                       legacy_core_mem3_scratch_index =
         stream_act_scale_word_index_r;
+
+    wire bundle8_active = (VPU_BUNDLE8_ENABLE != 0);
+    wire bundle8_ready;
+    wire b8_mem0_en, b8_mem0_we, b8_mem1_en, b8_mem1_we, b8_mem3_en;
+    wire [1:0] b8_mem0_region, b8_mem1_region;
+    wire [31:0] b8_mem0_index, b8_mem1_index, b8_mem3_index;
+    wire [AXI_DATA_WIDTH-1:0] b8_mem0_wdata, b8_mem1_wdata;
+    wire [(AXI_DATA_WIDTH/8)-1:0] b8_mem0_wstrb, b8_mem1_wstrb;
+    wire b8_lock_valid, b8_lock_bank;
+    wire [31:0] b8_count,b8_done_count,b8_drop_count,b8_out_count,b8_error_count;
+    wire [31:0] b8_last_raw,b8_last_meta,b8_last_accum_lo,b8_last_accum_hi,b8_last_job,b8_last_bank;
+    wire [31:0] b8_status,b8_high_water,b8_stall_cycles,b8_entry_done_count,b8_final_write_count,b8_p3_reject_count,b8_p3_status;
+
+    SPU_VPU_Stream8 #(.AXI_DATA_WIDTH(AXI_DATA_WIDTH), .WORD_DEPTH(WORD_DEPTH), .MAX_ROWS(SCALE_ACCUM_ROWS)) u_vpu_stream8 (
+        .clk(clk), .resetn(resetn), .soft_reset(spu_soft_reset), .command_busy(spu_busy),
+        .split_scale_enable(stream_split_scale_enable),
+        .vpu_valid(vpu_raw_valid), .vpu_ready(bundle8_ready), .vpu_lane_valid(vpu_raw_lane_valid),
+        .vpu_lane_data(vpu_raw_lane_data), .vpu_lane_row(vpu_raw_lane_row), .vpu_lane_scale_index(vpu_raw_lane_scale_index),
+        .vpu_block(vpu_raw_block), .vpu_group_blocks(vpu_raw_group_blocks), .vpu_last_block(vpu_raw_last_block),
+        .vpu_clear_accum(vpu_raw_clear_accum), .vpu_job_id(vpu_raw_job_id), .vpu_bank(vpu_raw_bank), .vpu_done(vpu_raw_done),
+        .mem0_en(b8_mem0_en), .mem0_we(b8_mem0_we), .mem0_region(b8_mem0_region), .mem0_index(b8_mem0_index), .mem0_wdata(b8_mem0_wdata), .mem0_wstrb(b8_mem0_wstrb), .mem0_rdata(core_mem_rdata),
+        .mem1_en(b8_mem1_en), .mem1_we(b8_mem1_we), .mem1_region(b8_mem1_region), .mem1_index(b8_mem1_index), .mem1_wdata(b8_mem1_wdata), .mem1_wstrb(b8_mem1_wstrb), .mem1_rdata(core_mem2_rdata),
+        .mem3_scratch_en(b8_mem3_en), .mem3_scratch_index(b8_mem3_index), .mem3_scratch_rdata(core_mem3_rdata),
+        .p3_bank_lock_valid(b8_lock_valid), .p3_bank_lock(b8_lock_bank),
+        .stream_count(b8_count), .stream_done_count(b8_done_count), .stream_drop_count(b8_drop_count), .stream_out_count(b8_out_count), .stream_error_count(b8_error_count),
+        .stream_last_raw(b8_last_raw), .stream_last_meta(b8_last_meta), .stream_last_accum_lo(b8_last_accum_lo), .stream_last_accum_hi(b8_last_accum_hi), .stream_last_job(b8_last_job), .stream_last_bank(b8_last_bank),
+        .stream_status(b8_status), .stream_fifo_high_water(b8_high_water), .stream_raw_stall_cycles(b8_stall_cycles), .stream_entry_done_count(b8_entry_done_count),
+        .stream_final_write_count(b8_final_write_count), .stream_p3_reject_count(b8_p3_reject_count), .stream_p3_status(b8_p3_status));
+
+    assign vpu_raw_ready = bundle8_active ? bundle8_ready : legacy_vpu_raw_ready;
+    wire effective_stream_lock_valid = bundle8_active ? b8_lock_valid : stream_p3_bank_lock_valid_r;
+    wire effective_stream_lock_bank = bundle8_active ? b8_lock_bank : stream_p3_bank_lock_r;
+
+    wire core_mem_en = bundle8_active ? (b8_mem0_en ? 1'b1 : ctrl_mem_en) : legacy_core_mem_en;
+    wire core_mem_we = bundle8_active ? (b8_mem0_en ? b8_mem0_we : ctrl_mem_we) : legacy_core_mem_we;
+    wire [1:0] core_mem_region = bundle8_active ? (b8_mem0_en ? b8_mem0_region : ctrl_mem_region) : legacy_core_mem_region;
+    wire [31:0] core_mem_index = bundle8_active ? (b8_mem0_en ? b8_mem0_index : ctrl_mem_index) : legacy_core_mem_index;
+    wire [AXI_DATA_WIDTH-1:0] core_mem_wdata = bundle8_active ? (b8_mem0_en ? b8_mem0_wdata : ctrl_mem_wdata) : legacy_core_mem_wdata;
+    wire [(AXI_DATA_WIDTH/8)-1:0] core_mem_wstrb = bundle8_active ? (b8_mem0_en ? b8_mem0_wstrb : ctrl_mem_wstrb) : legacy_core_mem_wstrb;
+    wire core_mem2_en = bundle8_active ? b8_mem1_en : legacy_core_mem2_en;
+    wire core_mem2_we = bundle8_active ? b8_mem1_we : legacy_core_mem2_we;
+    wire [1:0] core_mem2_region = bundle8_active ? b8_mem1_region : legacy_core_mem2_region;
+    wire [31:0] core_mem2_index = bundle8_active ? b8_mem1_index : legacy_core_mem2_index;
+    wire [AXI_DATA_WIDTH-1:0] core_mem2_wdata = bundle8_active ? b8_mem1_wdata : legacy_core_mem2_wdata;
+    wire [(AXI_DATA_WIDTH/8)-1:0] core_mem2_wstrb = bundle8_active ? b8_mem1_wstrb : legacy_core_mem2_wstrb;
+    wire core_mem3_scratch_en = bundle8_active ? b8_mem3_en : legacy_core_mem3_scratch_en;
+    wire [31:0] core_mem3_scratch_index = bundle8_active ? b8_mem3_index : legacy_core_mem3_scratch_index;
 
     // Capability map:
     // bit 0  : SPU framework present
@@ -400,36 +452,37 @@ module SPU_Top #(
                        softmax_supported, rope_supported, rmsnorm_supported,
                        silu_supported, 1'b1, 1'b1};
 
-    assign vpu_stream_count         = vpu_stream_count_r;
-    assign vpu_stream_done_count    = vpu_stream_done_count_r;
-    assign vpu_stream_drop_count    = vpu_stream_drop_count_r;
-    assign vpu_stream_out_count     = vpu_stream_out_count_r;
-    assign vpu_stream_error_count   = vpu_stream_error_count_r;
-    assign vpu_stream_last_raw      = vpu_stream_last_raw_r;
-    assign vpu_stream_last_meta     = vpu_stream_last_meta_r;
-    assign vpu_stream_last_accum_lo = vpu_stream_last_accum_lo_r;
-    assign vpu_stream_last_accum_hi = vpu_stream_last_accum_hi_r;
-    assign vpu_stream_last_job      = vpu_stream_last_job_r;
-    assign vpu_stream_last_bank     = vpu_stream_last_bank_r;
-    assign vpu_stream_fifo_high_water = vpu_stream_fifo_high_water_r;
-    assign vpu_stream_raw_stall_cycles = vpu_stream_raw_stall_cycles_r;
-    assign vpu_stream_entry_done_count = vpu_stream_entry_done_count_r;
-    assign vpu_stream_final_write_count = vpu_stream_final_write_count_r;
-    assign vpu_stream_p3_reject_count = vpu_stream_p3_reject_count_r;
+    assign vpu_stream_count = bundle8_active ? b8_count : vpu_stream_count_r;
+    assign vpu_stream_done_count = bundle8_active ? b8_done_count : vpu_stream_done_count_r;
+    assign vpu_stream_drop_count = bundle8_active ? b8_drop_count : vpu_stream_drop_count_r;
+    assign vpu_stream_out_count = bundle8_active ? b8_out_count : vpu_stream_out_count_r;
+    assign vpu_stream_error_count = bundle8_active ? b8_error_count : vpu_stream_error_count_r;
+    assign vpu_stream_last_raw = bundle8_active ? b8_last_raw : vpu_stream_last_raw_r;
+    assign vpu_stream_last_meta = bundle8_active ? b8_last_meta : vpu_stream_last_meta_r;
+    assign vpu_stream_last_accum_lo = bundle8_active ? b8_last_accum_lo : vpu_stream_last_accum_lo_r;
+    assign vpu_stream_last_accum_hi = bundle8_active ? b8_last_accum_hi : vpu_stream_last_accum_hi_r;
+    assign vpu_stream_last_job = bundle8_active ? b8_last_job : vpu_stream_last_job_r;
+    assign vpu_stream_last_bank = bundle8_active ? b8_last_bank : vpu_stream_last_bank_r;
+    assign vpu_stream_fifo_high_water = bundle8_active ? b8_high_water : vpu_stream_fifo_high_water_r;
+    assign vpu_stream_raw_stall_cycles = bundle8_active ? b8_stall_cycles : vpu_stream_raw_stall_cycles_r;
+    assign vpu_stream_entry_done_count = bundle8_active ? b8_entry_done_count : vpu_stream_entry_done_count_r;
+    assign vpu_stream_final_write_count = bundle8_active ? b8_final_write_count : vpu_stream_final_write_count_r;
+    assign vpu_stream_p3_reject_count = bundle8_active ? b8_p3_reject_count : vpu_stream_p3_reject_count_r;
     // bit 0: dequeue FSM idle, bit 1: FIFO empty, bit 2: scale accumulator
     // idle, bit 3: no SPU_OUT write in this cycle, bit 4: all of the above.
     // The host requires bit 4 before it may reuse SPU_PARAM/SPU_OUT.
-    assign vpu_stream_status[0]     = stream_idle;
-    assign vpu_stream_status[1]     = stream_fifo_empty;
-    assign vpu_stream_status[2]     = !stream_accum_busy && !stream_accum_pair_busy;
-    assign vpu_stream_status[3]     = !stream_result_write && !stream_pair_result_write;
-    assign vpu_stream_status[4]     = stream_idle && stream_fifo_empty &&
+    wire [31:0] legacy_stream_status;
+    assign legacy_stream_status[0] = stream_idle;
+    assign legacy_stream_status[1]     = stream_fifo_empty;
+    assign legacy_stream_status[2]     = !stream_accum_busy && !stream_accum_pair_busy;
+    assign legacy_stream_status[3]     = !stream_result_write && !stream_pair_result_write;
+    assign legacy_stream_status[4]     = stream_idle && stream_fifo_empty &&
                                       !stream_accum_busy && !stream_accum_pair_busy &&
                                       !stream_result_write && !stream_pair_result_write;
-    assign vpu_stream_status[5]     = stream_p3_bank_lock_valid_r;
-    assign vpu_stream_status[6]     = stream_p3_bank_lock_r;
-    assign vpu_stream_status[31:7]  = 25'd0;
-    assign vpu_stream_p3_status = {24'd0,
+    assign legacy_stream_status[5]     = stream_p3_bank_lock_valid_r;
+    assign legacy_stream_status[6]     = stream_p3_bank_lock_r;
+    assign legacy_stream_status[31:7]  = 25'd0;
+    wire [31:0] legacy_stream_p3_status = {24'd0,
                                     stream_split_scale_enable,
                                     stream_p3_done_seen_r,
                                     stream_p3_bank_lock_r,
@@ -438,6 +491,8 @@ module SPU_Top #(
                                     stream_fifo_full,
                                     stream_fifo_empty,
                                     stream_idle};
+    assign vpu_stream_status = bundle8_active ? b8_status : legacy_stream_status;
+    assign vpu_stream_p3_status = bundle8_active ? b8_p3_status : legacy_stream_p3_status;
 
     always @(posedge clk) begin
         if (!resetn) begin
@@ -810,7 +865,7 @@ module SPU_Top #(
     ) u_spu_controller (
         .clk          (clk),
         .resetn       (resetn),
-        .start        (spu_start && !stream_p3_bank_lock_valid_r),
+        .start        (spu_start && !effective_stream_lock_valid && (!bundle8_active || b8_status[4])),
         .clear_done   (spu_clear_done),
         .soft_reset   (spu_soft_reset),
         .mode         (spu_mode),
@@ -864,8 +919,8 @@ module SPU_Top #(
         ,.core3_scratch_en(core_mem3_scratch_en)
         ,.core3_scratch_index(core_mem3_scratch_index)
         ,.core3_scratch_rdata(core_mem3_rdata)
-        ,.stream_p3_bank_lock_valid(stream_p3_bank_lock_valid_r)
-        ,.stream_p3_bank_lock(stream_p3_bank_lock_r)
+        ,.stream_p3_bank_lock_valid(effective_stream_lock_valid)
+        ,.stream_p3_bank_lock(effective_stream_lock_bank)
         ,.mm_wr_rejected(mm_wr_rejected)
     );
 
