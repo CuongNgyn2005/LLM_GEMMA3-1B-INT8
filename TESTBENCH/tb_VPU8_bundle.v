@@ -10,7 +10,7 @@ module tb_VPU8_bundle;
     reg [15:0] cfg_rows = 16'd8;
     reg [15:0] cfg_cols = 16'd32;
     reg [15:0] cfg_col_beats = 16'd2;
-    reg [15:0] cfg_scale = 16'd0;
+    reg [15:0] cfg_scale = 16'h3c00;
     reg [4:0] compute_mode = 5'b10001;
     reg cfg_wr_bank = 1'b0;
     reg cfg_rd_bank = 1'b0;
@@ -196,6 +196,7 @@ module tb_VPU8_bundle;
         write_word(2'd0, 0, repeat_byte(8'd1));
         write_word(2'd0, 1, repeat_byte(8'd1));
         load_weights();
+        repeat (64) @(posedge clk);
 
         start_run(16'd8);
         check_bundle(8'hff);
