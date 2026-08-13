@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/test-mtmd-c-api.dir/test-mtmd-c-api.c.o CMakeFiles/test-mtmd-c-api.dir/get-model.cpp.o -o ../bin/test-mtmd-c-api  -Wl,-rpath,/home/debian/Cuong_test/Infrastructure_GEMMA3/build_mem/bin: ../common/libcommon.a ../bin/libmtmd.so -pthread ../bin/libllama.so ../bin/libggml.so ../bin/libggml-cpu.so ../bin/libggml-base.so 

@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/llama-parallel.dir/parallel.cpp.o -o ../../bin/llama-parallel  -Wl,-rpath,/home/debian/Cuong_test/Infrastructure_GEMMA3/build_mem/bin: ../../common/libcommon.a ../../bin/libllama.so -pthread ../../bin/libggml.so ../../bin/libggml-cpu.so ../../bin/libggml-base.so -pthread 
