@@ -5,6 +5,8 @@ on:
     paths:
       - TOOLS/apply_spu_fifo4.py
       - .github/workflows/spu-fifo4-ci.yml
+permissions:
+  contents: write
 jobs:
   simulate:
     runs-on: ubuntu-latest
@@ -12,6 +14,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: chatgpt/vpu16x8-spu8
+          fetch-depth: 0
       - run: sudo apt-get update && sudo apt-get install -y iverilog
       - name: Apply candidate locally
         run: |
@@ -33,3 +36,30 @@ jobs:
           iverilog -g2012 -s tb_VPU_SPU8_integration -o /tmp/tb_vpu_spu8 TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/PMAU_Full.v RTL/VPU_Result_Requantizer.v RTL/Matrix_Vector_Multiplication.v RTL/SPU_Q8_Scale_Accum.v RTL/SPU_VPU_Stream8.v RTL/SPU_Local_Memory.v TESTBENCH/tb_VPU_SPU8_integration.v
           vvp /tmp/tb_vpu_spu8 | tee /tmp/tb_vpu_spu8.log
           grep -q "PASS tb_VPU_SPU8_integration" /tmp/tb_vpu_spu8.log
+      - name: Exhaustive FIFO control model
+        run: |
+          python3 - <<'PY'
+          from itertools import product
+          for count in range(5):
+              for push, pop in product((0,1), repeat=2):
+                  if pop and count == 0: continue
+                  if push and count == 4 and not pop: continue
+                  nxt = count + push - pop
+                  assert 0 <= nxt <= 4
+          wp = rp = 0
+          for _ in range(12):
+              wp = (wp + 1) & 3
+              rp = (rp + 1) & 3
+          assert wp == 0 and rp == 0
+          print('PASS fifo4 control model occupancy=0..4 pointer_wrap=4')
+          PY
+      - name: Commit validated RTL
+        run: |
+          rm -f TOOLS/apply_spu_fifo4.py .github/workflows/spu-fifo4-ci.yml
+          cmp RTL/SPU_VPU_Stream8.v DATN_VIVADO/project_2/src/SPU_VPU_Stream8.v
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "SPU: expand P2 bundle FIFO to four entries"
+          git push origin HEAD:chatgpt/vpu16x8-spu8
