@@ -4,10 +4,9 @@
  * Scale RAM is read two rows/cycle through the existing two PARAM ports;
  * all valid rows then execute SPU_Q8_Scale_Accum in parallel.
  *
- * A two-entry input FIFO decouples the VPU result handshake from the SPU
- * scale/accumulate FSM.  The FIFO is intentionally shallow for the first
- * hardware experiment: it can absorb the next x8 bundle while the current
- * bundle is being consumed without changing the external stream ABI.
+ * A four-entry input FIFO decouples the VPU result handshake from the SPU
+ * scale/accumulate FSM.  Its depth matches the VPU raw burst scheduler's
+ * maximum four-block issue burst while preserving the external stream ABI.
  */
 `timescale 1ns/1ps
 
@@ -117,23 +116,23 @@ module SPU_VPU_Stream8 #(
     reg [15:0] p3_act_scale_r;
     reg [7:0] accum_start_r;
 
-    // Two-entry x8 bundle FIFO.  Wide buses are kept packed so this remains
+    // Four-entry x8 bundle FIFO.  Wide buses are kept packed so this remains
     // plain Verilog-2001 compatible (one unpacked memory dimension only).
-    reg [1:0] fifo_count_r;
-    reg fifo_wr_ptr_r;
-    reg fifo_rd_ptr_r;
-    reg [7:0] fifo_lane_valid [0:1];
-    reg [8*32-1:0] fifo_lane_data [0:1];
-    reg [8*16-1:0] fifo_lane_row [0:1];
-    reg [8*32-1:0] fifo_scale_word_index [0:1];
-    reg [8*3-1:0] fifo_scale_lane [0:1];
-    reg [15:0] fifo_block [0:1];
-    reg [15:0] fifo_group_blocks [0:1];
-    reg fifo_last_block [0:1];
-    reg fifo_clear_accum [0:1];
-    reg [31:0] fifo_job_id [0:1];
-    reg fifo_bank [0:1];
-    reg fifo_p3 [0:1];
+    reg [2:0] fifo_count_r;
+    reg [1:0] fifo_wr_ptr_r;
+    reg [1:0] fifo_rd_ptr_r;
+    reg [7:0] fifo_lane_valid [0:3];
+    reg [8*32-1:0] fifo_lane_data [0:3];
+    reg [8*16-1:0] fifo_lane_row [0:3];
+    reg [8*32-1:0] fifo_scale_word_index [0:3];
+    reg [8*3-1:0] fifo_scale_lane [0:3];
+    reg [15:0] fifo_block [0:3];
+    reg [15:0] fifo_group_blocks [0:3];
+    reg fifo_last_block [0:3];
+    reg fifo_clear_accum [0:3];
+    reg [31:0] fifo_job_id [0:3];
+    reg fifo_bank [0:3];
+    reg fifo_p3 [0:3];
 
     wire [7:0] accum_busy;
     wire [7:0] accum_entry_done;
@@ -189,8 +188,8 @@ module SPU_VPU_Stream8 #(
 
     wire bank_mismatch = split_scale_enable && p3_bank_lock_valid &&
                          (vpu_bank != p3_bank_lock);
-    wire fifo_empty = (fifo_count_r == 2'd0);
-    wire fifo_full = (fifo_count_r == 2'd2);
+    wire fifo_empty = (fifo_count_r == 3'd0);
+    wire fifo_full = (fifo_count_r == 3'd4);
     // The head can be removed in the same cycle that a new tail is accepted,
     // so a full FIFO need not insert an avoidable bubble when the FSM is idle.
     wire fifo_pop = !split_scale_enable && (state_r == S_IDLE) &&
@@ -198,7 +197,7 @@ module SPU_VPU_Stream8 #(
     wire p2_fifo_ready = resetn && !command_busy && (!fifo_full || fifo_pop);
     wire p3_direct_ready = resetn && (state_r == S_IDLE) && !command_busy &&
                            !bank_mismatch;
-    // P2 uses the new two-entry FIFO. P3 deliberately keeps the original
+    // P2 uses the four-entry FIFO. P3 deliberately keeps the original
     // direct one-bundle handshake so the existing bank-lock protocol is not
     // changed by this performance experiment.
     assign vpu_ready = split_scale_enable ? p3_direct_ready : p2_fifo_ready;
@@ -322,7 +321,7 @@ module SPU_VPU_Stream8 #(
             stream_entry_done_count <= 32'd0;
             stream_final_write_count <= 32'd0;
             stream_p3_reject_count <= 32'd0;
-            fifo_count_r <= 2'd0; fifo_wr_ptr_r <= 1'b0; fifo_rd_ptr_r <= 1'b0;
+            fifo_count_r <= 3'd0; fifo_wr_ptr_r <= 2'd0; fifo_rd_ptr_r <= 2'd0;
             write_count <= 4'd0;
             for (i = 0; i < 8; i = i + 1) begin
                 raw_r[i] <= 32'sd0; row_r[i] <= 16'd0;
@@ -330,7 +329,7 @@ module SPU_VPU_Stream8 #(
                 act_scale_r[i] <= 16'd0; weight_scale_r[i] <= 16'd0;
                 final_q16_r[i] <= 64'sd0;
             end
-            for (fi = 0; fi < 2; fi = fi + 1) begin
+            for (fi = 0; fi < 4; fi = fi + 1) begin
                 fifo_lane_valid[fi] <= 8'd0;
                 fifo_lane_data[fi] <= {8*32{1'b0}};
                 fifo_lane_row[fi] <= {8*16{1'b0}};
@@ -375,7 +374,7 @@ module SPU_VPU_Stream8 #(
                 fifo_job_id[fifo_wr_ptr_r] <= vpu_job_id;
                 fifo_bank[fifo_wr_ptr_r] <= vpu_bank;
                 fifo_p3[fifo_wr_ptr_r] <= 1'b0;
-                fifo_wr_ptr_r <= ~fifo_wr_ptr_r;
+                fifo_wr_ptr_r <= fifo_wr_ptr_r + 2'd1;
 
                 stream_count <= stream_count + accepted_lanes;
                 stream_last_raw <= vpu_lane_data[32*tail_lane +: 32];
@@ -384,22 +383,21 @@ module SPU_VPU_Stream8 #(
                 stream_last_job <= vpu_job_id;
                 stream_last_bank <= {31'd0,vpu_bank};
 
-                if (!fifo_pop && (fifo_count_r == 2'd1))
-                    stream_fifo_high_water <= 32'd2;
-                else if (stream_fifo_high_water == 32'd0)
-                    stream_fifo_high_water <= 32'd1;
+                if (!fifo_pop &&
+                    (stream_fifo_high_water < {29'd0,(fifo_count_r + 3'd1)}))
+                    stream_fifo_high_water <= {29'd0,(fifo_count_r + 3'd1)};
             end
 
             // Occupancy update handles simultaneous dequeue/enqueue.  The
             // input ready path deliberately accounts for fifo_pop, allowing a
             // full FIFO to replace its head and tail in one clock.
             case ({fifo_push, fifo_pop})
-                2'b10: fifo_count_r <= fifo_count_r + 2'd1;
-                2'b01: fifo_count_r <= fifo_count_r - 2'd1;
+                2'b10: fifo_count_r <= fifo_count_r + 3'd1;
+                2'b01: fifo_count_r <= fifo_count_r - 3'd1;
                 default: fifo_count_r <= fifo_count_r;
             endcase
             if (fifo_pop)
-                fifo_rd_ptr_r <= ~fifo_rd_ptr_r;
+                fifo_rd_ptr_r <= fifo_rd_ptr_r + 2'd1;
 
             case (state_r)
                 S_IDLE: begin
