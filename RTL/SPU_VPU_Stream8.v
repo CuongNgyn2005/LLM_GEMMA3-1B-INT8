@@ -3,6 +3,11 @@
  * One accepted bundle carries up to eight row results for one Q8 block.
  * Scale RAM is read two rows/cycle through the existing two PARAM ports;
  * all valid rows then execute SPU_Q8_Scale_Accum in parallel.
+ *
+ * A two-entry input FIFO decouples the VPU result handshake from the SPU
+ * scale/accumulate FSM.  The FIFO is intentionally shallow for the first
+ * hardware experiment: it can absorb the next x8 bundle while the current
+ * bundle is being consumed without changing the external stream ABI.
  */
 `timescale 1ns/1ps
 
@@ -93,9 +98,9 @@ module SPU_VPU_Stream8 #(
     reg [7:0] lane_valid_r;
     reg signed [31:0] raw_r [0:7];
     reg [15:0] row_r [0:7];
-    // Store the decoded scale address at bundle acceptance.  Keeping the
-    // word address and lane selector registered removes the variable shift
-    // and P3 bank-offset adder from the memory-control timing cone.
+    // Store decoded scale addresses in the FIFO and active bundle registers.
+    // This keeps the variable shift / P3 bank addition away from the memory
+    // control path while allowing the VPU handshake to run ahead of the FSM.
     reg [31:0] scale_word_index_r [0:7];
     reg [2:0] scale_lane_r [0:7];
     reg [15:0] act_scale_r [0:7];
@@ -111,6 +116,24 @@ module SPU_VPU_Stream8 #(
     reg p3_done_seen_r;
     reg [15:0] p3_act_scale_r;
     reg [7:0] accum_start_r;
+
+    // Two-entry x8 bundle FIFO.  Wide buses are kept packed so this remains
+    // plain Verilog-2001 compatible (one unpacked memory dimension only).
+    reg [1:0] fifo_count_r;
+    reg fifo_wr_ptr_r;
+    reg fifo_rd_ptr_r;
+    reg [7:0] fifo_lane_valid [0:1];
+    reg [8*32-1:0] fifo_lane_data [0:1];
+    reg [8*16-1:0] fifo_lane_row [0:1];
+    reg [8*32-1:0] fifo_scale_word_index [0:1];
+    reg [8*3-1:0] fifo_scale_lane [0:1];
+    reg [15:0] fifo_block [0:1];
+    reg [15:0] fifo_group_blocks [0:1];
+    reg fifo_last_block [0:1];
+    reg fifo_clear_accum [0:1];
+    reg [31:0] fifo_job_id [0:1];
+    reg fifo_bank [0:1];
+    reg fifo_p3 [0:1];
 
     wire [7:0] accum_busy;
     wire [7:0] accum_entry_done;
@@ -140,14 +163,6 @@ module SPU_VPU_Stream8 #(
         end
     endfunction
 
-    wire bank_mismatch = split_scale_enable && p3_bank_lock_valid &&
-                         (vpu_bank != p3_bank_lock);
-    assign vpu_ready = resetn && (state_r == S_IDLE) && !command_busy &&
-                       !bank_mismatch;
-    wire vpu_fire = vpu_valid && vpu_ready;
-    wire [3:0] accepted_lanes = popcount8(vpu_lane_valid);
-    wire [2:0] tail_lane = highest_lane(vpu_lane_valid);
-
     integer vi;
     reg bundle_index_ok;
     reg [31:0] idx_tmp;
@@ -172,6 +187,26 @@ module SPU_VPU_Stream8 #(
             bundle_index_ok = 1'b0;
     end
 
+    wire bank_mismatch = split_scale_enable && p3_bank_lock_valid &&
+                         (vpu_bank != p3_bank_lock);
+    wire fifo_empty = (fifo_count_r == 2'd0);
+    wire fifo_full = (fifo_count_r == 2'd2);
+    // The head can be removed in the same cycle that a new tail is accepted,
+    // so a full FIFO need not insert an avoidable bubble when the FSM is idle.
+    wire fifo_pop = !split_scale_enable && (state_r == S_IDLE) &&
+                    !command_busy && !fifo_empty;
+    wire p2_fifo_ready = resetn && !command_busy && (!fifo_full || fifo_pop);
+    wire p3_direct_ready = resetn && (state_r == S_IDLE) && !command_busy &&
+                           !bank_mismatch;
+    // P2 uses the new two-entry FIFO. P3 deliberately keeps the original
+    // direct one-bundle handshake so the existing bank-lock protocol is not
+    // changed by this performance experiment.
+    assign vpu_ready = split_scale_enable ? p3_direct_ready : p2_fifo_ready;
+    wire vpu_fire = vpu_valid && vpu_ready;
+    wire fifo_push = !split_scale_enable && vpu_fire && bundle_index_ok;
+    wire [3:0] accepted_lanes = popcount8(vpu_lane_valid);
+    wire [2:0] tail_lane = highest_lane(vpu_lane_valid);
+
     wire [2:0] lane0_sel = {pair_idx_r, 1'b0};
     wire [2:0] lane1_sel = {pair_idx_r, 1'b1};
     wire [31:0] p3_bank_base = bank_r ? P3_BANK_WORD_DEPTH : 32'd0;
@@ -185,6 +220,9 @@ module SPU_VPU_Stream8 #(
     wire all_accum_idle = ((accum_busy & lane_valid_r) == 8'd0);
     wire all_accum_done = ((accum_entry_done | ~lane_valid_r) == 8'hff);
     wire any_accum_error = |(accum_error & lane_valid_r);
+    wire stream_engine_idle = split_scale_enable ?
+                              (state_r == S_IDLE) :
+                              ((state_r == S_IDLE) && fifo_empty);
 
     always @* begin
         mem0_en = 1'b0; mem0_we = 1'b0; mem0_region = REGION_PARAM;
@@ -224,17 +262,20 @@ module SPU_VPU_Stream8 #(
         end
     end
 
-    assign stream_status[0] = (state_r == S_IDLE);
-    assign stream_status[1] = (state_r == S_IDLE);
+    // Idle/ownership status includes queued bundles; otherwise the host could
+    // observe S_IDLE during the one-cycle FIFO-to-FSM handoff and overwrite
+    // PARAM/OUT before the queue has drained.
+    assign stream_status[0] = stream_engine_idle;
+    assign stream_status[1] = stream_engine_idle;
     assign stream_status[2] = all_accum_idle;
     assign stream_status[3] = (state_r != S_WRITE);
-    assign stream_status[4] = (state_r == S_IDLE) && all_accum_idle;
+    assign stream_status[4] = stream_engine_idle && all_accum_idle;
     assign stream_status[5] = p3_bank_lock_valid;
     assign stream_status[6] = p3_bank_lock;
     assign stream_status[31:7] = 25'd0;
     assign stream_p3_status = {24'd0,split_scale_enable,p3_done_seen_r,
                                p3_bank_lock,p3_bank_lock_valid,p3_r,
-                               1'b0,(state_r==S_IDLE),(state_r==S_IDLE)};
+                               1'b0,stream_engine_idle,stream_engine_idle};
 
     genvar gi;
     generate
@@ -258,6 +299,7 @@ module SPU_VPU_Stream8 #(
     endgenerate
 
     integer i;
+    integer fi;
     reg [3:0] write_count;
     always @(posedge clk) begin
         if (!resetn || soft_reset) begin
@@ -280,6 +322,7 @@ module SPU_VPU_Stream8 #(
             stream_entry_done_count <= 32'd0;
             stream_final_write_count <= 32'd0;
             stream_p3_reject_count <= 32'd0;
+            fifo_count_r <= 2'd0; fifo_wr_ptr_r <= 1'b0; fifo_rd_ptr_r <= 1'b0;
             write_count <= 4'd0;
             for (i = 0; i < 8; i = i + 1) begin
                 raw_r[i] <= 32'sd0; row_r[i] <= 16'd0;
@@ -287,8 +330,19 @@ module SPU_VPU_Stream8 #(
                 act_scale_r[i] <= 16'd0; weight_scale_r[i] <= 16'd0;
                 final_q16_r[i] <= 64'sd0;
             end
+            for (fi = 0; fi < 2; fi = fi + 1) begin
+                fifo_lane_valid[fi] <= 8'd0;
+                fifo_lane_data[fi] <= {8*32{1'b0}};
+                fifo_lane_row[fi] <= {8*16{1'b0}};
+                fifo_scale_word_index[fi] <= {8*32{1'b0}};
+                fifo_scale_lane[fi] <= {8*3{1'b0}};
+                fifo_block[fi] <= 16'd0; fifo_group_blocks[fi] <= 16'd0;
+                fifo_last_block[fi] <= 1'b0; fifo_clear_accum[fi] <= 1'b0;
+                fifo_job_id[fi] <= 32'd0; fifo_bank[fi] <= 1'b0; fifo_p3[fi] <= 1'b0;
+            end
         end else begin
             accum_start_r <= 8'd0;
+
             if (vpu_valid && !vpu_ready)
                 stream_raw_stall_cycles <= stream_raw_stall_cycles + 32'd1;
             if (vpu_done) begin
@@ -296,35 +350,85 @@ module SPU_VPU_Stream8 #(
                 if (p3_bank_lock_valid) p3_done_seen_r <= 1'b1;
             end
 
+            // Invalid input is consumed (as before) but counted as a
+            // drop/error. Valid P2 bundles enter the decoupling FIFO; P3
+            // keeps the original direct S_IDLE acceptance path below.
+            if (vpu_fire && !bundle_index_ok) begin
+                stream_drop_count <= stream_drop_count + accepted_lanes;
+                stream_error_count <= stream_error_count + accepted_lanes;
+                if (split_scale_enable)
+                    stream_p3_reject_count <= stream_p3_reject_count + accepted_lanes;
+            end else if (fifo_push) begin
+                fifo_lane_valid[fifo_wr_ptr_r] <= vpu_lane_valid;
+                fifo_lane_data[fifo_wr_ptr_r] <= vpu_lane_data;
+                fifo_lane_row[fifo_wr_ptr_r] <= vpu_lane_row;
+                for (i = 0; i < 8; i = i + 1) begin
+                    fifo_scale_word_index[fifo_wr_ptr_r][32*i +: 32] <=
+                        (vpu_lane_scale_index[32*i +: 32] >> 2);
+                    fifo_scale_lane[fifo_wr_ptr_r][3*i +: 3] <=
+                        {1'b0, vpu_lane_scale_index[32*i + 1 -: 2]};
+                end
+                fifo_block[fifo_wr_ptr_r] <= vpu_block;
+                fifo_group_blocks[fifo_wr_ptr_r] <= vpu_group_blocks;
+                fifo_last_block[fifo_wr_ptr_r] <= vpu_last_block;
+                fifo_clear_accum[fifo_wr_ptr_r] <= vpu_clear_accum;
+                fifo_job_id[fifo_wr_ptr_r] <= vpu_job_id;
+                fifo_bank[fifo_wr_ptr_r] <= vpu_bank;
+                fifo_p3[fifo_wr_ptr_r] <= 1'b0;
+                fifo_wr_ptr_r <= ~fifo_wr_ptr_r;
+
+                stream_count <= stream_count + accepted_lanes;
+                stream_last_raw <= vpu_lane_data[32*tail_lane +: 32];
+                stream_last_meta <= {vpu_clear_accum,vpu_last_block,
+                                     vpu_block[13:0],vpu_lane_row[16*tail_lane +: 16]};
+                stream_last_job <= vpu_job_id;
+                stream_last_bank <= {31'd0,vpu_bank};
+
+                if (!fifo_pop && (fifo_count_r == 2'd1))
+                    stream_fifo_high_water <= 32'd2;
+                else if (stream_fifo_high_water == 32'd0)
+                    stream_fifo_high_water <= 32'd1;
+            end
+
+            // Occupancy update handles simultaneous dequeue/enqueue.  The
+            // input ready path deliberately accounts for fifo_pop, allowing a
+            // full FIFO to replace its head and tail in one clock.
+            case ({fifo_push, fifo_pop})
+                2'b10: fifo_count_r <= fifo_count_r + 2'd1;
+                2'b01: fifo_count_r <= fifo_count_r - 2'd1;
+                default: fifo_count_r <= fifo_count_r;
+            endcase
+            if (fifo_pop)
+                fifo_rd_ptr_r <= ~fifo_rd_ptr_r;
+
             case (state_r)
                 S_IDLE: begin
                     if (p3_done_seen_r && p3_bank_lock_valid) begin
                         p3_bank_lock_valid <= 1'b0;
                         p3_done_seen_r <= 1'b0;
                     end
-                    if (vpu_fire) begin
-                        if (!bundle_index_ok) begin
-                            stream_drop_count <= stream_drop_count + accepted_lanes;
-                            stream_error_count <= stream_error_count + accepted_lanes;
-                            if (split_scale_enable)
-                                stream_p3_reject_count <= stream_p3_reject_count + accepted_lanes;
-                        end else begin
+
+                    if (split_scale_enable) begin
+                        // Preserve the original P3 direct acceptance and bank
+                        // locking behavior. No P3 token is buffered here.
+                        if (vpu_fire && bundle_index_ok) begin
                             lane_valid_r <= vpu_lane_valid;
                             for (i = 0; i < 8; i = i + 1) begin
                                 raw_r[i] <= vpu_lane_data[32*i +: 32];
                                 row_r[i] <= vpu_lane_row[16*i +: 16];
-                                scale_word_index_r[i] <= split_scale_enable ?
+                                scale_word_index_r[i] <=
                                     ((vpu_bank ? P3_BANK_WORD_DEPTH : 32'd0) +
-                                     (vpu_lane_scale_index[32*i +: 32] >> 3)) :
-                                    (vpu_lane_scale_index[32*i +: 32] >> 2);
-                                scale_lane_r[i] <= split_scale_enable ?
-                                    vpu_lane_scale_index[32*i + 2 -: 3] :
-                                    {1'b0, vpu_lane_scale_index[32*i + 1 -: 2]};
+                                     (vpu_lane_scale_index[32*i +: 32] >> 3));
+                                scale_lane_r[i] <= vpu_lane_scale_index[32*i + 2 -: 3];
                             end
-                            block_r <= vpu_block; group_blocks_r <= vpu_group_blocks;
-                            last_block_r <= vpu_last_block; clear_accum_r <= vpu_clear_accum;
-                            job_id_r <= vpu_job_id; bank_r <= vpu_bank;
-                            p3_r <= split_scale_enable; pair_idx_r <= 2'd0;
+                            block_r <= vpu_block;
+                            group_blocks_r <= vpu_group_blocks;
+                            last_block_r <= vpu_last_block;
+                            clear_accum_r <= vpu_clear_accum;
+                            job_id_r <= vpu_job_id;
+                            bank_r <= vpu_bank;
+                            p3_r <= 1'b1;
+                            pair_idx_r <= 2'd0;
                             stream_count <= stream_count + accepted_lanes;
                             stream_fifo_high_water <= 32'd1;
                             stream_last_raw <= vpu_lane_data[32*tail_lane +: 32];
@@ -332,12 +436,29 @@ module SPU_VPU_Stream8 #(
                                                  vpu_block[13:0],vpu_lane_row[16*tail_lane +: 16]};
                             stream_last_job <= vpu_job_id;
                             stream_last_bank <= {31'd0,vpu_bank};
-                            if (split_scale_enable && !p3_bank_lock_valid) begin
+                            if (!p3_bank_lock_valid) begin
                                 p3_bank_lock_valid <= 1'b1;
                                 p3_bank_lock <= vpu_bank;
                             end
                             state_r <= S_READ;
                         end
+                    end else if (fifo_pop) begin
+                        lane_valid_r <= fifo_lane_valid[fifo_rd_ptr_r];
+                        for (i = 0; i < 8; i = i + 1) begin
+                            raw_r[i] <= fifo_lane_data[fifo_rd_ptr_r][32*i +: 32];
+                            row_r[i] <= fifo_lane_row[fifo_rd_ptr_r][16*i +: 16];
+                            scale_word_index_r[i] <= fifo_scale_word_index[fifo_rd_ptr_r][32*i +: 32];
+                            scale_lane_r[i] <= fifo_scale_lane[fifo_rd_ptr_r][3*i +: 3];
+                        end
+                        block_r <= fifo_block[fifo_rd_ptr_r];
+                        group_blocks_r <= fifo_group_blocks[fifo_rd_ptr_r];
+                        last_block_r <= fifo_last_block[fifo_rd_ptr_r];
+                        clear_accum_r <= fifo_clear_accum[fifo_rd_ptr_r];
+                        job_id_r <= fifo_job_id[fifo_rd_ptr_r];
+                        bank_r <= fifo_bank[fifo_rd_ptr_r];
+                        p3_r <= 1'b0;
+                        pair_idx_r <= 2'd0;
+                        state_r <= S_READ;
                     end
                 end
 
