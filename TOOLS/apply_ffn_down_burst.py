@@ -210,14 +210,13 @@ def patch(text: str) -> str:
 """
     text = replace_once(text, old_raw_done, new_raw_done, "S_RAW_STREAM_HOLD ordered retire")
 
-    # New launches from S_DONE and S_ERROR must reset both issue and retire
-    # progress. There are exactly two matching launch snippets.
-    old_restart = """                        block_idx_r         <= 16'd0;
+    # New launches from S_DONE and S_ERROR must reset both issue and retire progress.
+    done_restart = """                        block_idx_r         <= 16'd0;
                         result_row_base_r   <= 32'd0;
                         weight_row_base_r   <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
                         state_r             <= S_VALIDATE;
 """
-    new_restart = """                        block_idx_r         <= 16'd0;
+    done_restart_new = """                        block_idx_r         <= 16'd0;
                         issue_block_idx_r   <= 16'd0;
                         raw_burst_blocks_r  <= 3'd0;
                         raw_burst_retired_r <= 3'd0;
@@ -225,10 +224,22 @@ def patch(text: str) -> str:
                         weight_row_base_r   <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
                         state_r             <= S_VALIDATE;
 """
-    count = text.count(old_restart)
-    if count != 2:
-        raise RuntimeError(f"restart burst reset: expected two matches, found {count}")
-    text = text.replace(old_restart, new_restart)
+    text = replace_once(text, done_restart, done_restart_new, "S_DONE restart")
+
+    error_restart = """                        block_idx_r        <= 16'd0;
+                        result_row_base_r  <= 32'd0;
+                        weight_row_base_r  <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
+                        state_r            <= S_VALIDATE;
+"""
+    error_restart_new = """                        block_idx_r        <= 16'd0;
+                        issue_block_idx_r  <= 16'd0;
+                        raw_burst_blocks_r <= 3'd0;
+                        raw_burst_retired_r <= 3'd0;
+                        result_row_base_r  <= 32'd0;
+                        weight_row_base_r  <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
+                        state_r            <= S_VALIDATE;
+"""
+    text = replace_once(text, error_restart, error_restart_new, "S_ERROR restart")
 
     return text
 
