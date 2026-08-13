@@ -20,6 +20,7 @@ module SPU_Top #(
     parameter integer WORD_DEPTH     = 4096,
     parameter integer SCALE_ACCUM_ROWS = 256,
     parameter integer STREAM_FIFO_DEPTH = 32,
+    parameter integer PRECOMPUTED_SCALE_INDEX = 0,
     parameter integer STREAM_TEST_STALL_ENABLE = 0
 ) (
     input  wire                              clk,
@@ -66,6 +67,8 @@ module SPU_Top #(
     input  wire                              vpu_raw_pair_clear_accum,
     input  wire [31:0]                       vpu_raw_pair_job_id,
     input  wire                              vpu_raw_pair_bank,
+    input  wire [31:0]                       vpu_raw_scale_index,
+    input  wire [31:0]                       vpu_raw_pair_scale_index,
     output wire [31:0]                       vpu_stream_count,
     output wire [31:0]                       vpu_stream_done_count,
     output wire [31:0]                       vpu_stream_drop_count,
@@ -244,19 +247,31 @@ module SPU_Top #(
         end
     endfunction
 
-    // This arithmetic is intentionally on the enqueue data path.  It is
-    // captured in FIFO metadata only after ready/valid acceptance and is not
-    // part of vpu_raw_ready, FIFO count, or the dequeue FSM control cone.
-    wire [31:0] stream_enqueue_scale_index_w =
-        ({16'd0, vpu_raw_row} * {16'd0, vpu_raw_group_blocks}) +
-        {16'd0, vpu_raw_block};
+    // Production VPU tokens already carry the result/scale index formed by
+    // the registered VPU result-address path.  This removes the wide
+    // row*group_blocks arithmetic and its DSP input-enable cone from the
+    // ready/valid boundary.  Standalone SPU tests retain the legacy local
+    // calculation through the default parameter.
+    wire [31:0] stream_enqueue_scale_index_w;
     wire [31:0] stream_enqueue_scale_word_index_w =
         stream_enqueue_scale_index_w >> 2;
-    wire [31:0] stream_enqueue_pair_scale_index_w =
-        ({16'd0, vpu_raw_pair_row} * {16'd0, vpu_raw_pair_group_blocks}) +
-        {16'd0, vpu_raw_pair_block};
+    wire [31:0] stream_enqueue_pair_scale_index_w;
     wire [31:0] stream_enqueue_pair_scale_word_index_w =
         stream_enqueue_pair_scale_index_w >> 2;
+
+    generate
+        if (PRECOMPUTED_SCALE_INDEX != 0) begin : GEN_PRECOMPUTED_SCALE_INDEX
+            assign stream_enqueue_scale_index_w = vpu_raw_scale_index;
+            assign stream_enqueue_pair_scale_index_w = vpu_raw_pair_scale_index;
+        end else begin : GEN_LEGACY_SCALE_INDEX
+            assign stream_enqueue_scale_index_w =
+                ({16'd0, vpu_raw_row} * {16'd0, vpu_raw_group_blocks}) +
+                {16'd0, vpu_raw_block};
+            assign stream_enqueue_pair_scale_index_w =
+                ({16'd0, vpu_raw_pair_row} * {16'd0, vpu_raw_pair_group_blocks}) +
+                {16'd0, vpu_raw_pair_block};
+        end
+    endgenerate
     wire stream_enqueue_scale_index_ok =
         (vpu_raw_group_blocks != 16'd0) &&
         (vpu_raw_block < vpu_raw_group_blocks) &&

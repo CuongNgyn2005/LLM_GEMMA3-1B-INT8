@@ -11,10 +11,10 @@
  *
  * External memory-window behavior:
  * - REGION_ACT writes store activation beats indexed by col_beat.
- * - REGION_WEIGHT writes store pair-interleaved weight beats.  For every row
+ * - REGION_WEIGHT writes retain pair-interleaved weight beats.  For every row
  *   pair and beat, the even-row word is followed by the odd-row word; an odd
- *   final row still supplies a zero companion word.  Bit 0 of the flat payload
- *   index selects the row-parity leaf and bits [14:1] select its 16K address.
+ *   final row still supplies a zero companion word.  The write-side stride
+ *   decoder maps this ABI into four logical row-slot leaves at 8K depth.
  * - REGION_RESULT reads return packed INT8 result bytes for CPU/DMA readback.
  *   CPU/DMA writes to REGION_RESULT are not part of the normal compute flow;
  *   Result BRAM is written only after PMAU results have been accumulated and
@@ -92,6 +92,10 @@ module Matrix_Vector_Multiplication #(
     output reg                               spu_raw_clear_accum,
     output reg  [31:0]                       spu_raw_job_id,
     output reg                               spu_raw_bank,
+    // The result/scale index is already formed by the VPU result-address
+    // path.  Registering it with the raw token avoids recomputing
+    // row*group_blocks in SPU_Top's ready/valid timing cone.
+    output reg  [31:0]                       spu_raw_scale_index,
     output reg                               spu_raw_done,
     // In P2-v2 this is the retained companion lane of spu_raw_*.  Both
     // lanes are accepted atomically through spu_raw_ready.
@@ -104,6 +108,7 @@ module Matrix_Vector_Multiplication #(
     output reg                               spu_raw_pair_clear_accum,
     output reg  [31:0]                       spu_raw_pair_job_id,
     output reg                               spu_raw_pair_bank,
+    output reg  [31:0]                       spu_raw_pair_scale_index,
 
     input  wire                              mm_wr_en,
     input  wire [1:0]                        mm_wr_region,
@@ -148,12 +153,13 @@ module Matrix_Vector_Multiplication #(
     localparam RESULT_ADDR_WIDTH    = clog2(RESULT_WORD_DEPTH);
     localparam WEIGHT_DEPTH         = MAX_ROWS * MAX_COL_BEATS;
     localparam WEIGHT_ADDR_WIDTH    = clog2(WEIGHT_DEPTH);
-    // Each 32-bit lane has one SDP UltraRAM leaf per row parity.  The external
-    // payload remains 32K beats, but every leaf stores half of those beats at
-    // a fixed 16K depth.  P2 reads its even/odd pair from different leaves.
-    localparam WEIGHT_PARITY_LEAVES     = 2;
-    localparam WEIGHT_LOCAL_ADDR_WIDTH  = clog2(WEIGHT_DEPTH / WEIGHT_PARITY_LEAVES);
-    localparam WEIGHT_RAM_COUNT         = WEIGHT_BANKS * WEIGHT_PARITY_LEAVES;
+    // Each 32-bit lane has four SDP UltraRAM row-slot leaves.  The external
+    // P2 payload remains pair-interleaved, while the write path maps each word
+    // into row[1:0] and (row >> 2)*col_beats + beat.  Four 8K leaves replace
+    // two 16K parity leaves, retaining the same total weight capacity.
+    localparam WEIGHT_ROW_SLOT_LEAVES   = 4;
+    localparam WEIGHT_LOCAL_ADDR_WIDTH  = clog2(WEIGHT_DEPTH / WEIGHT_ROW_SLOT_LEAVES);
+    localparam WEIGHT_RAM_COUNT         = WEIGHT_BANKS * WEIGHT_ROW_SLOT_LEAVES;
     localparam WEIGHT_RAM_TOTAL        = BANK_COUNT * WEIGHT_RAM_COUNT;
     localparam LANE_SHIFT           = clog2(NUM_LANES);
     localparam [15:0] NUM_LANES_16          = NUM_LANES;
@@ -198,10 +204,14 @@ module Matrix_Vector_Multiplication #(
     wire [ACT_BEAT_WIDTH*BANK_COUNT-1:0] act_compute_data_bank;
     reg [WEIGHT_BEAT_WIDTH-1:0]  weight_compute_data;
     reg [WEIGHT_BEAT_WIDTH-1:0]  weight_pair_compute_data;
+    reg [WEIGHT_BEAT_WIDTH-1:0]  weight_quad2_compute_data;
+    reg [WEIGHT_BEAT_WIDTH-1:0]  weight_quad3_compute_data;
     wire [WEIGHT_BANK_WIDTH*WEIGHT_RAM_TOTAL-1:0] weight_compute_data_leaf;
     reg [ACT_BEAT_WIDTH-1:0]    act_pmau_data;
     reg [WEIGHT_BEAT_WIDTH-1:0] weight_pmau_data;
     reg [WEIGHT_BEAT_WIDTH-1:0] weight_pair_pmau_data;
+    reg [WEIGHT_BEAT_WIDTH-1:0] weight_quad2_pmau_data;
+    reg [WEIGHT_BEAT_WIDTH-1:0] weight_quad3_pmau_data;
     wire [AXI_DATA_WIDTH-1:0]   result_cpu_rd_data;
     reg [ACT_ADDR_WIDTH-1:0]    act_compute_addr;
     reg                         compute_rd_en;
@@ -226,6 +236,46 @@ module Matrix_Vector_Multiplication #(
     reg [1:0]                   wr_pipe_region_r;
     reg [31:0]                  wr_pipe_index_r;
     reg                         wr_pipe_bank_r;
+    reg [15:0]                  wr_pipe_col_beats_r;
+    // The weight window has no write-side ready signal.  The 14-bit q=index>>1
+    // division is therefore fully pipelined one restoring bit per clock.  Each
+    // accepted staged write carries its complete payload through the pipeline.
+    localparam WEIGHT_DIV_STAGES = 14;
+    reg [WEIGHT_DIV_STAGES-1:0]  weight_div_valid_r;
+    // cfg_col_beats is constrained to 1..128, so a restored remainder and
+    // its next shifted trial fit in eight bits.  Keeping this datapath at
+    // eight bits makes each restoring stage one CARRY8-scale compare/subtract.
+    reg [7:0]                    weight_div_rem_r [0:WEIGHT_DIV_STAGES-1];
+    reg [13:0]                   weight_div_pair_r [0:WEIGHT_DIV_STAGES-1];
+    reg [13:0]                   weight_div_q_r [0:WEIGHT_DIV_STAGES-1];
+    reg [15:0]                   weight_div_col_beats_r [0:WEIGHT_DIV_STAGES-1];
+    reg                          weight_div_parity_r [0:WEIGHT_DIV_STAGES-1];
+    reg                          weight_div_bank_r [0:WEIGHT_DIV_STAGES-1];
+    reg [AXI_DATA_WIDTH-1:0]     weight_div_data_r [0:WEIGHT_DIV_STAGES-1];
+    reg [(AXI_DATA_WIDTH/8)-1:0] weight_div_strb_r [0:WEIGHT_DIV_STAGES-1];
+    reg                          weight_map_delta_valid_r;
+    reg [13:0]                   weight_map_delta_r;
+    reg [13:0]                   weight_map_delta_pair_r;
+    reg [7:0]                    weight_map_delta_rem_r;
+    reg [15:0]                   weight_map_delta_col_beats_r;
+    reg                          weight_map_delta_parity_r;
+    reg                          weight_map_delta_bank_r;
+    reg [AXI_DATA_WIDTH-1:0]     weight_map_delta_data_r;
+    reg [(AXI_DATA_WIDTH/8)-1:0] weight_map_delta_strb_r;
+    reg                          weight_map_base_valid_r;
+    reg [12:0]                   weight_map_base_r;
+    reg [7:0]                    weight_map_base_rem_r;
+    reg                          weight_map_base_pair_odd_r;
+    reg                          weight_map_base_parity_r;
+    reg                          weight_map_base_bank_r;
+    reg [AXI_DATA_WIDTH-1:0]     weight_map_base_data_r;
+    reg [(AXI_DATA_WIDTH/8)-1:0] weight_map_base_strb_r;
+    reg                         weight_map_valid_r;
+    reg [1:0]                   weight_map_row_slot_r;
+    reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_map_local_addr_r;
+    reg                         weight_map_bank_r;
+    reg [AXI_DATA_WIDTH-1:0]    weight_map_data_r;
+    reg [(AXI_DATA_WIDTH/8)-1:0] weight_map_strb_r;
     (* keep = "true" *)
     reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_wr_addr_leaf [0:WEIGHT_RAM_TOTAL-1];
     (* keep = "true" *)
@@ -234,6 +284,14 @@ module Matrix_Vector_Multiplication #(
     reg [WEIGHT_BANK_WIDTH-1:0] weight_wr_data_leaf [0:WEIGHT_RAM_TOTAL-1];
     (* keep = "true" *)
     reg [WEIGHT_BANK_BYTES-1:0] weight_wr_strb_leaf [0:WEIGHT_RAM_TOTAL-1];
+    // Replicate the final remapped write metadata once per top-level bank
+    // before driving the four row-slot leaves.  This keeps the common local
+    // address off the long cross-bank fanout route seen in routed timing.
+    reg [BANK_COUNT-1:0]        weight_leaf_stage_valid_r;
+    reg [1:0]                   weight_leaf_stage_row_slot_r [0:BANK_COUNT-1];
+    reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_leaf_stage_addr_r [0:BANK_COUNT-1];
+    reg [AXI_DATA_WIDTH-1:0]    weight_leaf_stage_data_r [0:BANK_COUNT-1];
+    reg [(AXI_DATA_WIDTH/8)-1:0] weight_leaf_stage_strb_r [0:BANK_COUNT-1];
     reg [AXI_DATA_WIDTH-1:0]    wr_pipe_data_r;
     reg [(AXI_DATA_WIDTH/8)-1:0] wr_pipe_strb_r;
 
@@ -278,12 +336,23 @@ module Matrix_Vector_Multiplication #(
     reg signed [7:0] result_write_i8_r;
     reg signed [ACC_WIDTH-1:0] result_write_i32_r;
     reg result_write_is_i8_r;
-    reg result_pair_write_pending_r;
-    reg [RESULT_ADDR_WIDTH-1:0] result_pair_write_addr_r;
-    reg [RESULT_I8_LANE_SHIFT-1:0] result_pair_write_lane_r;
-    reg signed [ACC_WIDTH-1:0] result_pair_write_i32_r;
-    reg result_pair_write_issued_r;
     reg pair_mode_r;
+    // P2 four-row issue captures all raw results before serializing Result BRAM
+    // writes and presenting the two existing two-row stream packets.
+    reg signed [ACC_WIDTH-1:0] result_row1_data_r;
+    reg signed [ACC_WIDTH-1:0] result_row2_data_r;
+    reg signed [ACC_WIDTH-1:0] result_row3_data_r;
+    reg [RESULT_ADDR_WIDTH-1:0] result_row1_addr_r;
+    reg [RESULT_ADDR_WIDTH-1:0] result_row2_addr_r;
+    reg [RESULT_ADDR_WIDTH-1:0] result_row3_addr_r;
+    reg [RESULT_I8_LANE_SHIFT-1:0] result_row1_lane_r;
+    reg [RESULT_I8_LANE_SHIFT-1:0] result_row2_lane_r;
+    reg [RESULT_I8_LANE_SHIFT-1:0] result_row3_lane_r;
+    reg [1:0] result_write_slot_r;
+    reg result_writes_done_r;
+    reg raw_second_packet_r;
+    reg raw_first_packet_accepted_r;
+    reg raw_second_packet_accepted_r;
 
     // The raw PL accumulator is captured before the saturating INT8
     // requantizer.  Besides shortening the routed critical path, this makes
@@ -303,9 +372,10 @@ module Matrix_Vector_Multiplication #(
     reg read_req_valid_r;
     reg [ACT_ADDR_WIDTH-1:0] read_req_act_addr_r;
     reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] read_req_weight_addr_r;
-    reg                               read_req_parity_r;
-    reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] read_req_pair_weight_addr_r;
-    reg                               read_req_pair_parity_r;
+    reg [1:0]                         read_req_row_slot_r;
+    reg [1:0]                         read_req_pair_row_slot_r;
+    reg [1:0]                         read_req_quad2_row_slot_r;
+    reg [1:0]                         read_req_quad3_row_slot_r;
     reg read_req_last_r;
     reg read_req_group_last_r;
     reg read_valid_q_r;
@@ -314,13 +384,19 @@ module Matrix_Vector_Multiplication #(
     reg read_valid_x_r;
     reg read_last_x_r;
     reg read_group_last_x_r;
-    // Row parity follows the same d/q/x memory-latency pipeline as valid.
-    reg read_parity_d_r;
-    reg read_parity_q_r;
-    reg read_parity_x_r;
-    reg read_pair_parity_d_r;
-    reg read_pair_parity_q_r;
-    reg read_pair_parity_x_r;
+    // Row slots follow the same d/q/x memory-latency pipeline as valid.
+    reg [1:0] read_row_slot_d_r;
+    reg [1:0] read_row_slot_q_r;
+    reg [1:0] read_row_slot_x_r;
+    reg [1:0] read_pair_row_slot_d_r;
+    reg [1:0] read_pair_row_slot_q_r;
+    reg [1:0] read_pair_row_slot_x_r;
+    reg [1:0] read_quad2_row_slot_d_r;
+    reg [1:0] read_quad2_row_slot_q_r;
+    reg [1:0] read_quad2_row_slot_x_r;
+    reg [1:0] read_quad3_row_slot_d_r;
+    reg [1:0] read_quad3_row_slot_q_r;
+    reg [1:0] read_quad3_row_slot_x_r;
 
     wire [15:0] auto_col_beats =
         (cfg_cols + NUM_LANES_16 - 16'd1) >> LANE_SHIFT;
@@ -345,6 +421,8 @@ module Matrix_Vector_Multiplication #(
         (active_col_beats_r > MAX_COL_BEATS_16) ||
         active_group_invalid;
     wire pair_lane1_valid = pair_mode_r && ((row_idx_r + 16'd1) < active_rows_r);
+    wire pair_lane2_valid = pair_mode_r && ((row_idx_r + 16'd2) < active_rows_r);
+    wire pair_lane3_valid = pair_mode_r && ((row_idx_r + 16'd3) < active_rows_r);
     // A paired active bank owns both weight-memory ports.  Active ACT writes
     // are blocked while compute is live, and active WEIGHT writes are rejected
     // visibly through error_r rather than being silently dropped.  The
@@ -358,6 +436,15 @@ module Matrix_Vector_Multiplication #(
         ((mm_wr_region == REGION_ACT) || (mm_wr_region == REGION_WEIGHT));
     wire pair_active_write_block = pair_compute_ownership &&
         ((mm_wr_region == REGION_ACT) || (mm_wr_region == REGION_WEIGHT));
+    // A control start may follow the final AXI weight beat immediately.  Do not
+    // issue a compute read until the fully pipelined remapper has committed
+    // every accepted weight write to its selected row-slot leaf.
+    wire weight_write_pipeline_busy =
+        (mm_wr_en && (mm_wr_region == REGION_WEIGHT)) ||
+        (wr_pipe_en_r && (wr_pipe_region_r == REGION_WEIGHT)) ||
+        (|weight_div_valid_r) || weight_map_delta_valid_r ||
+        weight_map_base_valid_r || weight_map_valid_r ||
+        (|weight_leaf_stage_valid_r);
 
     // Runtime configuration is latched on ctrl_start, then validated before
     // any BRAM read is issued.  Packed q8 mode groups every two 128-bit beats
@@ -374,18 +461,36 @@ module Matrix_Vector_Multiplication #(
     wire pmau2_input_ready;
     wire pmau2_result_valid;
     wire [ACC_WIDTH-1:0] pmau2_result_data;
+    wire pmau3_activation_ready;
+    wire pmau3_weight_ready;
+    wire pmau3_input_ready;
+    wire pmau3_result_valid;
+    wire [ACC_WIDTH-1:0] pmau3_result_data;
+    wire pmau4_activation_ready;
+    wire pmau4_weight_ready;
+    wire pmau4_input_ready;
+    wire pmau4_result_valid;
+    wire [ACC_WIDTH-1:0] pmau4_result_data;
     wire signed [7:0] pmau_result_i8;
     wire [4:0] result_requant_shift = cfg_scale[4:0];
-    wire pmau_result_ready = ((state_r == S_RUN) || (state_r == S_WAIT_RESULT)) &&
-                             (!pair_lane1_valid || pmau2_result_valid);
-    wire pmau2_result_ready = ((state_r == S_RUN) || (state_r == S_WAIT_RESULT)) &&
-                              pmau_result_valid;
-    wire pair_issue_grant = !pair_lane1_valid ||
-                            (pmau_input_ready && pmau2_input_ready);
+    wire pmau_all_results_valid = pmau_result_valid &&
+                                  (!pair_lane1_valid || pmau2_result_valid) &&
+                                  (!pair_lane2_valid || pmau3_result_valid) &&
+                                  (!pair_lane3_valid || pmau4_result_valid);
+    wire pmau_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau2_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau3_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau4_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pair_issue_grant = pmau_input_ready &&
+                            (!pair_lane1_valid || pmau2_input_ready) &&
+                            (!pair_lane2_valid || pmau3_input_ready) &&
+                            (!pair_lane3_valid || pmau4_input_ready);
     wire pmau_offer_valid = feed_valid_r && pair_issue_grant;
     wire pmau_input_fire =
         pmau_offer_valid && pmau_activation_ready && pmau_weight_ready &&
-        (!pair_lane1_valid || (pmau2_activation_ready && pmau2_weight_ready));
+        (!pair_lane1_valid || (pmau2_activation_ready && pmau2_weight_ready)) &&
+        (!pair_lane2_valid || (pmau3_activation_ready && pmau3_weight_ready)) &&
+        (!pair_lane3_valid || (pmau4_activation_ready && pmau4_weight_ready));
     wire pmau_result_fire = pmau_result_valid && pmau_result_ready;
     wire wait_after_feed =
         result_i8_mode_r ? feed_group_last_r : feed_last_r;
@@ -403,15 +508,15 @@ module Matrix_Vector_Multiplication #(
     wire shift_req_to_d = read_req_valid_r && read_d_slot_open;
     wire read_req_slot_open = (!read_req_valid_r) || shift_req_to_d;
     wire [15:0] read_abs_beat = read_beat_idx_r;
-    // Physical address = (row >> 1) * active_col_beats + beat.  The running
-    // base advances once per row pair, and parity chooses the matching SDP
-    // leaf; no divider or variable-stride address logic is inferred.
+    // Physical address = (row >> 2) * active_col_beats + beat.  The running
+    // base advances once per four-row group, and each logical row selects a
+    // distinct SDP leaf for atomic four-row P2 issue.
     wire [WEIGHT_LOCAL_ADDR_WIDTH-1:0] issue_weight_local_addr =
         weight_row_base_r + read_abs_beat[WEIGHT_LOCAL_ADDR_WIDTH-1:0];
-    wire [WEIGHT_LOCAL_ADDR_WIDTH-1:0] issue_pair_weight_local_addr =
-        weight_row_base_r + read_abs_beat[WEIGHT_LOCAL_ADDR_WIDTH-1:0];
-    wire issue_weight_parity = row_idx_r[0];
-    wire issue_pair_weight_parity = ~row_idx_r[0];
+    wire [1:0] issue_weight_row_slot = row_idx_r[1:0];
+    wire [1:0] issue_pair_weight_row_slot = row_idx_r[1:0] + 2'd1;
+    wire [1:0] issue_quad2_weight_row_slot = row_idx_r[1:0] + 2'd2;
+    wire [1:0] issue_quad3_weight_row_slot = row_idx_r[1:0] + 2'd3;
     wire [15:0] raw_group_issue_limit =
         {block_idx_r[14:0], 1'b0} + Q8_BLOCK_BEATS_16;
     wire [15:0] issue_read_limit =
@@ -434,10 +539,22 @@ module Matrix_Vector_Multiplication #(
                        {16'd0, row_idx_r};
     wire [31:0] pair_result_value_index =
         result_row_base_r + {16'd0, group_blocks_r} + {16'd0, block_idx_r};
+    wire [31:0] quad2_result_value_index =
+        result_row_base_r + ({16'd0, group_blocks_r} << 1) + {16'd0, block_idx_r};
+    wire [31:0] quad3_result_value_index =
+        result_row_base_r + ({16'd0, group_blocks_r} * 3) + {16'd0, block_idx_r};
     wire [RESULT_ADDR_WIDTH-1:0] pair_result_wr_addr_i32 =
         pair_result_value_index[RESULT_LANE_SHIFT +: RESULT_ADDR_WIDTH];
     wire [RESULT_LANE_SHIFT-1:0] pair_result_wr_lane_i32 =
         pair_result_value_index[RESULT_LANE_SHIFT-1:0];
+    wire [RESULT_ADDR_WIDTH-1:0] quad2_result_wr_addr_i32 =
+        quad2_result_value_index[RESULT_LANE_SHIFT +: RESULT_ADDR_WIDTH];
+    wire [RESULT_LANE_SHIFT-1:0] quad2_result_wr_lane_i32 =
+        quad2_result_value_index[RESULT_LANE_SHIFT-1:0];
+    wire [RESULT_ADDR_WIDTH-1:0] quad3_result_wr_addr_i32 =
+        quad3_result_value_index[RESULT_LANE_SHIFT +: RESULT_ADDR_WIDTH];
+    wire [RESULT_LANE_SHIFT-1:0] quad3_result_wr_lane_i32 =
+        quad3_result_value_index[RESULT_LANE_SHIFT-1:0];
     wire [RESULT_ADDR_WIDTH-1:0] result_wr_addr_i32 =
         group_mode_r ? result_value_index[RESULT_LANE_SHIFT +: RESULT_ADDR_WIDTH] :
                        row_idx_r[RESULT_ADDR_WIDTH-1:0];
@@ -531,6 +648,42 @@ module Matrix_Vector_Multiplication #(
         .result_last       ()
     );
 
+    PMAU_Full #(
+        .NUM_LANES         (NUM_LANES), .ACT_WIDTH (ACT_WIDTH),
+        .WEIGHT_WIDTH      (WEIGHT_WIDTH), .ACC_WIDTH (ACC_WIDTH),
+        .SCALE_WIDTH       (SCALE_WIDTH), .SCALE_FRAC_BITS (SCALE_FRAC_BITS),
+        .RESULT_FIFO_DEPTH (RESULT_FIFO_DEPTH)
+    ) u_pmau_quad2 (
+        .CLK               (CLK), .RST (RST), .compute_mode (compute_mode[1:0]),
+        .activation_data   (act_pmau_data),
+        .activation_valid  ((state_r == S_RUN) && pmau_offer_valid && pair_lane2_valid),
+        .activation_ready  (pmau3_activation_ready), .input_ready (pmau3_input_ready), .activation_last (feed_last_r),
+        .weight_data       (weight_quad2_pmau_data), .scale_factor (cfg_scale),
+        .weight_valid      ((state_r == S_RUN) && pmau_offer_valid && pair_lane2_valid),
+        .weight_ready      (pmau3_weight_ready), .weight_last (feed_last_r),
+        .scalar_axpy       (16'd0), .result_data (pmau3_result_data),
+        .result_valid      (pmau3_result_valid), .result_ready (pmau3_result_ready),
+        .result_last       ()
+    );
+
+    PMAU_Full #(
+        .NUM_LANES         (NUM_LANES), .ACT_WIDTH (ACT_WIDTH),
+        .WEIGHT_WIDTH      (WEIGHT_WIDTH), .ACC_WIDTH (ACC_WIDTH),
+        .SCALE_WIDTH       (SCALE_WIDTH), .SCALE_FRAC_BITS (SCALE_FRAC_BITS),
+        .RESULT_FIFO_DEPTH (RESULT_FIFO_DEPTH)
+    ) u_pmau_quad3 (
+        .CLK               (CLK), .RST (RST), .compute_mode (compute_mode[1:0]),
+        .activation_data   (act_pmau_data),
+        .activation_valid  ((state_r == S_RUN) && pmau_offer_valid && pair_lane3_valid),
+        .activation_ready  (pmau4_activation_ready), .input_ready (pmau4_input_ready), .activation_last (feed_last_r),
+        .weight_data       (weight_quad3_pmau_data), .scale_factor (cfg_scale),
+        .weight_valid      ((state_r == S_RUN) && pmau_offer_valid && pair_lane3_valid),
+        .weight_ready      (pmau4_weight_ready), .weight_last (feed_last_r),
+        .scalar_axpy       (16'd0), .result_data (pmau4_result_data),
+        .result_valid      (pmau4_result_valid), .result_ready (pmau4_result_ready),
+        .result_last       ()
+    );
+
     VPU_Result_Requantizer #(
         .ACC_WIDTH   (ACC_WIDTH),
         .SHIFT_WIDTH (5)
@@ -540,13 +693,192 @@ module Matrix_Vector_Multiplication #(
         .value_out      (pmau_result_i8)
     );
 
-    // Flat payload index is pair-interleaved: low bit chooses even/odd leaf,
-    // remaining bits are the physical 16K-word leaf address.
-    wire [WEIGHT_LOCAL_ADDR_WIDTH-1:0] wr_pipe_weight_local_addr =
-        wr_pipe_index_r[WEIGHT_LOCAL_ADDR_WIDTH:1];
-    wire wr_pipe_weight_parity = wr_pipe_index_r[0];
+    // Keep the external pair-interleaved ABI while repacking internally by
+    // logical row slot.  The configured write stride is captured with every
+    // window write, so arbitrary write order inside one staged image remains
+    // valid.  q=index>>1 is divided by cfg_col_beats with one registered
+    // restoring bit per cycle: no variable /, %, or multiplier is present in
+    // the write path, and each stage is limited to an eight-bit trial compare
+    // and subtract because cfg_col_beats is in [1, MAX_COL_BEATS=128].
+    wire [15:0] wr_cfg_col_beats =
+        (cfg_col_beats != 16'd0) ? cfg_col_beats : auto_col_beats;
+
+    wire weight_div_input_valid =
+        wr_pipe_en_r && (wr_pipe_region_r == REGION_WEIGHT) &&
+        (wr_pipe_col_beats_r != 16'd0) &&
+        (wr_pipe_col_beats_r <= MAX_COL_BEATS_16);
+    wire [7:0] weight_div_s0_trial = {7'd0, wr_pipe_index_r[14]};
+    wire weight_div_s0_ge =
+        (weight_div_s0_trial >= wr_pipe_col_beats_r[7:0]);
+
+    // First quotient bit, q[13].  Every later bit is a separate registered
+    // stage below, yielding II=1 while avoiding the former seven-bit carry
+    // chain between two adjacent registers.
+    always @(posedge CLK) begin
+        if (!RST) begin
+            weight_div_valid_r[0] <= 1'b0;
+            weight_div_rem_r[0] <= 8'd0;
+            weight_div_pair_r[0] <= 14'd0;
+            weight_div_q_r[0] <= 14'd0;
+            weight_div_col_beats_r[0] <= 16'd0;
+            weight_div_parity_r[0] <= 1'b0;
+            weight_div_bank_r[0] <= 1'b0;
+            weight_div_data_r[0] <= {AXI_DATA_WIDTH{1'b0}};
+            weight_div_strb_r[0] <= {(AXI_DATA_WIDTH/8){1'b0}};
+        end else begin
+            weight_div_valid_r[0] <= weight_div_input_valid;
+            if (weight_div_input_valid) begin
+                weight_div_rem_r[0] <= weight_div_s0_ge ?
+                    (weight_div_s0_trial - wr_pipe_col_beats_r[7:0]) :
+                    weight_div_s0_trial;
+                weight_div_pair_r[0] <= weight_div_s0_ge ? 14'h2000 : 14'd0;
+                weight_div_q_r[0] <= wr_pipe_index_r[14:1];
+                weight_div_col_beats_r[0] <= wr_pipe_col_beats_r;
+                weight_div_parity_r[0] <= wr_pipe_index_r[0];
+                weight_div_bank_r[0] <= wr_pipe_bank_r;
+                weight_div_data_r[0] <= wr_pipe_data_r;
+                weight_div_strb_r[0] <= wr_pipe_strb_r;
+            end
+        end
+    end
+
+    genvar weight_div_stage_g;
+    generate
+        for (weight_div_stage_g = 1; weight_div_stage_g < WEIGHT_DIV_STAGES;
+             weight_div_stage_g = weight_div_stage_g + 1) begin : GEN_WEIGHT_DIV
+            localparam integer DIV_Q_BIT = WEIGHT_DIV_STAGES - 1 - weight_div_stage_g;
+            localparam [13:0] DIV_QUOT_BIT = (14'd1 << DIV_Q_BIT);
+            wire [7:0] div_trial =
+                {weight_div_rem_r[weight_div_stage_g-1][6:0],
+                 weight_div_q_r[weight_div_stage_g-1][DIV_Q_BIT]};
+            wire div_ge =
+                (div_trial >= weight_div_col_beats_r[weight_div_stage_g-1][7:0]);
+
+            always @(posedge CLK) begin
+                if (!RST) begin
+                    weight_div_valid_r[weight_div_stage_g] <= 1'b0;
+                    weight_div_rem_r[weight_div_stage_g] <= 8'd0;
+                    weight_div_pair_r[weight_div_stage_g] <= 14'd0;
+                    weight_div_q_r[weight_div_stage_g] <= 14'd0;
+                    weight_div_col_beats_r[weight_div_stage_g] <= 16'd0;
+                    weight_div_parity_r[weight_div_stage_g] <= 1'b0;
+                    weight_div_bank_r[weight_div_stage_g] <= 1'b0;
+                    weight_div_data_r[weight_div_stage_g] <= {AXI_DATA_WIDTH{1'b0}};
+                    weight_div_strb_r[weight_div_stage_g] <=
+                        {(AXI_DATA_WIDTH/8){1'b0}};
+                end else begin
+                    weight_div_valid_r[weight_div_stage_g] <=
+                        weight_div_valid_r[weight_div_stage_g-1];
+                    if (weight_div_valid_r[weight_div_stage_g-1]) begin
+                        weight_div_rem_r[weight_div_stage_g] <= div_ge ?
+                            (div_trial -
+                             weight_div_col_beats_r[weight_div_stage_g-1][7:0]) :
+                            div_trial;
+                        weight_div_pair_r[weight_div_stage_g] <= div_ge ?
+                            (weight_div_pair_r[weight_div_stage_g-1] | DIV_QUOT_BIT) :
+                            weight_div_pair_r[weight_div_stage_g-1];
+                        weight_div_q_r[weight_div_stage_g] <=
+                            weight_div_q_r[weight_div_stage_g-1];
+                        weight_div_col_beats_r[weight_div_stage_g] <=
+                            weight_div_col_beats_r[weight_div_stage_g-1];
+                        weight_div_parity_r[weight_div_stage_g] <=
+                            weight_div_parity_r[weight_div_stage_g-1];
+                        weight_div_bank_r[weight_div_stage_g] <=
+                            weight_div_bank_r[weight_div_stage_g-1];
+                        weight_div_data_r[weight_div_stage_g] <=
+                            weight_div_data_r[weight_div_stage_g-1];
+                        weight_div_strb_r[weight_div_stage_g] <=
+                            weight_div_strb_r[weight_div_stage_g-1];
+                    end
+                end
+            end
+        end
+    endgenerate
+
+    // q = pair*B + beat.  First remove beat, then the B belonging to an odd
+    // pair, divide the remaining even value by two, and restore beat.  These
+    // three arithmetic operations are registered separately to keep the
+    // post-divider local-address path shallow as well.
+    always @(posedge CLK) begin
+        if (!RST) begin
+            weight_map_delta_valid_r <= 1'b0;
+            weight_map_delta_r <= 14'd0;
+            weight_map_delta_pair_r <= 14'd0;
+            weight_map_delta_rem_r <= 8'd0;
+            weight_map_delta_col_beats_r <= 16'd0;
+            weight_map_delta_parity_r <= 1'b0;
+            weight_map_delta_bank_r <= 1'b0;
+            weight_map_delta_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            weight_map_delta_strb_r <= {(AXI_DATA_WIDTH/8){1'b0}};
+        end else begin
+            weight_map_delta_valid_r <= weight_div_valid_r[WEIGHT_DIV_STAGES-1];
+            if (weight_div_valid_r[WEIGHT_DIV_STAGES-1]) begin
+                weight_map_delta_r <=
+                    weight_div_q_r[WEIGHT_DIV_STAGES-1] -
+                    weight_div_rem_r[WEIGHT_DIV_STAGES-1];
+                weight_map_delta_pair_r <= weight_div_pair_r[WEIGHT_DIV_STAGES-1];
+                weight_map_delta_rem_r <= weight_div_rem_r[WEIGHT_DIV_STAGES-1];
+                weight_map_delta_col_beats_r <=
+                    weight_div_col_beats_r[WEIGHT_DIV_STAGES-1];
+                weight_map_delta_parity_r <= weight_div_parity_r[WEIGHT_DIV_STAGES-1];
+                weight_map_delta_bank_r <= weight_div_bank_r[WEIGHT_DIV_STAGES-1];
+                weight_map_delta_data_r <= weight_div_data_r[WEIGHT_DIV_STAGES-1];
+                weight_map_delta_strb_r <= weight_div_strb_r[WEIGHT_DIV_STAGES-1];
+            end
+        end
+    end
+
+    always @(posedge CLK) begin
+        if (!RST) begin
+            weight_map_base_valid_r <= 1'b0;
+            weight_map_base_r <= 13'd0;
+            weight_map_base_rem_r <= 8'd0;
+            weight_map_base_pair_odd_r <= 1'b0;
+            weight_map_base_parity_r <= 1'b0;
+            weight_map_base_bank_r <= 1'b0;
+            weight_map_base_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            weight_map_base_strb_r <= {(AXI_DATA_WIDTH/8){1'b0}};
+        end else begin
+            weight_map_base_valid_r <= weight_map_delta_valid_r;
+            if (weight_map_delta_valid_r) begin
+                weight_map_base_r <=
+                    (weight_map_delta_r -
+                     (weight_map_delta_pair_r[0] ?
+                      weight_map_delta_col_beats_r[13:0] : 14'd0)) >> 1;
+                weight_map_base_rem_r <= weight_map_delta_rem_r;
+                weight_map_base_pair_odd_r <= weight_map_delta_pair_r[0];
+                weight_map_base_parity_r <= weight_map_delta_parity_r;
+                weight_map_base_bank_r <= weight_map_delta_bank_r;
+                weight_map_base_data_r <= weight_map_delta_data_r;
+                weight_map_base_strb_r <= weight_map_delta_strb_r;
+            end
+        end
+    end
+
+    always @(posedge CLK) begin
+        if (!RST) begin
+            weight_map_valid_r <= 1'b0;
+            weight_map_row_slot_r <= 2'd0;
+            weight_map_local_addr_r <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
+            weight_map_bank_r <= 1'b0;
+            weight_map_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            weight_map_strb_r <= {(AXI_DATA_WIDTH/8){1'b0}};
+        end else begin
+            weight_map_valid_r <= weight_map_base_valid_r;
+            if (weight_map_base_valid_r) begin
+                weight_map_row_slot_r <= {weight_map_base_pair_odd_r,
+                                          weight_map_base_parity_r};
+                weight_map_local_addr_r <= weight_map_base_r +
+                                           weight_map_base_rem_r;
+                weight_map_bank_r <= weight_map_base_bank_r;
+                weight_map_data_r <= weight_map_base_data_r;
+                weight_map_strb_r <= weight_map_base_strb_r;
+            end
+        end
+    end
 
     integer wr_bank_i;
+    integer wr_top_bank_i;
     integer wr_ram_i;
     integer fsm_bank_i;
     integer fsm_ram_i;
@@ -558,8 +890,16 @@ module Matrix_Vector_Multiplication #(
             wr_pipe_region_r <= REGION_ACT;
             wr_pipe_index_r  <= 32'd0;
             wr_pipe_bank_r   <= 1'b0;
+            wr_pipe_col_beats_r <= 16'd0;
             wr_pipe_data_r   <= {AXI_DATA_WIDTH{1'b0}};
             wr_pipe_strb_r   <= {(AXI_DATA_WIDTH/8){1'b0}};
+            for (wr_top_bank_i = 0; wr_top_bank_i < BANK_COUNT; wr_top_bank_i = wr_top_bank_i + 1) begin
+                weight_leaf_stage_valid_r[wr_top_bank_i] <= 1'b0;
+                weight_leaf_stage_row_slot_r[wr_top_bank_i] <= 2'd0;
+                weight_leaf_stage_addr_r[wr_top_bank_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
+                weight_leaf_stage_data_r[wr_top_bank_i] <= {AXI_DATA_WIDTH{1'b0}};
+                weight_leaf_stage_strb_r[wr_top_bank_i] <= {(AXI_DATA_WIDTH/8){1'b0}};
+            end
             for (wr_ram_i = 0; wr_ram_i < WEIGHT_RAM_TOTAL; wr_ram_i = wr_ram_i + 1) begin
                 weight_wr_addr_leaf[wr_ram_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
                 weight_wr_en_leaf[wr_ram_i]   <= 1'b0;
@@ -569,34 +909,51 @@ module Matrix_Vector_Multiplication #(
         end else begin
             // Capture memory-window writes from AXI4_Mapping.  Activation is a
             // direct 128-bit BRAM word path, while Weight memory is split into
-            // four 32-bit banks and two fixed row-parity leaves.  Result BRAM is
+            // four 32-bit banks and four fixed logical-row leaves.  Result BRAM is
             // written only by the PMAU result path below.
             wr_pipe_en_r <= mm_wr_en && !pair_active_write_block;
             if (mm_wr_en && !pair_active_write_block) begin
                 wr_pipe_region_r <= mm_wr_region;
                 wr_pipe_index_r  <= mm_wr_index;
                 wr_pipe_bank_r   <= cfg_wr_bank;
+                wr_pipe_col_beats_r <= wr_cfg_col_beats;
                 wr_pipe_data_r   <= mm_wr_data;
                 wr_pipe_strb_r   <= mm_wr_strb;
+            end
+
+            for (wr_top_bank_i = 0; wr_top_bank_i < BANK_COUNT; wr_top_bank_i = wr_top_bank_i + 1)
+                weight_leaf_stage_valid_r[wr_top_bank_i] <= 1'b0;
+            if (weight_map_valid_r) begin
+                weight_leaf_stage_valid_r[weight_map_bank_r] <= 1'b1;
+                weight_leaf_stage_row_slot_r[weight_map_bank_r] <= weight_map_row_slot_r;
+                weight_leaf_stage_addr_r[weight_map_bank_r] <= weight_map_local_addr_r;
+                weight_leaf_stage_data_r[weight_map_bank_r] <= weight_map_data_r;
+                weight_leaf_stage_strb_r[weight_map_bank_r] <= weight_map_strb_r;
             end
 
             for (wr_ram_i = 0; wr_ram_i < WEIGHT_RAM_TOTAL; wr_ram_i = wr_ram_i + 1)
                 weight_wr_en_leaf[wr_ram_i] <= 1'b0;
 
-            for (wr_bank_i = 0; wr_bank_i < WEIGHT_BANKS; wr_bank_i = wr_bank_i + 1) begin
-                if (wr_pipe_en_r && (wr_pipe_region_r == REGION_WEIGHT)) begin
-                    weight_wr_addr_leaf[wr_pipe_bank_r*WEIGHT_RAM_COUNT +
-                                        wr_bank_i*WEIGHT_PARITY_LEAVES + wr_pipe_weight_parity]
-                        <= wr_pipe_weight_local_addr;
-                    weight_wr_en_leaf[wr_pipe_bank_r*WEIGHT_RAM_COUNT +
-                                      wr_bank_i*WEIGHT_PARITY_LEAVES + wr_pipe_weight_parity]
-                        <= 1'b1;
-                    weight_wr_data_leaf[wr_pipe_bank_r*WEIGHT_RAM_COUNT +
-                                        wr_bank_i*WEIGHT_PARITY_LEAVES + wr_pipe_weight_parity]
-                        <= wr_pipe_data_r[WEIGHT_BANK_WIDTH*wr_bank_i +: WEIGHT_BANK_WIDTH];
-                    weight_wr_strb_leaf[wr_pipe_bank_r*WEIGHT_RAM_COUNT +
-                                        wr_bank_i*WEIGHT_PARITY_LEAVES + wr_pipe_weight_parity]
-                        <= wr_pipe_strb_r[WEIGHT_BANK_BYTES*wr_bank_i +: WEIGHT_BANK_BYTES];
+            for (wr_top_bank_i = 0; wr_top_bank_i < BANK_COUNT; wr_top_bank_i = wr_top_bank_i + 1) begin
+                for (wr_bank_i = 0; wr_bank_i < WEIGHT_BANKS; wr_bank_i = wr_bank_i + 1) begin
+                    if (weight_leaf_stage_valid_r[wr_top_bank_i]) begin
+                        weight_wr_addr_leaf[wr_top_bank_i*WEIGHT_RAM_COUNT +
+                                             wr_bank_i*WEIGHT_ROW_SLOT_LEAVES +
+                                             weight_leaf_stage_row_slot_r[wr_top_bank_i]]
+                            <= weight_leaf_stage_addr_r[wr_top_bank_i];
+                        weight_wr_en_leaf[wr_top_bank_i*WEIGHT_RAM_COUNT +
+                                           wr_bank_i*WEIGHT_ROW_SLOT_LEAVES +
+                                           weight_leaf_stage_row_slot_r[wr_top_bank_i]]
+                            <= 1'b1;
+                        weight_wr_data_leaf[wr_top_bank_i*WEIGHT_RAM_COUNT +
+                                             wr_bank_i*WEIGHT_ROW_SLOT_LEAVES +
+                                             weight_leaf_stage_row_slot_r[wr_top_bank_i]]
+                            <= weight_leaf_stage_data_r[wr_top_bank_i][WEIGHT_BANK_WIDTH*wr_bank_i +: WEIGHT_BANK_WIDTH];
+                        weight_wr_strb_leaf[wr_top_bank_i*WEIGHT_RAM_COUNT +
+                                             wr_bank_i*WEIGHT_ROW_SLOT_LEAVES +
+                                             weight_leaf_stage_row_slot_r[wr_top_bank_i]]
+                            <= weight_leaf_stage_strb_r[wr_top_bank_i][WEIGHT_BANK_BYTES*wr_bank_i +: WEIGHT_BANK_BYTES];
+                    end
                 end
             end
         end
@@ -638,14 +995,10 @@ module Matrix_Vector_Multiplication #(
         wr_pipe_strb_r[ACT_BYTE_COUNT-1:0];
     reg [AXI_DATA_WIDTH-1:0] result_wr_data;
     reg [(AXI_DATA_WIDTH/8)-1:0] result_wr_strobe;
-    reg [AXI_DATA_WIDTH-1:0] result_pair_wr_data;
-    reg [(AXI_DATA_WIDTH/8)-1:0] result_pair_wr_strobe;
     integer result_lane_i;
     always @* begin
         result_wr_data   = {AXI_DATA_WIDTH{1'b0}};
         result_wr_strobe = {(AXI_DATA_WIDTH/8){1'b0}};
-        result_pair_wr_data = {AXI_DATA_WIDTH{1'b0}};
-        result_pair_wr_strobe = {(AXI_DATA_WIDTH/8){1'b0}};
         if (result_writeback_fire) begin
             if (result_write_is_i8_r) begin
                 // Final-result mode: PL returns one signed INT8 value per row.
@@ -660,12 +1013,6 @@ module Matrix_Vector_Multiplication #(
                 result_wr_strobe[RESULT_BYTE_COUNT*result_write_lane_r[RESULT_LANE_SHIFT-1:0] +: RESULT_BYTE_COUNT] =
                     {RESULT_BYTE_COUNT{1'b1}};
             end
-        end
-        if (result_pair_write_pending_r) begin
-            result_pair_wr_data[ACC_WIDTH*result_pair_write_lane_r[RESULT_LANE_SHIFT-1:0] +: ACC_WIDTH] =
-                result_pair_write_i32_r;
-            result_pair_wr_strobe[RESULT_BYTE_COUNT*result_pair_write_lane_r[RESULT_LANE_SHIFT-1:0] +: RESULT_BYTE_COUNT] =
-                {RESULT_BYTE_COUNT{1'b1}};
         end
     end
 
@@ -703,21 +1050,21 @@ module Matrix_Vector_Multiplication #(
     endgenerate
 
     // Four 32-bit lane banks preserve the packed-Q8 interface.  Each bank has
-    // separate 16K SDP URAM leaves for even and odd rows, allowing both P2 rows
+    // four 8K SDP URAM leaves for logical row slots, allowing all four P2 rows
     // to read concurrently without a true-dual-port memory primitive.
     genvar weight_top_bank_g;
     genvar weight_bank_g;
-    genvar weight_parity_g;
+    genvar weight_row_slot_g;
     generate
         for (weight_top_bank_g = 0; weight_top_bank_g < BANK_COUNT;
              weight_top_bank_g = weight_top_bank_g + 1) begin : GEN_WEIGHT_TOP_BANK
             for (weight_bank_g = 0; weight_bank_g < WEIGHT_BANKS;
                  weight_bank_g = weight_bank_g + 1) begin : GEN_WEIGHT_BANK
-                for (weight_parity_g = 0; weight_parity_g < WEIGHT_PARITY_LEAVES;
-                     weight_parity_g = weight_parity_g + 1) begin : GEN_WEIGHT_PARITY
-                    localparam integer WEIGHT_RAM_INDEX =
-                        weight_top_bank_g * WEIGHT_RAM_COUNT +
-                        weight_bank_g * WEIGHT_PARITY_LEAVES + weight_parity_g;
+                 for (weight_row_slot_g = 0; weight_row_slot_g < WEIGHT_ROW_SLOT_LEAVES;
+                      weight_row_slot_g = weight_row_slot_g + 1) begin : GEN_WEIGHT_ROW_SLOT
+                     localparam integer WEIGHT_RAM_INDEX =
+                         weight_top_bank_g * WEIGHT_RAM_COUNT +
+                         weight_bank_g * WEIGHT_ROW_SLOT_LEAVES + weight_row_slot_g;
                     Dual_Port_BRAM #(
                         .AWIDTH (WEIGHT_LOCAL_ADDR_WIDTH),
                         .DWIDTH (WEIGHT_BANK_WIDTH),
@@ -726,8 +1073,8 @@ module Matrix_Vector_Multiplication #(
                     ) u_weight_bram_bank (
                         .clka  (CLK),
                         // A is the only staging-write port.  B is the only
-                        // compute-read port for all modes; paired rows select
-                        // distinct parity leaves and therefore never contend.
+                         // compute-read port for all modes; four-row P2 selects
+                         // distinct row-slot leaves and therefore never contends.
                         .ena   (weight_wr_en_leaf[WEIGHT_RAM_INDEX]),
                         .wea   (weight_wr_strb_leaf[WEIGHT_RAM_INDEX]),
                         .addra (weight_wr_addr_leaf[WEIGHT_RAM_INDEX]),
@@ -748,17 +1095,31 @@ module Matrix_Vector_Multiplication #(
     always @* begin
         weight_compute_data = {WEIGHT_BEAT_WIDTH{1'b0}};
         weight_pair_compute_data = {WEIGHT_BEAT_WIDTH{1'b0}};
+        weight_quad2_compute_data = {WEIGHT_BEAT_WIDTH{1'b0}};
+        weight_quad3_compute_data = {WEIGHT_BEAT_WIDTH{1'b0}};
         for (mux_bank_i = 0; mux_bank_i < WEIGHT_BANKS; mux_bank_i = mux_bank_i + 1) begin
             weight_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
                 weight_compute_data_leaf[
                     WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT +
-                                       mux_bank_i*WEIGHT_PARITY_LEAVES + read_parity_x_r)
+                                        mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_row_slot_x_r)
                     +: WEIGHT_BANK_WIDTH
                 ];
             weight_pair_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
                 weight_compute_data_leaf[
                     WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT +
-                                       mux_bank_i*WEIGHT_PARITY_LEAVES + read_pair_parity_x_r)
+                                        mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_pair_row_slot_x_r)
+                    +: WEIGHT_BANK_WIDTH
+                ];
+            weight_quad2_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
+                weight_compute_data_leaf[
+                    WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT +
+                                        mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_quad2_row_slot_x_r)
+                    +: WEIGHT_BANK_WIDTH
+                ];
+            weight_quad3_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
+                weight_compute_data_leaf[
+                    WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT +
+                                        mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_quad3_row_slot_x_r)
                     +: WEIGHT_BANK_WIDTH
                 ];
         end
@@ -776,13 +1137,10 @@ module Matrix_Vector_Multiplication #(
                 .USE_URAM (0)
             ) u_result_bram (
                 .clka  (CLK),
-                .ena   ((result_rd_hit && (rd_pipe_bank_r == result_bank_g)) ||
-                         (result_pair_write_pending_r && (active_bank_r == result_bank_g))),
-                .wea   (result_pair_write_pending_r && (active_bank_r == result_bank_g) ?
-                        result_pair_wr_strobe : {(AXI_DATA_WIDTH/8){1'b0}}),
-                .addra (result_pair_write_pending_r && (active_bank_r == result_bank_g) ?
-                        result_pair_write_addr_r : rd_pipe_index_r[RESULT_ADDR_WIDTH-1:0]),
-                .dina  (result_pair_wr_data),
+                .ena   (result_rd_hit && (rd_pipe_bank_r == result_bank_g)),
+                .wea   ({(AXI_DATA_WIDTH/8){1'b0}}),
+                .addra (rd_pipe_index_r[RESULT_ADDR_WIDTH-1:0]),
+                .dina  ({AXI_DATA_WIDTH{1'b0}}),
                 .douta (result_cpu_rd_data_bank[AXI_DATA_WIDTH*result_bank_g +: AXI_DATA_WIDTH]),
                 .clkb  (CLK),
                 .enb   (result_writeback_fire && (active_bank_r == result_bank_g)),
@@ -877,12 +1235,21 @@ module Matrix_Vector_Multiplication #(
             result_write_i8_r    <= 8'sd0;
             result_write_i32_r   <= {ACC_WIDTH{1'b0}};
             result_write_is_i8_r <= 1'b0;
-            result_pair_write_pending_r <= 1'b0;
-            result_pair_write_addr_r <= {RESULT_ADDR_WIDTH{1'b0}};
-            result_pair_write_lane_r <= {RESULT_I8_LANE_SHIFT{1'b0}};
-            result_pair_write_i32_r <= {ACC_WIDTH{1'b0}};
-            result_pair_write_issued_r <= 1'b0;
             pair_mode_r <= 1'b0;
+            result_row1_data_r <= {ACC_WIDTH{1'b0}};
+            result_row2_data_r <= {ACC_WIDTH{1'b0}};
+            result_row3_data_r <= {ACC_WIDTH{1'b0}};
+            result_row1_addr_r <= {RESULT_ADDR_WIDTH{1'b0}};
+            result_row2_addr_r <= {RESULT_ADDR_WIDTH{1'b0}};
+            result_row3_addr_r <= {RESULT_ADDR_WIDTH{1'b0}};
+            result_row1_lane_r <= {RESULT_I8_LANE_SHIFT{1'b0}};
+            result_row2_lane_r <= {RESULT_I8_LANE_SHIFT{1'b0}};
+            result_row3_lane_r <= {RESULT_I8_LANE_SHIFT{1'b0}};
+            result_write_slot_r <= 2'd0;
+            result_writes_done_r <= 1'b0;
+            raw_second_packet_r <= 1'b0;
+            raw_first_packet_accepted_r <= 1'b0;
+            raw_second_packet_accepted_r <= 1'b0;
             result_requant_pending_r <= 1'b0;
             result_requant_value_r <= {ACC_WIDTH{1'b0}};
             result_requant_addr_r <= {RESULT_ADDR_WIDTH{1'b0}};
@@ -897,6 +1264,7 @@ module Matrix_Vector_Multiplication #(
             spu_raw_clear_accum <= 1'b0;
             spu_raw_job_id      <= 32'd0;
             spu_raw_bank        <= 1'b0;
+            spu_raw_scale_index <= 32'd0;
             spu_raw_done        <= 1'b0;
             spu_raw_pair_valid  <= 1'b0;
             spu_raw_pair_data   <= 32'sd0;
@@ -907,15 +1275,17 @@ module Matrix_Vector_Multiplication #(
             spu_raw_pair_clear_accum <= 1'b0;
             spu_raw_pair_job_id <= 32'd0;
             spu_raw_pair_bank <= 1'b0;
+            spu_raw_pair_scale_index <= 32'd0;
             feed_valid_r        <= 1'b0;
             feed_last_r         <= 1'b0;
             feed_group_last_r   <= 1'b0;
             read_req_valid_r    <= 1'b0;
             read_req_act_addr_r <= {ACT_ADDR_WIDTH{1'b0}};
             read_req_weight_addr_r <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
-            read_req_parity_r   <= 1'b0;
-            read_req_pair_weight_addr_r <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
-            read_req_pair_parity_r <= 1'b0;
+            read_req_row_slot_r <= 2'd0;
+            read_req_pair_row_slot_r <= 2'd0;
+            read_req_quad2_row_slot_r <= 2'd0;
+            read_req_quad3_row_slot_r <= 2'd0;
             read_req_last_r     <= 1'b0;
             read_req_group_last_r <= 1'b0;
             read_valid_d_r      <= 1'b0;
@@ -927,12 +1297,18 @@ module Matrix_Vector_Multiplication #(
             read_valid_x_r      <= 1'b0;
             read_last_x_r       <= 1'b0;
             read_group_last_x_r <= 1'b0;
-            read_parity_d_r      <= 1'b0;
-            read_parity_q_r      <= 1'b0;
-            read_parity_x_r      <= 1'b0;
-            read_pair_parity_d_r <= 1'b0;
-            read_pair_parity_q_r <= 1'b0;
-            read_pair_parity_x_r <= 1'b0;
+            read_row_slot_d_r      <= 2'd0;
+            read_row_slot_q_r      <= 2'd0;
+            read_row_slot_x_r      <= 2'd0;
+            read_pair_row_slot_d_r <= 2'd0;
+            read_pair_row_slot_q_r <= 2'd0;
+            read_pair_row_slot_x_r <= 2'd0;
+            read_quad2_row_slot_d_r <= 2'd0;
+            read_quad2_row_slot_q_r <= 2'd0;
+            read_quad2_row_slot_x_r <= 2'd0;
+            read_quad3_row_slot_d_r <= 2'd0;
+            read_quad3_row_slot_q_r <= 2'd0;
+            read_quad3_row_slot_x_r <= 2'd0;
             compute_rd_en       <= 1'b0;
             act_compute_addr    <= {ACT_ADDR_WIDTH{1'b0}};
             for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_TOTAL; fsm_ram_i = fsm_ram_i + 1) begin
@@ -942,11 +1318,12 @@ module Matrix_Vector_Multiplication #(
             act_pmau_data       <= {ACT_BEAT_WIDTH{1'b0}};
             weight_pmau_data    <= {WEIGHT_BEAT_WIDTH{1'b0}};
             weight_pair_pmau_data <= {WEIGHT_BEAT_WIDTH{1'b0}};
+            weight_quad2_pmau_data <= {WEIGHT_BEAT_WIDTH{1'b0}};
+            weight_quad3_pmau_data <= {WEIGHT_BEAT_WIDTH{1'b0}};
         end else begin
             compute_rd_en  <= 1'b0;
             result_accum_rd_en_r <= 1'b0;
             result_write_pending_r <= 1'b0;
-            result_pair_write_pending_r <= 1'b0;
             result_requant_pending_r <= 1'b0;
             spu_raw_done  <= 1'b0;
             if (result_accum_rd_en_r)
@@ -1013,7 +1390,7 @@ module Matrix_Vector_Multiplication #(
                         done_bank_r <= active_bank_r;
                         done_job_id_r <= active_job_id_r;
                         state_r <= S_ERROR;
-                    end else begin
+                    end else if (!weight_write_pipeline_busy) begin
                         state_r <= S_RUN;
                     end
                 end
@@ -1032,6 +1409,8 @@ module Matrix_Vector_Multiplication #(
                         act_pmau_data    <= act_compute_data;
                         weight_pmau_data <= weight_compute_data;
                         weight_pair_pmau_data <= weight_pair_compute_data;
+                        weight_quad2_pmau_data <= weight_quad2_compute_data;
+                        weight_quad3_pmau_data <= weight_quad3_compute_data;
                         read_valid_x_r <= 1'b0;
                     end
 
@@ -1039,8 +1418,10 @@ module Matrix_Vector_Multiplication #(
                         read_valid_x_r <= 1'b1;
                         read_last_x_r  <= read_last_q_r;
                         read_group_last_x_r <= read_group_last_q_r;
-                        read_parity_x_r <= read_parity_q_r;
-                        read_pair_parity_x_r <= read_pair_parity_q_r;
+                        read_row_slot_x_r <= read_row_slot_q_r;
+                        read_pair_row_slot_x_r <= read_pair_row_slot_q_r;
+                        read_quad2_row_slot_x_r <= read_quad2_row_slot_q_r;
+                        read_quad3_row_slot_x_r <= read_quad3_row_slot_q_r;
                         read_valid_q_r <= 1'b0;
                     end
 
@@ -1048,8 +1429,10 @@ module Matrix_Vector_Multiplication #(
                         read_valid_q_r <= 1'b1;
                         read_last_q_r  <= read_last_d_r;
                         read_group_last_q_r <= read_group_last_d_r;
-                        read_parity_q_r <= read_parity_d_r;
-                        read_pair_parity_q_r <= read_pair_parity_d_r;
+                        read_row_slot_q_r <= read_row_slot_d_r;
+                        read_pair_row_slot_q_r <= read_pair_row_slot_d_r;
+                        read_quad2_row_slot_q_r <= read_quad2_row_slot_d_r;
+                        read_quad3_row_slot_q_r <= read_quad3_row_slot_d_r;
                     end
 
                     if (shift_req_to_d) begin
@@ -1057,37 +1440,55 @@ module Matrix_Vector_Multiplication #(
                         act_compute_addr    <= read_req_act_addr_r;
                         for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
                             weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                   fsm_bank_i*WEIGHT_PARITY_LEAVES + read_req_parity_r]
+                                                   fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_row_slot_r]
                                 <= 1'b1;
                             weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                     fsm_bank_i*WEIGHT_PARITY_LEAVES + read_req_parity_r]
+                                                     fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_row_slot_r]
                                 <= read_req_weight_addr_r;
                             if (pair_lane1_valid) begin
-                                // Primary and companion parities are opposite,
-                                // so both independent SDP B ports can be
-                                // enabled on this cycle without a leaf conflict.
+                                // Every valid P2 row owns a distinct row-slot
+                                // leaf and therefore a distinct SDP B port.
                                 weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                       fsm_bank_i*WEIGHT_PARITY_LEAVES + read_req_pair_parity_r]
+                                                       fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_pair_row_slot_r]
                                     <= 1'b1;
                                 weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                         fsm_bank_i*WEIGHT_PARITY_LEAVES + read_req_pair_parity_r]
-                                    <= read_req_pair_weight_addr_r;
+                                                         fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_pair_row_slot_r]
+                                    <= read_req_weight_addr_r;
+                            end
+                            if (pair_lane2_valid) begin
+                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
+                                                       fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad2_row_slot_r]
+                                    <= 1'b1;
+                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT +
+                                                         fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad2_row_slot_r]
+                                    <= read_req_weight_addr_r;
+                            end
+                            if (pair_lane3_valid) begin
+                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
+                                                       fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad3_row_slot_r]
+                                    <= 1'b1;
+                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT +
+                                                         fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad3_row_slot_r]
+                                    <= read_req_weight_addr_r;
                             end
                         end
                         read_valid_d_r      <= 1'b1;
                         read_last_d_r       <= read_req_last_r;
                         read_group_last_d_r <= read_req_group_last_r;
-                        read_parity_d_r      <= read_req_parity_r;
-                        read_pair_parity_d_r <= read_req_pair_parity_r;
+                        read_row_slot_d_r      <= read_req_row_slot_r;
+                        read_pair_row_slot_d_r <= read_req_pair_row_slot_r;
+                        read_quad2_row_slot_d_r <= read_req_quad2_row_slot_r;
+                        read_quad3_row_slot_d_r <= read_req_quad3_row_slot_r;
                     end
 
                     if (can_issue_read) begin
                         read_req_valid_r      <= 1'b1;
                         read_req_act_addr_r   <= read_abs_beat[ACT_ADDR_WIDTH-1:0];
                         read_req_weight_addr_r <= issue_weight_local_addr;
-                        read_req_parity_r     <= issue_weight_parity;
-                        read_req_pair_weight_addr_r <= issue_pair_weight_local_addr;
-                        read_req_pair_parity_r <= issue_pair_weight_parity;
+                        read_req_row_slot_r    <= issue_weight_row_slot;
+                        read_req_pair_row_slot_r <= issue_pair_weight_row_slot;
+                        read_req_quad2_row_slot_r <= issue_quad2_weight_row_slot;
+                        read_req_quad3_row_slot_r <= issue_quad3_weight_row_slot;
                         read_req_last_r       <= issue_read_last;
                         read_req_group_last_r <= issue_read_group_last;
                         read_beat_idx_r       <= read_beat_idx_r + 16'd1;
@@ -1130,25 +1531,39 @@ module Matrix_Vector_Multiplication #(
                             state_r <= result_wr_index_ok ? S_ACCUM_WAIT :
                                                          S_ERROR;
                         end else begin
-                            if (result_wr_index_ok) begin
+                            if (result_wr_index_ok &&
+                                (!pair_lane1_valid || (pair_result_value_index < MAX_RESULT_VALUES_32)) &&
+                                (!pair_lane2_valid || (quad2_result_value_index < MAX_RESULT_VALUES_32)) &&
+                                (!pair_lane3_valid || (quad3_result_value_index < MAX_RESULT_VALUES_32))) begin
+                                // Capture the four atomically returned PMAU values.  Result
+                                // BRAM has one compute write port, so S_RAW_STREAM_HOLD
+                                // serializes them before the matching raw packet is offered.
                                 result_write_pending_r <= 1'b1;
                                 result_write_addr_r    <= result_wr_addr;
                                 result_write_lane_r    <= result_wr_lane;
                                 result_write_i32_r     <= pmau_result_data;
                                 result_write_is_i8_r   <= 1'b0;
-                                // Commit lane 0 now; lane 1 is committed on
-                                // the following retained-stream cycle. This
-                                // avoids a same-word TDP collision when two
-                                // adjacent raw INT32 values share a Result
-                                // BRAM word.
-                                result_pair_write_pending_r <= 1'b0;
-                                result_pair_write_issued_r <= 1'b0;
-                                result_pair_write_addr_r <= pair_result_wr_addr_i32;
-                                result_pair_write_lane_r <=
+                                result_row1_data_r <= pmau2_result_data;
+                                result_row2_data_r <= pmau3_result_data;
+                                result_row3_data_r <= pmau4_result_data;
+                                result_row1_addr_r <= pair_result_wr_addr_i32;
+                                result_row2_addr_r <= quad2_result_wr_addr_i32;
+                                result_row3_addr_r <= quad3_result_wr_addr_i32;
+                                result_row1_lane_r <=
                                     {{(RESULT_I8_LANE_SHIFT-RESULT_LANE_SHIFT){1'b0}},
                                      pair_result_wr_lane_i32};
-                                result_pair_write_i32_r <= pmau2_result_data;
-                                spu_raw_valid          <= 1'b1;
+                                result_row2_lane_r <=
+                                    {{(RESULT_I8_LANE_SHIFT-RESULT_LANE_SHIFT){1'b0}},
+                                     quad2_result_wr_lane_i32};
+                                result_row3_lane_r <=
+                                    {{(RESULT_I8_LANE_SHIFT-RESULT_LANE_SHIFT){1'b0}},
+                                     quad3_result_wr_lane_i32};
+                                result_write_slot_r <= 2'd0;
+                                result_writes_done_r <= 1'b0;
+                                raw_second_packet_r <= 1'b0;
+                                raw_first_packet_accepted_r <= 1'b0;
+                                raw_second_packet_accepted_r <= 1'b0;
+                                spu_raw_valid          <= 1'b0;
                                 spu_raw_data           <= $signed(pmau_result_data);
                                 spu_raw_row            <= row_idx_r;
                                 spu_raw_block          <= block_idx_r;
@@ -1158,6 +1573,7 @@ module Matrix_Vector_Multiplication #(
                                 spu_raw_clear_accum    <= (block_idx_r == 16'd0);
                                 spu_raw_job_id         <= active_job_id_r;
                                 spu_raw_bank           <= active_bank_r;
+                                spu_raw_scale_index   <= result_value_index;
                                 spu_raw_pair_valid     <= pair_lane1_valid;
                                 spu_raw_pair_data      <= $signed(pmau2_result_data);
                                 spu_raw_pair_row       <= row_idx_r + 16'd1;
@@ -1167,6 +1583,7 @@ module Matrix_Vector_Multiplication #(
                                 spu_raw_pair_clear_accum <= (block_idx_r == 16'd0);
                                 spu_raw_pair_job_id    <= active_job_id_r;
                                 spu_raw_pair_bank      <= active_bank_r;
+                                spu_raw_pair_scale_index <= pair_result_value_index;
                                 state_r                <= S_RAW_STREAM_HOLD;
                             end else begin
                                 error_r <= 1'b1;
@@ -1177,37 +1594,118 @@ module Matrix_Vector_Multiplication #(
                 end
 
                 S_RAW_STREAM_HOLD: begin
-                    // Keep the complete raw token stable until SPU/FIFO
-                    // accepts it.  Row/block progress is deliberately held
-                    // here, so no partial result can be lost under backpressure.
+                    // Serialize four raw Result-BRAM writes on port B, then
+                    // retain each existing two-row packet until SPU accepts it.
+                    // Row/block progress waits for the final write and second
+                    // packet handshake, so neither storage nor stream data can
+                    // be lost under backpressure.
                     feed_valid_r <= 1'b0;
-                    if (pair_lane1_valid && !result_pair_write_issued_r) begin
-                        result_pair_write_pending_r <= 1'b1;
-                        result_pair_write_issued_r <= 1'b1;
+                    if (result_writeback_fire) begin
+                        case (result_write_slot_r)
+                            2'd0: begin
+                                if (pair_lane1_valid) begin
+                                    result_write_pending_r <= 1'b1;
+                                    result_write_addr_r <= result_row1_addr_r;
+                                    result_write_lane_r <= result_row1_lane_r;
+                                    result_write_i32_r <= result_row1_data_r;
+                                    result_write_is_i8_r <= 1'b0;
+                                    result_write_slot_r <= 2'd1;
+                                end else begin
+                                    result_writes_done_r <= 1'b1;
+                                    spu_raw_valid <= 1'b1;
+                                end
+                            end
+
+                            2'd1: begin
+                                // First P2 pair is now committed and may be
+                                // presented while the second pair drains.
+                                spu_raw_valid <= 1'b1;
+                                if (pair_lane2_valid) begin
+                                    result_write_pending_r <= 1'b1;
+                                    result_write_addr_r <= result_row2_addr_r;
+                                    result_write_lane_r <= result_row2_lane_r;
+                                    result_write_i32_r <= result_row2_data_r;
+                                    result_write_is_i8_r <= 1'b0;
+                                    result_write_slot_r <= 2'd2;
+                                end else begin
+                                    result_writes_done_r <= 1'b1;
+                                end
+                            end
+
+                            2'd2: begin
+                                if (pair_lane3_valid) begin
+                                    result_write_pending_r <= 1'b1;
+                                    result_write_addr_r <= result_row3_addr_r;
+                                    result_write_lane_r <= result_row3_lane_r;
+                                    result_write_i32_r <= result_row3_data_r;
+                                    result_write_is_i8_r <= 1'b0;
+                                    result_write_slot_r <= 2'd3;
+                                end else begin
+                                    result_writes_done_r <= 1'b1;
+                                end
+                            end
+
+                            default: begin
+                                result_writes_done_r <= 1'b1;
+                            end
+                        endcase
                     end
                     if (spu_raw_valid && spu_raw_ready) begin
-                        spu_raw_valid <= 1'b0;
-                        spu_raw_pair_valid <= 1'b0;
+                        if (!raw_second_packet_r && pair_lane2_valid) begin
+                            // The P2 interface remains a pair packet.  Present
+                            // rows r+2/r+3 only after r/r+1 handshakes.
+                            raw_second_packet_r <= 1'b1;
+                            raw_first_packet_accepted_r <= 1'b1;
+                            spu_raw_valid <= 1'b1;
+                            spu_raw_data <= result_row2_data_r;
+                            spu_raw_row <= row_idx_r + 16'd2;
+                            spu_raw_block <= block_idx_r;
+                            spu_raw_group_blocks <= group_blocks_r;
+                            spu_raw_last_block <= ((block_idx_r + 16'd1) >= group_blocks_r);
+                            spu_raw_clear_accum <= (block_idx_r == 16'd0);
+                            spu_raw_job_id <= active_job_id_r;
+                            spu_raw_bank <= active_bank_r;
+                            spu_raw_scale_index <= quad2_result_value_index;
+                            spu_raw_pair_valid <= pair_lane3_valid;
+                            spu_raw_pair_data <= result_row3_data_r;
+                            spu_raw_pair_row <= row_idx_r + 16'd3;
+                            spu_raw_pair_block <= block_idx_r;
+                            spu_raw_pair_group_blocks <= group_blocks_r;
+                            spu_raw_pair_last_block <= ((block_idx_r + 16'd1) >= group_blocks_r);
+                            spu_raw_pair_clear_accum <= (block_idx_r == 16'd0);
+                            spu_raw_pair_job_id <= active_job_id_r;
+                            spu_raw_pair_bank <= active_bank_r;
+                            spu_raw_pair_scale_index <= quad3_result_value_index;
+                        end else if (raw_second_packet_r) begin
+                            spu_raw_valid <= 1'b0;
+                            spu_raw_pair_valid <= 1'b0;
+                            raw_second_packet_accepted_r <= 1'b1;
+                        end else begin
+                            spu_raw_valid <= 1'b0;
+                            spu_raw_pair_valid <= 1'b0;
+                            raw_first_packet_accepted_r <= 1'b1;
+                        end
+                    end
+
+                    if (result_writes_done_r &&
+                        ((!pair_lane2_valid && raw_first_packet_accepted_r) ||
+                         (pair_lane2_valid && raw_second_packet_accepted_r))) begin
                         if ((block_idx_r + 16'd1) < group_blocks_r) begin
                             block_idx_r <= block_idx_r + 16'd1;
                             state_r <= S_RUN;
                         end else begin
                             block_idx_r <= 16'd0;
-                            if ((row_idx_r + (pair_lane1_valid ? 16'd2 : 16'd1)) >= active_rows_r) begin
+                            if ((row_idx_r + (pair_mode_r ? 16'd4 : 16'd1)) >= active_rows_r) begin
                                 state_r <= S_DRAIN_RESULT;
                             end else begin
-                                row_idx_r         <= row_idx_r + (pair_lane1_valid ? 16'd2 : 16'd1);
-                                read_beat_idx_r   <= 16'd0;
+                                row_idx_r <= row_idx_r + (pair_mode_r ? 16'd4 : 16'd1);
+                                read_beat_idx_r <= 16'd0;
                                 result_row_base_r <= result_row_base_r +
-                                                     (pair_lane1_valid ? ({16'd0, group_blocks_r} << 1) :
-                                                                         {16'd0, group_blocks_r});
-                                // Parity leaves share one physical row-pair
-                                // base.  A paired issue advances by a whole
-                                // pair; legacy one-row mode advances only
-                                // after consuming the odd member.
-                                if (pair_lane1_valid || row_idx_r[0])
+                                                     (pair_mode_r ? ({16'd0, group_blocks_r} << 2) :
+                                                                    {16'd0, group_blocks_r});
+                                if (pair_mode_r || (row_idx_r[1:0] == 2'd3))
                                     weight_row_base_r <= weight_row_base_r + active_col_beats_r;
-                                state_r           <= S_RUN;
+                                state_r <= S_RUN;
                             end
                         end
                     end
@@ -1254,10 +1752,9 @@ module Matrix_Vector_Multiplication #(
                         row_idx_r         <= row_idx_r + 16'd1;
                         read_beat_idx_r   <= 16'd0;
                         result_row_base_r <= result_row_base_r + 32'd1;
-                        // INT8/legacy mode walks one row at a time.  Even and
-                        // odd rows select different leaves at the same base;
-                        // advance the pair base only after the odd row.
-                        if (row_idx_r[0])
+                        // INT8/legacy mode walks one row at a time.  Four
+                        // logical row slots share one local row-group base.
+                        if (row_idx_r[1:0] == 2'd3)
                             weight_row_base_r <= weight_row_base_r +
                                                  active_col_beats_r;
                         state_r           <= result_accum_emit_r ?

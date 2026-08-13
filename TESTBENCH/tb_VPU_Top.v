@@ -221,10 +221,10 @@ module tb_VPU_Top;
             cycle_count <= cycle_count + 1;
     end
 
-    // The paired topology has a distinct physical-port contract: a write to
-    // the inactive top bank must use B while the active top bank consumes A/B
-    // for companion/primary reads.  The staged address below is in shard 0,
-    // so one representative lane leaf proves the route without relying on
+    // The four-row topology has a distinct physical-port contract: a write to
+    // the inactive top bank must use A while the active top bank consumes the
+    // B port of every valid row-slot leaf. The staged address below is in
+    // shard 0, so one representative leaf proves the route without relying on
     // elapsed-time inference.
     always @(posedge clk) begin
         if (!resetn) begin
@@ -232,23 +232,33 @@ module tb_VPU_Top;
         end else if (pair_weight_port_watch_enable &&
                      dut.u_my_ip.u_axi4_mapping.u_gemv.pair_mode_r &&
                      dut.u_my_ip.u_axi4_mapping.core_busy &&
-                     dut.u_my_ip.u_axi4_mapping.u_gemv.GEN_WEIGHT_TOP_BANK[1].GEN_WEIGHT_BANK[0].GEN_WEIGHT_PARITY[0].u_weight_bram_bank.ena &&
-                     (|dut.u_my_ip.u_axi4_mapping.u_gemv.GEN_WEIGHT_TOP_BANK[1].GEN_WEIGHT_BANK[0].GEN_WEIGHT_PARITY[0].u_weight_bram_bank.wea)) begin
+                     dut.u_my_ip.u_axi4_mapping.u_gemv.GEN_WEIGHT_TOP_BANK[1].GEN_WEIGHT_BANK[0].GEN_WEIGHT_ROW_SLOT[0].u_weight_bram_bank.ena &&
+                      (|dut.u_my_ip.u_axi4_mapping.u_gemv.GEN_WEIGHT_TOP_BANK[1].GEN_WEIGHT_BANK[0].GEN_WEIGHT_ROW_SLOT[0].u_weight_bram_bank.wea)) begin
             pair_inactive_weight_a_write_observed <=
                 pair_inactive_weight_a_write_observed + 1;
         end
     end
 
-    // Atomic-pair invariant: a readiness skew may delay both PMAUs, but it
-    // must never let exactly one lane consume a shared activation beat.
+    // Atomic four-row invariant: a readiness skew may delay every PMAU, but it
+    // must never let one valid row consume a shared activation beat alone.
     always @(posedge clk) begin
         if (!resetn) begin
             pair_issue_desync_count <= 0;
         end else if (dut.u_my_ip.u_axi4_mapping.u_gemv.pair_lane1_valid &&
-                     (dut.u_my_ip.u_axi4_mapping.u_gemv.u_pmau.input_fire !==
-                      dut.u_my_ip.u_axi4_mapping.u_gemv.u_pmau_pair.input_fire)) begin
+                      (dut.u_my_ip.u_axi4_mapping.u_gemv.u_pmau.input_fire !==
+                       dut.u_my_ip.u_axi4_mapping.u_gemv.u_pmau_pair.input_fire)) begin
             pair_issue_desync_count <= pair_issue_desync_count + 1;
             fail("P2-v2 PMAU pair issue was not atomic");
+        end else if (dut.u_my_ip.u_axi4_mapping.u_gemv.pair_lane2_valid &&
+                      (dut.u_my_ip.u_axi4_mapping.u_gemv.u_pmau.input_fire !==
+                       dut.u_my_ip.u_axi4_mapping.u_gemv.u_pmau_quad2.input_fire)) begin
+            pair_issue_desync_count <= pair_issue_desync_count + 1;
+            fail("P2-v2 PMAU row-2 issue was not atomic");
+        end else if (dut.u_my_ip.u_axi4_mapping.u_gemv.pair_lane3_valid &&
+                      (dut.u_my_ip.u_axi4_mapping.u_gemv.u_pmau.input_fire !==
+                       dut.u_my_ip.u_axi4_mapping.u_gemv.u_pmau_quad3.input_fire)) begin
+            pair_issue_desync_count <= pair_issue_desync_count + 1;
+            fail("P2-v2 PMAU row-3 issue was not atomic");
         end
     end
 
@@ -774,20 +784,28 @@ module tb_VPU_Top;
         output [DATA_WIDTH-1:0] data;
         integer timeout;
         begin
-            @(posedge clk);
-            arid     <= {ID_WIDTH{1'b0}};
-            araddr   <= addr;
-            arlen    <= 8'd0;
-            arsize   <= 3'd4;
-            arburst  <= 2'b01;
-            arlock   <= 1'b0;
-            arcache  <= 4'd0;
-            arprot   <= 3'd0;
-            arqos    <= 4'd0;
-            arregion <= 4'd0;
-            aruser   <= 1'b0;
-            arvalid  <= 1'b1;
-            rready   <= 1'b1;
+            // Do not let a response from a previous read be mistaken for
+            // this transaction's response.  Wait for the AXI read channel to
+            // become idle while accepting any already-present RVALID, then
+            // launch the new AR from a falling edge.
+            @(negedge clk);
+            rready = 1'b1;
+            while (!arready)
+                @(posedge clk);
+            @(negedge clk);
+            arid     = {ID_WIDTH{1'b0}};
+            araddr   = addr;
+            arlen    = 8'd0;
+            arsize   = 3'd4;
+            arburst  = 2'b01;
+            arlock   = 1'b0;
+            arcache  = 4'd0;
+            arprot   = 3'd0;
+            arqos    = 4'd0;
+            arregion = 4'd0;
+            aruser   = 1'b0;
+            arvalid  = 1'b1;
+            rready   = 1'b1;
 
             timeout = 0;
             while (arvalid) begin
@@ -803,10 +821,10 @@ module tb_VPU_Top;
                              dut.u_my_ip.bvalid_r,
                              dut.u_my_ip.wr_active_r,
                              dut.u_my_ip.map_rd_valid);
-                    arvalid <= 1'b0;
+                    arvalid = 1'b0;
                 end
                 if (arvalid && arready)
-                    arvalid <= 1'b0;
+                    arvalid = 1'b0;
             end
 
             timeout = 0;
@@ -832,8 +850,16 @@ module tb_VPU_Top;
             if (!rlast)
                 fail("Single-beat AXI read did not assert RLAST");
 
+            // Complete the response handshake on a full clock edge, then
+            // release RREADY from the following falling edge.  This avoids
+            // carrying a stale RVALID into the next AR transaction when the
+            // DUT and testbench schedule nonblocking assignments in the same
+            // active region.
+            @(negedge clk);
+            rready = 1'b1;
             @(posedge clk);
-            rready <= 1'b0;
+            @(negedge clk);
+            rready = 1'b0;
         end
     endtask
 
@@ -843,20 +869,24 @@ module tb_VPU_Top;
         integer timeout;
         integer lane;
         begin
-            @(posedge clk);
-            arid     <= {ID_WIDTH{1'b0}};
-            araddr   <= addr;
-            arlen    <= 8'd0;
-            arsize   <= 3'd2;
-            arburst  <= 2'b01;
-            arlock   <= 1'b0;
-            arcache  <= 4'd0;
-            arprot   <= 3'd0;
-            arqos    <= 4'd0;
-            arregion <= 4'd0;
-            aruser   <= 1'b0;
-            arvalid  <= 1'b1;
-            rready   <= 1'b1;
+            @(negedge clk);
+            rready = 1'b1;
+            while (!arready)
+                @(posedge clk);
+            @(negedge clk);
+            arid     = {ID_WIDTH{1'b0}};
+            araddr   = addr;
+            arlen    = 8'd0;
+            arsize   = 3'd2;
+            arburst  = 2'b01;
+            arlock   = 1'b0;
+            arcache  = 4'd0;
+            arprot   = 3'd0;
+            arqos    = 4'd0;
+            arregion = 4'd0;
+            aruser   = 1'b0;
+            arvalid  = 1'b1;
+            rready   = 1'b1;
 
             timeout = 0;
             while (arvalid) begin
@@ -864,10 +894,10 @@ module tb_VPU_Top;
                 timeout = timeout + 1;
                 if (timeout > 100) begin
                     fail("AXI narrow read address timeout");
-                    arvalid <= 1'b0;
+                    arvalid = 1'b0;
                 end
                 if (arvalid && arready)
-                    arvalid <= 1'b0;
+                    arvalid = 1'b0;
             end
 
             timeout = 0;
@@ -890,8 +920,11 @@ module tb_VPU_Top;
                     fail("AXI narrow read returned data in an unselected lane");
             end
 
+            @(negedge clk);
+            rready = 1'b1;
             @(posedge clk);
-            rready <= 1'b0;
+            @(negedge clk);
+            rready = 1'b0;
         end
     endtask
 
@@ -915,38 +948,47 @@ module tb_VPU_Top;
             start_cycle = cycle_count;
             rlast_count = 0;
 
+            // A preceding single-beat read can leave RVALID asserted for one
+            // extra delta cycle when its task returns on the same edge as the
+            // DUT clears the response.  Drain that already-checked response
+            // before presenting the next AR, otherwise the AXI slave is
+            // correctly required to keep ARREADY low.
             @(negedge clk);
-            arid     <= {ID_WIDTH{1'b0}};
-            araddr   <= SPU_OUT_BASE;
-            arlen    <= 8'd255;
-            arsize   <= 3'd4;
-            arburst  <= 2'b01;
-            arlock   <= 1'b0;
-            arcache  <= 4'd0;
-            arprot   <= 3'd0;
-            arqos    <= 4'd0;
-            arregion <= 4'd0;
-            aruser   <= 1'b0;
-            arvalid  <= 1'b1;
-            // The serialized MY_IP read path requires the first R channel
-            // transfer to be enabled after AR acceptance.  Later beats below
-            // deliberately withdraw RREADY only after RVALID is observable.
-            rready   <= 1'b1;
+            rready = 1'b1;
+            while (!arready)
+                @(posedge clk);
+            @(negedge clk);
+            rready = 1'b0;
+
+            @(negedge clk);
+            arid     = {ID_WIDTH{1'b0}};
+            araddr   = SPU_OUT_BASE;
+            arlen    = 8'd255;
+            arsize   = 3'd4;
+            arburst  = 2'b01;
+            arlock   = 1'b0;
+            arcache  = 4'd0;
+            arprot   = 3'd0;
+            arqos    = 4'd0;
+            arregion = 4'd0;
+            aruser   = 1'b0;
+            arvalid  = 1'b1;
+            rready   = 1'b0;
 
             timeout = 0;
-            while (arvalid) begin
-                @(posedge clk);
+            // Keep ARVALID stable until a complete, edge-aligned handshake.
+            // Sampling ARREADY after the active edge can withdraw ARVALID
+            // before the DUT samples it when delta-cycle ordering changes.
+            while (!arready) begin
+                @(negedge clk);
                 timeout = timeout + 1;
                 if (timeout > 100) begin
                     fail("SPU_OUT full burst AR handshake timeout");
-                    arvalid <= 1'b0;
+                    arvalid = 1'b0;
                 end
-                if (arvalid && arready)
-                    arvalid <= 1'b0;
             end
-            // Prevent a just-produced R beat from being consumed before the
-            // falling-edge monitor has sampled its metadata.
-            rready = 1'b0;
+            @(posedge clk);
+            arvalid = 1'b0;
 
             for (beat = 0; beat < 256; beat = beat + 1) begin
                 timeout = 0;
@@ -998,16 +1040,17 @@ module tb_VPU_Top;
                     @(negedge clk);
                 end
 
+                // Drive RREADY only from the falling edge so it is stable for
+                // the complete accepting rising edge.
                 rready = 1'b1;
                 @(posedge clk);
                 #1;
+                @(negedge clk);
                 rready = 1'b0;
             end
 
             @(negedge clk);
             rready = 1'b0;
-            @(posedge clk);
-            #1;
             if (rvalid)
                 fail("SPU_OUT full burst did not retire after beat 255");
             if (rlast_count != 1)
@@ -2777,6 +2820,10 @@ module tb_VPU_Top;
         run_group_case(97, 1, 1);
         run_group_case(98, 2, 2);
         run_group_case(99, 3, 32);
+        // Four distinct logical rows force one 16x4 P2 issue group.  The
+        // existing randomized SPU ready generator must accept rows 0/1 before
+        // rows 2/3; run_group_case checks every raw Result lane and stream row.
+        run_group_case(100, 4, 2);
         run_pair_weight_port_ownership_case();
         run_group_case(132, 255, 36);
         run_group_case(133, 256, 64);

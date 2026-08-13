@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/llama-server.dir/server.cpp.o -o ../../bin/llama-server  -Wl,-rpath,/home/debian/Cuong_test/Infrastructure_GEMMA3/build_mem/bin: ../../common/libcommon.a ../../bin/libmtmd.so -pthread -pthread ../../bin/libllama.so ../../bin/libggml.so ../../bin/libggml-cpu.so ../../bin/libggml-base.so 

@@ -1,6 +1,6 @@
 # Tổng quan RTL và dataflow VPU–SPU
 
-**Cập nhật:** 14-07-2026  
+**Cập nhật:** 12-08-2026
 **Nguồn mô tả:** RTL canonical trong thư mục này. Các thay đổi phải được đồng bộ qua flow nguồn IP trước khi tạo bitstream mới; thư mục generated của `project_1` không được sửa trực tiếp.
 
 ## 1. Mục tiêu kiến trúc
@@ -130,27 +130,120 @@ ACT layout:
 ACT[block * 2 + beat]
 ```
 
-WEIGHT layout compact:
+WEIGHT dùng layout pair-interleaved theo cặp row. Với `pair = row >> 1`,
+`parity = row & 1` và `beat` là chỉ số beat trong row:
 
 ```text
-WEIGHT[row * active_col_beats + block * 2 + beat]
+logical_weight_index(row, beat)
+    = ((pair * active_col_beats + beat) * 2) + parity
 ```
 
+Hai word liên tiếp thuộc cùng một `pair, beat`:
+
+```text
+index chẵn: weight của row 2*pair
+index lẻ : weight của row 2*pair + 1
+```
+
+Bit 0 của index chọn leaf parity even/odd. Các bit còn lại chọn cùng địa chỉ
+cục bộ trong hai leaf. Vì vậy hai row kề nhau được đọc đồng thời từ hai SDP
+URAM độc lập, không tranh chấp read port. Nếu tile có số row lẻ, host vẫn ghi
+word companion bằng 0 cho row không tồn tại; RTL giữ `pair_lane1_valid=0` nên
+không phát result hoặc metadata cho row padding.
+
 Scale FP16 không nằm trong hai payload beat. Production raw path để host giữ `d_a`, đọc `d_w` từ Q8_0 weight và scale trên CPU. Stream path mới nạp pair scale vào `SPU_PARAM`.
+
+#### TASK-010 internal four-row mapping
+
+TASK-010 preserves the external P2 index above. On every WEIGHT write the VPU
+captures the configured `col_beats` and decodes:
+
+```text
+pair       = floor(index / (2 * col_beats))
+beat       = floor((index mod (2 * col_beats)) / 2)
+row_slot   = 2 * (pair mod 2) + (index mod 2)
+local_addr = floor(pair / 2) * col_beats + beat
+```
+
+This is equivalent to `row_slot = row[1:0]` and
+`local_addr = (row >> 2) * col_beats + beat`. Each 32-bit weight shard now
+uses four independent 8K SDP URAM leaves rather than two 16K parity leaves;
+the total stored weight capacity is unchanged. The mapping must not be reduced
+to `index[1:0]` and `index>>2`, which aliases four-row reads.
 
 ### 5.3 Read pipeline
 
 FSM phát ACT/WEIGHT read request. Dữ liệu RAM đi qua valid pipeline D/Q/X để align latency activation, weight shard và flag last. Chỉ khi `feed_valid && activation_ready && weight_ready`, beat mới được PMAU nhận.
 
-### 5.4 PMAU
+### 5.4 Pre-TASK-010 datapath INT8 16×2
 
-PMAU thực hiện 16 phép INT8×INT8 mỗi beat và reduction. Hai beat tạo raw dot của một Q8 block:
+```mermaid
+flowchart LR
+    A["ACT beat<br/>16 × INT8<br/>dùng chung"]
+    WE["WEIGHT even leaf<br/>row r: 16 × INT8"]
+    WO["WEIGHT odd leaf<br/>row r+1: 16 × INT8"]
 
-```text
-raw[row,block] = Σ(i=0..31) qa[i] * qw[row,i]
+    subgraph P0["u_pmau — row r"]
+        M0["16 phép nhân INT8×INT8"] --> T0["Adder tree<br/>16→8→4→2→1"]
+        T0 --> C0["Accumulator INT32"]
+    end
+
+    subgraph P1["u_pmau_pair — row r+1"]
+        M1["16 phép nhân INT8×INT8"] --> T1["Adder tree<br/>16→8→4→2→1"]
+        T1 --> C1["Accumulator INT32"]
+    end
+
+    A --> M0
+    A --> M1
+    WE --> M0
+    WO --> M1
+
+    C0 --> R0["raw INT32<br/>row r, block b"]
+    C1 --> R1["raw INT32<br/>row r+1, block b"]
+
+    R0 --> H["Atomic VPU→SPU handshake<br/>cùng job / bank / block"]
+    R1 --> H
+    H --> S["Scale-aware accumulation<br/>d_a × d_w × raw"]
 ```
 
-Raw cần INT32. Đây chưa phải F32/Q8_0 output cuối vì mỗi block có scale khác nhau.
+Mỗi beat được accept thực hiện tối đa:
+
+```text
+16 lanes × 2 PMAU = 32 phép nhân INT8
+```
+
+Một block Q8_0 có 32 phần tử, nên hai beat tạo hai dot-product song song:
+
+```text
+raw[r,b]   = Σ(i=0..31) qa[i] * qw[r,i]
+raw[r+1,b] = Σ(i=0..31) qa[i] * qw[r+1,i]
+```
+
+Quy tắc điều khiển:
+
+- hai PMAU chỉ nhận paired beat khi cả hai cùng ready; một PMAU stall thì cả cặp stall;
+- activation beat được broadcast; weight của hai row được đọc đồng thời từ leaf even/odd;
+- tile có row lẻ: chỉ `u_pmau` chạy row cuối, companion bị vô hiệu hóa và không sinh result;
+- `32 phép nhân/beat` là peak issue, không phải throughput toàn hệ thống; FSM, FIFO, SPU và DMA vẫn có thể tạo stall.
+
+#### TASK-010 P2 16x4 datapath
+
+P2 broadcasts one 128-bit activation beat to four PMAUs for logical rows
+`r..r+3`. Every valid PMAU must be ready before issue, and all valid PMAU
+results must be present before group retirement. Invalid odd/tail rows do not
+issue a PMAU and do not create a result.
+
+```text
+ACT beat -> PMAU[r], PMAU[r+1], PMAU[r+2], PMAU[r+3]
+         -> four raw INT32 results
+         -> serial Result-BRAM writes r, r+1, r+2, r+3
+         -> existing P2 packet r/r+1, then existing P2 packet r+2/r+3
+```
+
+The ready/valid payload remains stable during SPU backpressure. The scheduler
+does not advance row/block until the second packet (when present) has
+handshaken and the final Result-BRAM write has committed. The official XSim
+regression passed VPU `27584/27584` checks and SPU `94/94` checks.
 
 ### 5.5 Result path
 
@@ -267,16 +360,35 @@ Host chỉ ghi `FREE/FILLING`; PL chỉ đọc `READY/COMPUTING`; không bên n�
 
 ## 9. Bottleneck RTL và timing
 
-Implementation hiện đạt setup timing 187,5 MHz (`WNS +0,604 ns`), nhưng:
+The current authoritative routed report is
+`DATN_VIVADO/project_1/project_1.runs/impl_1/SoC_wrapper_timing_summary_routed.rpt`
+(2026-08-12 11:45:10). It reports setup WNS `+0.415 ns`, TNS `0 ns`,
+zero setup failures, hold WHS `+0.010 ns`, THS `0 ns`, and pulse-width
+slack `+1.166 ns`. The design is timing-clean in that checkpoint, but it
+does not yet meet the requested `+0.500 ns` WNS margin. The older
+`task010_fast5` value `+0.661 ns` is not the current canonical report and
+must not be used as signoff evidence.
 
-- hold margin chỉ +0,010 ns;
-- 83 DSP pipeline warnings;
-- raw mode tạo một result cho từng block và dừng/chuyển state nhiều lần;
-- 16 lane làm effective compute thấp khi cộng toàn bộ DMA/control overhead;
-- Q8 scale path không streaming một entry/cycle;
-- output projection cần 1024 run/token ở host v9.
+The latest RTL-only timing iteration is simulation-validated but has not
+been synthesized or implemented. It registers the VPU result/scale index
+with each raw token and makes production `SPU_Top` consume that index
+directly, removing the row*group_blocks arithmetic from the SPU
+ready/valid-to-DSP input cone. New WNS and resource counts are pending a
+fresh owner-run synthesis and implementation.
 
-Sau khi sửa correctness, pipeline DSP input/MREG/PREG tại PMAU dequant, stream scale index, Q8 scale accumulator, RMSNorm và RoPE. Metadata valid/job/row/block phải được delay đúng số stage.
+- the previous routed checkpoint reported 164 DSP48E2, 64 URAM, and 104.5
+  BRAM tiles; no storage-capacity change was made;
+- the previous route status reported zero routing errors, zero unrouted
+  nets, and zero partially routed nets; DRC reported zero errors;
+- P2 now issues one activation beat to four PMAUs (`16 lane × 4 PMAU = 64`
+  INT8 multiplications per accepted beat), then serializes the four raw
+  results into the existing result/stream protocol;
+- the weight write remapper is a 14-stage restoring divider plus per-bank
+  write staging, removing the old long combinational address/fanout path;
+- SPU_Q8_Scale_Accum uses four registered 32×32 partial products and staged
+  reconstruction, while SPU_RMSNorm registers the lane product before write;
+- the current source change has no new bitstream; the owner must rerun
+  synthesis and implementation before hardware use.
 
 ## 10. Tiêu chí production
 

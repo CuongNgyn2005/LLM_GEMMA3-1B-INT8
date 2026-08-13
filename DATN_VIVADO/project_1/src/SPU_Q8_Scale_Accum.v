@@ -44,19 +44,22 @@ module SPU_Q8_Scale_Accum #(
     output reg  [3:0]                        error_code
 );
 
-    localparam [2:0] S_IDLE          = 3'd0;
-    localparam [2:0] S_SCALE         = 3'd1;
-    localparam [2:0] S_PRODUCT_MUL   = 3'd2;
-    localparam [2:0] S_PRODUCT_CLAMP = 3'd3;
-    localparam [2:0] S_RAW_MUL       = 3'd4;
-    localparam [2:0] S_CONTRIB_Q16   = 3'd5;
-    localparam [2:0] S_ACCUM         = 3'd6;
+    localparam [3:0] S_IDLE           = 4'd0;
+    localparam [3:0] S_SCALE          = 4'd1;
+    localparam [3:0] S_PRODUCT_MUL    = 4'd2;
+    localparam [3:0] S_PRODUCT_CROSS  = 4'd3;
+    localparam [3:0] S_PRODUCT_MID    = 4'd4;
+    localparam [3:0] S_PRODUCT_FULL   = 4'd5;
+    localparam [3:0] S_PRODUCT_CLAMP  = 4'd6;
+    localparam [3:0] S_RAW_MUL        = 4'd7;
+    localparam [3:0] S_CONTRIB_Q16    = 4'd8;
+    localparam [3:0] S_ACCUM          = 4'd9;
 
     localparam [3:0] ERR_NONE      = 4'd0;
     localparam [3:0] ERR_BAD_SCALE = 4'd1;
     localparam [3:0] ERR_ROW_RANGE = 4'd2;
 
-    reg [2:0] state_r;
+    reg [3:0] state_r;
 
     reg signed [31:0] raw_r;
     reg [15:0] act_scale_r;
@@ -67,8 +70,21 @@ module SPU_Q8_Scale_Accum #(
 
     reg [63:0] act_scale_q32_r;
     reg [63:0] weight_scale_q32_r;
+    // The scale product is split into four 32x32 partial products.  The
+    // partial, cross-term, and carry assembly registers keep each DSP chain
+    // within one clk_pl_0 cycle instead of inferring one long 64x64 path.
+    reg [63:0] product_scale_ll_r;
+    reg [63:0] product_scale_lh_r;
+    reg [63:0] product_scale_hl_r;
+    reg [63:0] product_scale_hh_r;
+    reg [64:0] product_scale_cross_r;
+    reg [65:0] product_scale_mid_r;
     reg [127:0] product_scale_full_r;
-    reg [63:0] product_scale_q32_r;
+    // Keep this architectural pipeline boundary as fabric flip-flops.  If the
+    // register is absorbed into the following multiplier's DSP A/B input,
+    // product_scale_full_r drives the clamp logic and the distant DSP input in
+    // one cycle, creating the routed scale-product critical path.
+    (* dont_touch = "yes" *) reg [63:0] product_scale_q32_r;
     reg signed [96:0] contribution_full_r;
     reg signed [ACC_WIDTH-1:0] contribution_q16_r;
 
@@ -113,8 +129,27 @@ module SPU_Q8_Scale_Accum #(
     endfunction
 
     wire row_in_range = (row_id_r < MAX_ROWS);
-    wire [127:0] product_scale_mul_w =
-        {64'd0, act_scale_q32_r} * {64'd0, weight_scale_q32_r};
+    (* use_dsp = "yes" *) wire [63:0] product_scale_ll_w =
+        act_scale_q32_r[31:0] * weight_scale_q32_r[31:0];
+    (* use_dsp = "yes" *) wire [63:0] product_scale_lh_w =
+        act_scale_q32_r[31:0] * weight_scale_q32_r[63:32];
+    (* use_dsp = "yes" *) wire [63:0] product_scale_hl_w =
+        act_scale_q32_r[63:32] * weight_scale_q32_r[31:0];
+    (* use_dsp = "yes" *) wire [63:0] product_scale_hh_w =
+        act_scale_q32_r[63:32] * weight_scale_q32_r[63:32];
+    wire [64:0] product_scale_cross_w =
+        {1'b0, product_scale_lh_r} + {1'b0, product_scale_hl_r};
+    wire [65:0] product_scale_mid_w =
+        {34'd0, product_scale_ll_r[63:32]} +
+        {1'b0, product_scale_cross_r};
+    wire [64:0] product_scale_upper_w =
+        {1'b0, product_scale_hh_r} +
+        {31'd0, product_scale_mid_r[65:32]};
+    wire [127:0] product_scale_full_w = {
+        product_scale_upper_w[63:0],
+        product_scale_mid_r[31:0],
+        product_scale_ll_r[31:0]
+    };
     wire product_scale_overflow_w = |product_scale_full_r[127:96];
     wire signed [96:0] contribution_mul_w =
         $signed(raw_r) * $signed({1'b0, product_scale_q32_r});
@@ -139,6 +174,12 @@ module SPU_Q8_Scale_Accum #(
             accum_prev_r <= {ACC_WIDTH{1'b0}};
             act_scale_q32_r <= 64'd0;
             weight_scale_q32_r <= 64'd0;
+            product_scale_ll_r <= 64'd0;
+            product_scale_lh_r <= 64'd0;
+            product_scale_hl_r <= 64'd0;
+            product_scale_hh_r <= 64'd0;
+            product_scale_cross_r <= 65'd0;
+            product_scale_mid_r <= 66'd0;
             product_scale_full_r <= 128'd0;
             product_scale_q32_r <= 64'd0;
             contribution_full_r <= 97'sd0;
@@ -188,8 +229,26 @@ module SPU_Q8_Scale_Accum #(
                 end
 
                 S_PRODUCT_MUL: begin
-                    product_scale_full_r <= product_scale_mul_w;
+                    product_scale_ll_r <= product_scale_ll_w;
+                    product_scale_lh_r <= product_scale_lh_w;
+                    product_scale_hl_r <= product_scale_hl_w;
+                    product_scale_hh_r <= product_scale_hh_w;
                     accum_prev_r <= clear_accum_r ? {ACC_WIDTH{1'b0}} : accum_mem[row_id_r];
+                    state_r <= S_PRODUCT_CROSS;
+                end
+
+                S_PRODUCT_CROSS: begin
+                    product_scale_cross_r <= product_scale_cross_w;
+                    state_r <= S_PRODUCT_MID;
+                end
+
+                S_PRODUCT_MID: begin
+                    product_scale_mid_r <= product_scale_mid_w;
+                    state_r <= S_PRODUCT_FULL;
+                end
+
+                S_PRODUCT_FULL: begin
+                    product_scale_full_r <= product_scale_full_w;
                     state_r <= S_PRODUCT_CLAMP;
                 end
 

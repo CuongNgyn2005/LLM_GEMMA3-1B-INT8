@@ -52,6 +52,12 @@ module SPU_RMSNorm #(
     reg signed [63:0] norm_product_r;
     reg [63:0] sumsq_product_r;
 
+    // Keep the normalization multiplier off the FSM-state enable path.  The
+    // operands are already registered one state earlier, and S_WRITE
+    // consumes norm_product_r one cycle after this product is captured.
+    wire signed [63:0] norm_product_w =
+        value_weight_r * $signed({1'b0, inv_rms_q15_r[30:0]});
+
     function signed [15:0] sat16;
         input signed [63:0] value;
         begin
@@ -84,6 +90,7 @@ module SPU_RMSNorm #(
             sumsq_product_r <= 64'd0;
         end else begin
             done <= 1'b0;
+            norm_product_r <= lane_active_r ? norm_product_w : 64'sd0;
 
             case (state_r)
                 S_IDLE: begin
@@ -125,11 +132,6 @@ module SPU_RMSNorm #(
                     busy <= 1'b1;
                     if (lane_active_r) begin
                         word_sumsq_q16 <= word_sumsq_q16 + sumsq_product_r;
-                        norm_product_r <=
-                            value_weight_r *
-                            $signed({1'b0, inv_rms_q15_r[30:0]});
-                    end else begin
-                        norm_product_r <= 64'sd0;
                     end
                     state_r <= S_WRITE;
                 end
