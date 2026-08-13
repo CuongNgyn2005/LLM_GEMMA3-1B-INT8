@@ -1,11 +1,24 @@
 /*
  *-----------------------------------------------------------------------------
  * Module      : VPU_Top
- * Description : Project-facing AXI4-Full wrapper for the INT8 VPU.
+ * Description : AXI4-Full top-level wrapper for the INT8 VPU IP.
  *
- * VPU_Top is intentionally a thin alias around MY_IP so the Vivado block design
- * can keep using the familiar VPU top name while the implementation underneath
- * is a memory-mapped AXI4-Full slave.
+ * VPU_Top is the integration boundary that Vivado Block Design sees as the
+ * custom accelerator IP.  It exposes the AXI4-Full slave interface, clock,
+ * reset, user-side AXI metadata signals, and datapath sizing parameters, then
+ * forwards these signals into MY_IP without adding extra behavior.
+ *
+ * This module intentionally contains no register map, BRAM instance, compute
+ * FSM, or arithmetic datapath.  Its contribution to the RTL system is to keep
+ * the external IP interface stable while AXI protocol handling, address
+ * decoding, local memory storage, GEMV scheduling, and PMAU arithmetic remain
+ * implemented in the lower modules.
+ *
+ * Parameter groups:
+ * - C_S00_AXI_* define the external AXI ID, address, data, and USER widths.
+ * - NUM_LANES and data-width parameters define the INT8 MAC datapath shape.
+ * - MAX_ROWS, MAX_COL_BEATS, and MAX_GROUP_Q8_BLOCKS define the maximum local
+ *   tile capacity passed down to the GEMV implementation.
  *-----------------------------------------------------------------------------
  */
 
@@ -21,7 +34,7 @@ module VPU_Top #(
     parameter integer C_S00_AXI_RUSER_WIDTH  = 1,
     parameter integer C_S00_AXI_BUSER_WIDTH  = 1,
 
-    parameter integer NUM_LANES              = 32,
+    parameter integer NUM_LANES              = 16,
     parameter integer ACT_WIDTH              = 8,
     parameter integer WEIGHT_WIDTH           = 8,
     parameter integer ACC_WIDTH              = 32,
@@ -29,9 +42,9 @@ module VPU_Top #(
     parameter integer SCALE_FRAC_BITS        = 15,
     parameter integer RESULT_FIFO_DEPTH      = 8,
     parameter integer MAX_ROWS               = 256,
-    parameter integer MAX_COL_BEATS          = 32,
-    parameter [C_S00_AXI_ADDR_WIDTH-1:0] S00_AXI_BASE_ADDR = 40'h00A0_0000_00,
-    parameter [C_S00_AXI_ADDR_WIDTH-1:0] S01_AXI_BASE_ADDR = 40'h00A8_0000_00
+    parameter integer MAX_COL_BEATS          = 128,
+    parameter integer MAX_GROUP_Q8_BLOCKS    = 64,
+    parameter integer SPU_STREAM_TEST_STALL_ENABLE = 0
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
@@ -87,40 +100,12 @@ module VPU_Top #(
     output wire                                  s00_axi_rlast,
     output wire [C_S00_AXI_RUSER_WIDTH-1:0]      s00_axi_ruser,
     output wire                                  s00_axi_rvalid,
-    input  wire                                  s00_axi_rready,
-
-    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s01_axi_aclk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s01_axi, ASSOCIATED_RESET s01_axi_aresetn" *)
-    input  wire                                  s01_axi_aclk,
-    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 s01_axi_aresetn RST" *)
-    (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
-    input  wire                                  s01_axi_aresetn,
-    input  wire [C_S00_AXI_ID_WIDTH-1:0]         s01_axi_awid,
-    input  wire [C_S00_AXI_ADDR_WIDTH-1:0]       s01_axi_awaddr,
-    input  wire [7:0]                            s01_axi_awlen,
-    input  wire [2:0]                            s01_axi_awsize,
-    input  wire [1:0]                            s01_axi_awburst,
-    input  wire                                  s01_axi_awlock,
-    input  wire [3:0]                            s01_axi_awcache,
-    input  wire [2:0]                            s01_axi_awprot,
-    input  wire [3:0]                            s01_axi_awqos,
-    input  wire [3:0]                            s01_axi_awregion,
-    input  wire [C_S00_AXI_AWUSER_WIDTH-1:0]     s01_axi_awuser,
-    input  wire                                  s01_axi_awvalid,
-    output wire                                  s01_axi_awready,
-    input  wire [C_S00_AXI_DATA_WIDTH-1:0]       s01_axi_wdata,
-    input  wire [(C_S00_AXI_DATA_WIDTH/8)-1:0]   s01_axi_wstrb,
-    input  wire                                  s01_axi_wlast,
-    input  wire [C_S00_AXI_WUSER_WIDTH-1:0]      s01_axi_wuser,
-    input  wire                                  s01_axi_wvalid,
-    output wire                                  s01_axi_wready,
-    output wire [C_S00_AXI_ID_WIDTH-1:0]         s01_axi_bid,
-    output wire [1:0]                            s01_axi_bresp,
-    output wire [C_S00_AXI_BUSER_WIDTH-1:0]      s01_axi_buser,
-    output wire                                  s01_axi_bvalid,
-    input  wire                                  s01_axi_bready
+    input  wire                                  s00_axi_rready
 );
 
+    // This top wrapper does not modify AXI traffic.  All AW/W/B/AR/R channels
+    // and system parameters are passed directly into MY_IP so the AXI slave
+    // protocol implementation is maintained in a single lower-level module.
     MY_IP #(
         .C_S00_AXI_ID_WIDTH     (C_S00_AXI_ID_WIDTH),
         .C_S00_AXI_DATA_WIDTH   (C_S00_AXI_DATA_WIDTH),
@@ -139,8 +124,8 @@ module VPU_Top #(
         .RESULT_FIFO_DEPTH      (RESULT_FIFO_DEPTH),
         .MAX_ROWS               (MAX_ROWS),
         .MAX_COL_BEATS          (MAX_COL_BEATS),
-        .S00_AXI_BASE_ADDR      (S00_AXI_BASE_ADDR),
-        .S01_AXI_BASE_ADDR      (S01_AXI_BASE_ADDR)
+        .MAX_GROUP_Q8_BLOCKS    (MAX_GROUP_Q8_BLOCKS),
+        .SPU_STREAM_TEST_STALL_ENABLE (SPU_STREAM_TEST_STALL_ENABLE)
     ) u_my_ip (
         .s00_axi_aclk       (s00_axi_aclk),
         .s00_axi_aresetn    (s00_axi_aresetn),
@@ -187,33 +172,7 @@ module VPU_Top #(
         .s00_axi_rlast      (s00_axi_rlast),
         .s00_axi_ruser      (s00_axi_ruser),
         .s00_axi_rvalid     (s00_axi_rvalid),
-        .s00_axi_rready     (s00_axi_rready),
-        .s01_axi_aclk       (s01_axi_aclk),
-        .s01_axi_aresetn    (s01_axi_aresetn),
-        .s01_axi_awid       (s01_axi_awid),
-        .s01_axi_awaddr     (s01_axi_awaddr),
-        .s01_axi_awlen      (s01_axi_awlen),
-        .s01_axi_awsize     (s01_axi_awsize),
-        .s01_axi_awburst    (s01_axi_awburst),
-        .s01_axi_awlock     (s01_axi_awlock),
-        .s01_axi_awcache    (s01_axi_awcache),
-        .s01_axi_awprot     (s01_axi_awprot),
-        .s01_axi_awqos      (s01_axi_awqos),
-        .s01_axi_awregion   (s01_axi_awregion),
-        .s01_axi_awuser     (s01_axi_awuser),
-        .s01_axi_awvalid    (s01_axi_awvalid),
-        .s01_axi_awready    (s01_axi_awready),
-        .s01_axi_wdata      (s01_axi_wdata),
-        .s01_axi_wstrb      (s01_axi_wstrb),
-        .s01_axi_wlast      (s01_axi_wlast),
-        .s01_axi_wuser      (s01_axi_wuser),
-        .s01_axi_wvalid     (s01_axi_wvalid),
-        .s01_axi_wready     (s01_axi_wready),
-        .s01_axi_bid        (s01_axi_bid),
-        .s01_axi_bresp      (s01_axi_bresp),
-        .s01_axi_buser      (s01_axi_buser),
-        .s01_axi_bvalid     (s01_axi_bvalid),
-        .s01_axi_bready     (s01_axi_bready)
+        .s00_axi_rready     (s00_axi_rready)
     );
 
 endmodule

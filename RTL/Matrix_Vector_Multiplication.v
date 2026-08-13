@@ -166,6 +166,7 @@ module Matrix_Vector_Multiplication #(
     localparam WEIGHT_ROW_SLOT_LEAVES   = 8;
     localparam WEIGHT_LOCAL_ADDR_WIDTH  = clog2(WEIGHT_DEPTH / WEIGHT_ROW_SLOT_LEAVES);
     localparam WEIGHT_RAM_COUNT         = WEIGHT_BANKS * WEIGHT_ROW_SLOT_LEAVES;
+    localparam WEIGHT_COMPUTE_ADDR_COUNT = BANK_COUNT * WEIGHT_BANKS;
     localparam WEIGHT_RAM_TOTAL        = BANK_COUNT * WEIGHT_RAM_COUNT;
     localparam LANE_SHIFT           = clog2(NUM_LANES);
     localparam [15:0] NUM_LANES_16          = NUM_LANES;
@@ -229,8 +230,10 @@ module Matrix_Vector_Multiplication #(
     wire [AXI_DATA_WIDTH-1:0]   result_cpu_rd_data;
     reg [ACT_ADDR_WIDTH-1:0]    act_compute_addr;
     reg                         compute_rd_en;
+    // One compute address is shared by all row-slot leaves of each bank/shard.
+    // The per-leaf enables below retain the row-slot selection.
     (* keep = "true" *)
-    reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_compute_addr_leaf [0:WEIGHT_RAM_TOTAL-1];
+    reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_compute_addr_shared [0:WEIGHT_COMPUTE_ADDR_COUNT-1];
     (* keep = "true" *)
     reg                         weight_compute_en_leaf [0:WEIGHT_RAM_TOTAL-1];
     reg                         mm_rd_pending_r;
@@ -303,6 +306,7 @@ module Matrix_Vector_Multiplication #(
     // address off the long cross-bank fanout route seen in routed timing.
     reg [BANK_COUNT-1:0]        weight_leaf_stage_valid_r;
     reg [2:0]                   weight_leaf_stage_row_slot_r [0:BANK_COUNT-1];
+    (* max_fanout = 8 *)
     reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_leaf_stage_addr_r [0:BANK_COUNT-1];
     reg [AXI_DATA_WIDTH-1:0]    weight_leaf_stage_data_r [0:BANK_COUNT-1];
     reg [(AXI_DATA_WIDTH/8)-1:0] weight_leaf_stage_strb_r [0:BANK_COUNT-1];
@@ -393,8 +397,13 @@ module Matrix_Vector_Multiplication #(
     reg read_valid_d_r;
     reg read_last_d_r;
     reg read_group_last_d_r;
+    reg read_bank_d_r;
     reg read_req_valid_r;
     reg [ACT_ADDR_WIDTH-1:0] read_req_act_addr_r;
+    // The registered weight address feeds the active bank's row-slot leaves.
+    // Bound its synthesis fanout so the compute-address write enables do not
+    // pull one address net across both top-level banks.
+    (* max_fanout = 8 *)
     reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] read_req_weight_addr_r;
     reg [2:0]                         read_req_row_slot_r;
     reg [2:0]                         read_req_pair_row_slot_r;
@@ -409,9 +418,11 @@ module Matrix_Vector_Multiplication #(
     reg read_valid_q_r;
     reg read_last_q_r;
     reg read_group_last_q_r;
+    reg read_bank_q_r;
     reg read_valid_x_r;
     reg read_last_x_r;
     reg read_group_last_x_r;
+    reg read_bank_x_r;
     // Row slots follow the same d/q/x memory-latency pipeline as valid.
     reg [2:0] read_row_slot_d_r;
     reg [2:0] read_row_slot_q_r;
@@ -425,10 +436,14 @@ module Matrix_Vector_Multiplication #(
     reg [2:0] read_quad3_row_slot_d_r;
     reg [2:0] read_quad3_row_slot_q_r;
     reg [2:0] read_quad3_row_slot_x_r;
-    reg [2:0] read_quad4_row_slot_d_r, read_quad4_row_slot_q_r, read_quad4_row_slot_x_r;
-    reg [2:0] read_quad5_row_slot_d_r, read_quad5_row_slot_q_r, read_quad5_row_slot_x_r;
-    reg [2:0] read_quad6_row_slot_d_r, read_quad6_row_slot_q_r, read_quad6_row_slot_x_r;
-    reg [2:0] read_quad7_row_slot_d_r, read_quad7_row_slot_q_r, read_quad7_row_slot_x_r;
+    reg [2:0] read_quad4_row_slot_d_r, read_quad4_row_slot_q_r;
+    reg [2:0] read_quad4_row_slot_x_r;
+    reg [2:0] read_quad5_row_slot_d_r, read_quad5_row_slot_q_r;
+    reg [2:0] read_quad5_row_slot_x_r;
+    reg [2:0] read_quad6_row_slot_d_r, read_quad6_row_slot_q_r;
+    reg [2:0] read_quad6_row_slot_x_r;
+    reg [2:0] read_quad7_row_slot_d_r, read_quad7_row_slot_q_r;
+    reg [2:0] read_quad7_row_slot_x_r;
 
     wire [15:0] auto_col_beats =
         (cfg_cols + NUM_LANES_16 - 16'd1) >> LANE_SHIFT;
@@ -554,11 +569,16 @@ module Matrix_Vector_Multiplication #(
     wire pmau_result_fire = pmau_result_valid && pmau_result_ready;
     wire wait_after_feed =
         result_i8_mode_r ? feed_group_last_r : feed_last_r;
+    wire weight_compute_final_clear = pmau_input_fire && wait_after_feed;
 
     // BRAM output data is delayed relative to the address request.  The d/q/x
     // valid pipeline keeps activation data, selected weight shard data, and
     // sideband last flags aligned before a beat is presented to PMAU.
-    wire feed_slot_open = (!feed_valid_r) || pmau_input_fire;
+    // Do not let the PMAU ready/valid cone drive the BRAM capture enables.
+    // Refill only after the feed register is observed empty; this inserts a
+    // conservative bubble between beats but keeps the read data ordered and
+    // removes the row-dependent PMAU control path from the data-register CE.
+    wire feed_slot_open = !feed_valid_r;
     wire consume_read_x = read_valid_x_r && feed_slot_open;
     wire read_x_slot_open = (!read_valid_x_r) || consume_read_x;
     wire shift_q_to_x = read_valid_q_r && read_x_slot_open;
@@ -567,6 +587,10 @@ module Matrix_Vector_Multiplication #(
     wire read_d_slot_open = (!read_valid_d_r) || shift_d_to_q;
     wire shift_req_to_d = read_req_valid_r && read_d_slot_open;
     wire read_req_slot_open = (!read_req_valid_r) || shift_req_to_d;
+    // Address staging follows the already-pipelined request-valid handshake.
+    // Keeping this predicate independent of state_r removes the FSM decode
+    // from the high-fanout CE path of the distributed URAM address registers.
+    wire read_shift_addr_fire = shift_req_to_d;
     wire [15:0] read_abs_beat = read_beat_idx_r;
     // Physical address = (row >> 3) * active_col_beats + beat. Eight
     // logical row slots allow one activation beat to feed eight PMAUs.
@@ -828,18 +852,19 @@ module Matrix_Vector_Multiplication #(
             weight_div_strb_r[0] <= {(AXI_DATA_WIDTH/8){1'b0}};
         end else begin
             weight_div_valid_r[0] <= weight_div_input_valid;
-            if (weight_div_input_valid) begin
-                weight_div_rem_r[0] <= weight_div_s0_ge ?
-                    (weight_div_s0_trial - wr_pipe_col_beats_r[7:0]) :
-                    weight_div_s0_trial;
-                weight_div_pair_r[0] <= weight_div_s0_ge ? 14'h2000 : 14'd0;
-                weight_div_q_r[0] <= wr_pipe_index_r[14:1];
-                weight_div_col_beats_r[0] <= wr_pipe_col_beats_r;
-                weight_div_parity_r[0] <= wr_pipe_index_r[0];
-                weight_div_bank_r[0] <= wr_pipe_bank_r;
-                weight_div_data_r[0] <= wr_pipe_data_r;
-                weight_div_strb_r[0] <= wr_pipe_strb_r;
-            end
+            // Payload registers advance independently of valid.  The valid
+            // pipeline still gates the eventual map commit, while removing
+            // its wide CE fanout from every divider payload register.
+            weight_div_rem_r[0] <= weight_div_s0_ge ?
+                (weight_div_s0_trial - wr_pipe_col_beats_r[7:0]) :
+                weight_div_s0_trial;
+            weight_div_pair_r[0] <= weight_div_s0_ge ? 14'h2000 : 14'd0;
+            weight_div_q_r[0] <= wr_pipe_index_r[14:1];
+            weight_div_col_beats_r[0] <= wr_pipe_col_beats_r;
+            weight_div_parity_r[0] <= wr_pipe_index_r[0];
+            weight_div_bank_r[0] <= wr_pipe_bank_r;
+            weight_div_data_r[0] <= wr_pipe_data_r;
+            weight_div_strb_r[0] <= wr_pipe_strb_r;
         end
     end
 
@@ -870,27 +895,25 @@ module Matrix_Vector_Multiplication #(
                 end else begin
                     weight_div_valid_r[weight_div_stage_g] <=
                         weight_div_valid_r[weight_div_stage_g-1];
-                    if (weight_div_valid_r[weight_div_stage_g-1]) begin
-                        weight_div_rem_r[weight_div_stage_g] <= div_ge ?
-                            (div_trial -
-                             weight_div_col_beats_r[weight_div_stage_g-1][7:0]) :
-                            div_trial;
-                        weight_div_pair_r[weight_div_stage_g] <= div_ge ?
-                            (weight_div_pair_r[weight_div_stage_g-1] | DIV_QUOT_BIT) :
-                            weight_div_pair_r[weight_div_stage_g-1];
-                        weight_div_q_r[weight_div_stage_g] <=
-                            weight_div_q_r[weight_div_stage_g-1];
-                        weight_div_col_beats_r[weight_div_stage_g] <=
-                            weight_div_col_beats_r[weight_div_stage_g-1];
-                        weight_div_parity_r[weight_div_stage_g] <=
-                            weight_div_parity_r[weight_div_stage_g-1];
-                        weight_div_bank_r[weight_div_stage_g] <=
-                            weight_div_bank_r[weight_div_stage_g-1];
-                        weight_div_data_r[weight_div_stage_g] <=
-                            weight_div_data_r[weight_div_stage_g-1];
-                        weight_div_strb_r[weight_div_stage_g] <=
-                            weight_div_strb_r[weight_div_stage_g-1];
-                    end
+                    weight_div_rem_r[weight_div_stage_g] <= div_ge ?
+                        (div_trial -
+                         weight_div_col_beats_r[weight_div_stage_g-1][7:0]) :
+                        div_trial;
+                    weight_div_pair_r[weight_div_stage_g] <= div_ge ?
+                        (weight_div_pair_r[weight_div_stage_g-1] | DIV_QUOT_BIT) :
+                        weight_div_pair_r[weight_div_stage_g-1];
+                    weight_div_q_r[weight_div_stage_g] <=
+                        weight_div_q_r[weight_div_stage_g-1];
+                    weight_div_col_beats_r[weight_div_stage_g] <=
+                        weight_div_col_beats_r[weight_div_stage_g-1];
+                    weight_div_parity_r[weight_div_stage_g] <=
+                        weight_div_parity_r[weight_div_stage_g-1];
+                    weight_div_bank_r[weight_div_stage_g] <=
+                        weight_div_bank_r[weight_div_stage_g-1];
+                    weight_div_data_r[weight_div_stage_g] <=
+                        weight_div_data_r[weight_div_stage_g-1];
+                    weight_div_strb_r[weight_div_stage_g] <=
+                        weight_div_strb_r[weight_div_stage_g-1];
                 end
             end
         end
@@ -1166,6 +1189,8 @@ module Matrix_Vector_Multiplication #(
                      localparam integer WEIGHT_RAM_INDEX =
                          weight_top_bank_g * WEIGHT_RAM_COUNT +
                          weight_bank_g * WEIGHT_ROW_SLOT_LEAVES + weight_row_slot_g;
+                     localparam integer WEIGHT_COMPUTE_ADDR_INDEX =
+                         weight_top_bank_g * WEIGHT_BANKS + weight_bank_g;
                     Dual_Port_BRAM #(
                         .AWIDTH (WEIGHT_LOCAL_ADDR_WIDTH),
                         .DWIDTH (WEIGHT_BANK_WIDTH),
@@ -1184,7 +1209,7 @@ module Matrix_Vector_Multiplication #(
                         .clkb  (CLK),
                         .enb   (weight_compute_en_leaf[WEIGHT_RAM_INDEX]),
                         .web   ({WEIGHT_BANK_BYTES{1'b0}}),
-                        .addrb (weight_compute_addr_leaf[WEIGHT_RAM_INDEX]),
+                        .addrb (weight_compute_addr_shared[WEIGHT_COMPUTE_ADDR_INDEX]),
                         .dinb  ({WEIGHT_BANK_WIDTH{1'b0}}),
                         .doutb (weight_compute_data_leaf[WEIGHT_BANK_WIDTH*WEIGHT_RAM_INDEX +: WEIGHT_BANK_WIDTH])
                     );
@@ -1410,12 +1435,15 @@ module Matrix_Vector_Multiplication #(
             read_valid_d_r      <= 1'b0;
             read_last_d_r       <= 1'b0;
             read_group_last_d_r <= 1'b0;
+            read_bank_d_r       <= 1'b0;
             read_valid_q_r      <= 1'b0;
             read_last_q_r       <= 1'b0;
             read_group_last_q_r <= 1'b0;
+            read_bank_q_r       <= 1'b0;
             read_valid_x_r      <= 1'b0;
             read_last_x_r       <= 1'b0;
             read_group_last_x_r <= 1'b0;
+            read_bank_x_r       <= 1'b0;
             read_row_slot_d_r      <= 2'd0;
             read_row_slot_q_r      <= 2'd0;
             read_row_slot_x_r      <= 2'd0;
@@ -1434,8 +1462,9 @@ module Matrix_Vector_Multiplication #(
             read_quad7_row_slot_d_r <= 3'd0; read_quad7_row_slot_q_r <= 3'd0; read_quad7_row_slot_x_r <= 3'd0;
             compute_rd_en       <= 1'b0;
             act_compute_addr    <= {ACT_ADDR_WIDTH{1'b0}};
+            for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_COMPUTE_ADDR_COUNT; fsm_bank_i = fsm_bank_i + 1)
+                weight_compute_addr_shared[fsm_bank_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
             for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_TOTAL; fsm_ram_i = fsm_ram_i + 1) begin
-                weight_compute_addr_leaf[fsm_ram_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
                 weight_compute_en_leaf[fsm_ram_i]   <= 1'b0;
             end
             act_pmau_data       <= {ACT_BEAT_WIDTH{1'b0}};
@@ -1460,6 +1489,59 @@ module Matrix_Vector_Multiplication #(
                 read_req_valid_r <= 1'b0;
             read_valid_d_r <= 1'b0;
             read_group_last_d_r <= 1'b0;
+
+            // Address registers are staged on the same request edge as the
+            // original compute-read enables, but outside the FSM case.  The
+            // request-valid pipeline is only populated by S_RUN and is
+            // cleared when the final feed enters PMAU, so address/enables stay
+            // aligned while state_r is removed from the address CE cone.
+            if (read_shift_addr_fire) begin
+                for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
+                    weight_compute_addr_shared[active_bank_r*WEIGHT_BANKS + fsm_bank_i]
+                        <= read_req_weight_addr_r;
+                end
+                // Keep the exact per-row-slot enable selection.  All enabled
+                // leaves in one bank/shard now observe the shared address.
+                for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
+                    weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
+                                           fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_row_slot_r]
+                        <= 1'b1;
+                    if (pair_lane1_valid) begin
+                        // Every valid P2 row owns a distinct row-slot
+                        // leaf and therefore a distinct SDP B port.
+                        weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
+                                               fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_pair_row_slot_r]
+                            <= 1'b1;
+                    end
+                    if (pair_lane2_valid) begin
+                        weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
+                                               fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad2_row_slot_r]
+                            <= 1'b1;
+                    end
+                    if (pair_lane3_valid) begin
+                        weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
+                                               fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad3_row_slot_r]
+                            <= 1'b1;
+                    end
+                    if (pair_lane4_valid) begin
+                        weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad4_row_slot_r] <= 1'b1;
+                    end
+                    if (pair_lane5_valid) begin
+                        weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad5_row_slot_r] <= 1'b1;
+                    end
+                    if (pair_lane6_valid) begin
+                        weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad6_row_slot_r] <= 1'b1;
+                    end
+                    if (pair_lane7_valid) begin
+                        weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad7_row_slot_r] <= 1'b1;
+                    end
+                end
+            end
+
+            if (weight_compute_final_clear) begin
+                for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_TOTAL; fsm_ram_i = fsm_ram_i + 1)
+                    weight_compute_en_leaf[fsm_ram_i] <= 1'b0;
+            end
 
             if (ctrl_clear_done) begin
                 done_r  <= 1'b0;
@@ -1547,6 +1629,7 @@ module Matrix_Vector_Multiplication #(
                         read_valid_x_r <= 1'b1;
                         read_last_x_r  <= read_last_q_r;
                         read_group_last_x_r <= read_group_last_q_r;
+                        read_bank_x_r <= read_bank_q_r;
                         read_row_slot_x_r <= read_row_slot_q_r;
                         read_pair_row_slot_x_r <= read_pair_row_slot_q_r;
                         read_quad2_row_slot_x_r <= read_quad2_row_slot_q_r;
@@ -1562,6 +1645,7 @@ module Matrix_Vector_Multiplication #(
                         read_valid_q_r <= 1'b1;
                         read_last_q_r  <= read_last_d_r;
                         read_group_last_q_r <= read_group_last_d_r;
+                        read_bank_q_r <= read_bank_d_r;
                         read_row_slot_q_r <= read_row_slot_d_r;
                         read_pair_row_slot_q_r <= read_pair_row_slot_d_r;
                         read_quad2_row_slot_q_r <= read_quad2_row_slot_d_r;
@@ -1575,56 +1659,7 @@ module Matrix_Vector_Multiplication #(
                     if (shift_req_to_d) begin
                         compute_rd_en       <= 1'b1;
                         act_compute_addr    <= read_req_act_addr_r;
-                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_BANKS; fsm_bank_i = fsm_bank_i + 1) begin
-                            weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                   fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_row_slot_r]
-                                <= 1'b1;
-                            weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                     fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_row_slot_r]
-                                <= read_req_weight_addr_r;
-                            if (pair_lane1_valid) begin
-                                // Every valid P2 row owns a distinct row-slot
-                                // leaf and therefore a distinct SDP B port.
-                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                       fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_pair_row_slot_r]
-                                    <= 1'b1;
-                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                         fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_pair_row_slot_r]
-                                    <= read_req_weight_addr_r;
-                            end
-                            if (pair_lane2_valid) begin
-                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                       fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad2_row_slot_r]
-                                    <= 1'b1;
-                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                         fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad2_row_slot_r]
-                                    <= read_req_weight_addr_r;
-                            end
-                            if (pair_lane3_valid) begin
-                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                       fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad3_row_slot_r]
-                                    <= 1'b1;
-                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT +
-                                                         fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad3_row_slot_r]
-                                    <= read_req_weight_addr_r;
-                            end
-                            if (pair_lane4_valid) begin
-                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad4_row_slot_r] <= 1'b1;
-                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad4_row_slot_r] <= read_req_weight_addr_r;
-                            end
-                            if (pair_lane5_valid) begin
-                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad5_row_slot_r] <= 1'b1;
-                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad5_row_slot_r] <= read_req_weight_addr_r;
-                            end
-                            if (pair_lane6_valid) begin
-                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad6_row_slot_r] <= 1'b1;
-                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad6_row_slot_r] <= read_req_weight_addr_r;
-                            end
-                            if (pair_lane7_valid) begin
-                                weight_compute_en_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad7_row_slot_r] <= 1'b1;
-                                weight_compute_addr_leaf[active_bank_r*WEIGHT_RAM_COUNT + fsm_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_req_quad7_row_slot_r] <= read_req_weight_addr_r;
-                            end
-                        end
+                        read_bank_d_r       <= active_bank_r;
                         read_valid_d_r      <= 1'b1;
                         read_last_d_r       <= read_req_last_r;
                         read_group_last_d_r <= read_req_group_last_r;
@@ -1661,8 +1696,6 @@ module Matrix_Vector_Multiplication #(
                         // to produce the corresponding result.
                         feed_valid_r    <= 1'b0;
                         compute_rd_en   <= 1'b0;
-                        for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_TOTAL; fsm_ram_i = fsm_ram_i + 1)
-                            weight_compute_en_leaf[fsm_ram_i] <= 1'b0;
                         read_req_valid_r <= 1'b0;
                         read_valid_d_r  <= 1'b0;
                         read_valid_q_r  <= 1'b0;

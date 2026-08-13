@@ -1,3 +1,30 @@
+/*
+ *-----------------------------------------------------------------------------
+ * Module      : MY_IP
+ * Description : AXI4-Full slave protocol adapter for the INT8 VPU.
+ *
+ * MY_IP receives the standard AXI4-Full AW, W, B, AR, and R channels from
+ * VPU_Top and converts them into a narrow ordered local request interface for
+ * AXI4_Mapping.  It is responsible for AXI handshakes, burst beat counting,
+ * INCR-burst address advancement, ID preservation, WSTRB forwarding,
+ * RLAST/BVALID generation, and SLVERR propagation when the mapping layer
+ * reports an invalid read.
+ *
+ * This module deliberately does not decode VPU register offsets or tensor
+ * memory windows.  Every accepted write beat becomes map_wr_en with address,
+ * data, and byte strobes.  Every accepted read beat becomes map_rd_en, then
+ * MY_IP waits for map_rd_valid/map_rd_data/map_rd_error before returning the
+ * corresponding AXI read response.
+ *
+ * The implementation keeps ordering simple on each side of the AXI interface:
+ * the write side accepts one burst at a time, and the read side allows only
+ * one local read request to be pending before issuing the next burst beat.
+ * Multiple outstanding read transactions are not supported.  This matches the
+ * downstream register map and Result BRAM readback path, both of which return
+ * read data as ordered local responses.
+ *-----------------------------------------------------------------------------
+ */
+
 `timescale 1ns/1ps
 
 module MY_IP #(
@@ -10,7 +37,7 @@ module MY_IP #(
     parameter integer C_S00_AXI_RUSER_WIDTH  = 1,
     parameter integer C_S00_AXI_BUSER_WIDTH  = 1,
 
-    parameter integer NUM_LANES              = 32,
+    parameter integer NUM_LANES              = 16,
     parameter integer ACT_WIDTH              = 8,
     parameter integer WEIGHT_WIDTH           = 8,
     parameter integer ACC_WIDTH              = 32,
@@ -18,9 +45,9 @@ module MY_IP #(
     parameter integer SCALE_FRAC_BITS        = 15,
     parameter integer RESULT_FIFO_DEPTH      = 8,
     parameter integer MAX_ROWS               = 256,
-    parameter integer MAX_COL_BEATS          = 32,
-    parameter [C_S00_AXI_ADDR_WIDTH-1:0] S00_AXI_BASE_ADDR = 40'h00A0_0000_00,
-    parameter [C_S00_AXI_ADDR_WIDTH-1:0] S01_AXI_BASE_ADDR = 40'h00A8_0000_00
+    parameter integer MAX_COL_BEATS          = 128,
+    parameter integer MAX_GROUP_Q8_BLOCKS    = 64,
+    parameter integer SPU_STREAM_TEST_STALL_ENABLE = 0
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
     (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
@@ -76,41 +103,7 @@ module MY_IP #(
     output wire                                  s00_axi_rlast,
     output wire [C_S00_AXI_RUSER_WIDTH-1:0]      s00_axi_ruser,
     output wire                                  s00_axi_rvalid,
-    input  wire                                  s00_axi_rready,
-
-    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s01_axi_aclk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s01_axi, ASSOCIATED_RESET s01_axi_aresetn" *)
-    input  wire                                  s01_axi_aclk,
-    (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 s01_axi_aresetn RST" *)
-    (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
-    input  wire                                  s01_axi_aresetn,
-
-    input  wire [C_S00_AXI_ID_WIDTH-1:0]         s01_axi_awid,
-    input  wire [C_S00_AXI_ADDR_WIDTH-1:0]       s01_axi_awaddr,
-    input  wire [7:0]                            s01_axi_awlen,
-    input  wire [2:0]                            s01_axi_awsize,
-    input  wire [1:0]                            s01_axi_awburst,
-    input  wire                                  s01_axi_awlock,
-    input  wire [3:0]                            s01_axi_awcache,
-    input  wire [2:0]                            s01_axi_awprot,
-    input  wire [3:0]                            s01_axi_awqos,
-    input  wire [3:0]                            s01_axi_awregion,
-    input  wire [C_S00_AXI_AWUSER_WIDTH-1:0]     s01_axi_awuser,
-    input  wire                                  s01_axi_awvalid,
-    output wire                                  s01_axi_awready,
-
-    input  wire [C_S00_AXI_DATA_WIDTH-1:0]       s01_axi_wdata,
-    input  wire [(C_S00_AXI_DATA_WIDTH/8)-1:0]   s01_axi_wstrb,
-    input  wire                                  s01_axi_wlast,
-    input  wire [C_S00_AXI_WUSER_WIDTH-1:0]      s01_axi_wuser,
-    input  wire                                  s01_axi_wvalid,
-    output wire                                  s01_axi_wready,
-
-    output wire [C_S00_AXI_ID_WIDTH-1:0]         s01_axi_bid,
-    output wire [1:0]                            s01_axi_bresp,
-    output wire [C_S00_AXI_BUSER_WIDTH-1:0]      s01_axi_buser,
-    output wire                                  s01_axi_bvalid,
-    input  wire                                  s01_axi_bready
+    input  wire                                  s00_axi_rready
 );
 
     function integer clog2;
@@ -123,6 +116,10 @@ module MY_IP #(
         end
     endfunction
 
+    // Compute the next beat address from AWSIZE/ARSIZE.  Only INCR bursts
+    // advance the address.  Other burst types hold the address constant to
+    // avoid generating wrap/fixed behavior that is not used by the current DMA
+    // flow.
     function [C_S00_AXI_ADDR_WIDTH-1:0] axi_next_addr;
         input [C_S00_AXI_ADDR_WIDTH-1:0] addr;
         input [2:0] size;
@@ -140,6 +137,13 @@ module MY_IP #(
     localparam integer ADDR_LSB = clog2(C_S00_AXI_DATA_WIDTH / 8);
     localparam [2:0] ADDR_LSB_3 = ADDR_LSB;
 
+    // ---------------------------------------------------------------------
+    // Write channel
+    // ---------------------------------------------------------------------
+    // The AW channel is captured first.  Each following W beat becomes a
+    // one-cycle map_wr_en_r pulse carrying the current address, WDATA, and
+    // WSTRB.  When WLAST arrives, or the beat counter reaches AWLEN, the module
+    // completes the burst and returns an OKAY B response.
     reg wr_active_r;
     reg [C_S00_AXI_ADDR_WIDTH-1:0] wr_addr_r;
     reg [7:0] wr_len_r;
@@ -182,6 +186,10 @@ module MY_IP #(
             map_wr_data_r     <= {C_S00_AXI_DATA_WIDTH{1'b0}};
             map_wr_strb_r     <= {(C_S00_AXI_DATA_WIDTH/8){1'b0}};
         end else begin
+            // map_wr_en_r is asserted for exactly one cycle per accepted W
+            // beat.  AXI4_Mapping uses the captured address to decide whether
+            // this beat targets a register, Activation window, Weight window,
+            // or Result window.
             map_wr_en_r <= w_fire;
             if (w_fire) begin
                 map_wr_addr_r <= wr_addr_r;
@@ -219,87 +227,12 @@ module MY_IP #(
         end
     end
 
-    // Auxiliary write-only AXI port.  This path is intended to share the same
-    // PL clock as s00_axi_aclk; no CDC is inserted between port 1 and the core.
-    reg wr1_active_r;
-    reg [C_S00_AXI_ADDR_WIDTH-1:0] wr1_addr_r;
-    reg [7:0] wr1_len_r;
-    reg [7:0] wr1_beat_r;
-    reg [2:0] wr1_size_r;
-    reg [1:0] wr1_burst_r;
-    reg [C_S00_AXI_ID_WIDTH-1:0] wr1_id_r;
-    reg bvalid1_r;
-    reg wr1_done_pending_r;
-
-    reg map_wr_en_1_r;
-    reg [C_S00_AXI_ADDR_WIDTH-1:0] map_wr_addr_1_r;
-    reg [C_S00_AXI_DATA_WIDTH-1:0] map_wr_data_1_r;
-    reg [(C_S00_AXI_DATA_WIDTH/8)-1:0] map_wr_strb_1_r;
-
-    assign s01_axi_awready = (!wr1_active_r) && (!bvalid1_r) && (!wr1_done_pending_r);
-    assign s01_axi_wready  = wr1_active_r;
-    assign s01_axi_bvalid  = bvalid1_r;
-    assign s01_axi_bresp   = 2'b00;
-    assign s01_axi_bid     = wr1_id_r;
-    assign s01_axi_buser   = {C_S00_AXI_BUSER_WIDTH{1'b0}};
-
-    wire aw1_fire = s01_axi_awvalid && s01_axi_awready;
-    wire w1_fire  = s01_axi_wvalid && s01_axi_wready;
-    wire w1_done  = w1_fire && (s01_axi_wlast || (wr1_beat_r == wr1_len_r));
-
-    always @(posedge s01_axi_aclk) begin
-        if (!s01_axi_aresetn) begin
-            wr1_active_r       <= 1'b0;
-            wr1_addr_r         <= {C_S00_AXI_ADDR_WIDTH{1'b0}};
-            wr1_len_r          <= 8'd0;
-            wr1_beat_r         <= 8'd0;
-            wr1_size_r         <= ADDR_LSB_3;
-            wr1_burst_r        <= 2'b01;
-            wr1_id_r           <= {C_S00_AXI_ID_WIDTH{1'b0}};
-            bvalid1_r          <= 1'b0;
-            wr1_done_pending_r <= 1'b0;
-            map_wr_en_1_r      <= 1'b0;
-            map_wr_addr_1_r    <= {C_S00_AXI_ADDR_WIDTH{1'b0}};
-            map_wr_data_1_r    <= {C_S00_AXI_DATA_WIDTH{1'b0}};
-            map_wr_strb_1_r    <= {(C_S00_AXI_DATA_WIDTH/8){1'b0}};
-        end else begin
-            map_wr_en_1_r <= w1_fire;
-            if (w1_fire) begin
-                map_wr_addr_1_r <= wr1_addr_r;
-                map_wr_data_1_r <= s01_axi_wdata;
-                map_wr_strb_1_r <= s01_axi_wstrb;
-            end
-
-            if (aw1_fire) begin
-                wr1_active_r <= 1'b1;
-                wr1_addr_r   <= s01_axi_awaddr;
-                wr1_len_r    <= s01_axi_awlen;
-                wr1_beat_r   <= 8'd0;
-                wr1_size_r   <= s01_axi_awsize;
-                wr1_burst_r  <= s01_axi_awburst;
-                wr1_id_r     <= s01_axi_awid;
-            end
-
-            if (w1_fire) begin
-                wr1_addr_r <= axi_next_addr(wr1_addr_r, wr1_size_r, wr1_burst_r);
-                wr1_beat_r <= wr1_beat_r + 8'd1;
-
-                if (w1_done) begin
-                    wr1_active_r <= 1'b0;
-                    wr1_done_pending_r <= 1'b1;
-                end
-            end
-
-            if (wr1_done_pending_r) begin
-                bvalid1_r <= 1'b1;
-                wr1_done_pending_r <= 1'b0;
-            end
-
-            if (bvalid1_r && s01_axi_bready)
-                bvalid1_r <= 1'b0;
-        end
-    end
-
+    // ---------------------------------------------------------------------
+    // Read channel
+    // ---------------------------------------------------------------------
+    // Each AR beat is converted into map_rd_en_r.  MY_IP keeps a pending read
+    // entry until AXI4_Mapping asserts map_rd_valid, then returns the data on
+    // the R channel and generates RLAST on the final burst beat.
     reg read_active_r;
     reg [C_S00_AXI_ADDR_WIDTH-1:0] rd_addr_r;
     reg [7:0] rd_len_r;
@@ -344,6 +277,10 @@ module MY_IP #(
     reg [7:0] issue_beat_r;
     reg [7:0] issue_len_r;
 
+    // Select the next local read request.  A newly accepted AR has priority;
+    // otherwise the next beat of the active burst is issued.  A new local read
+    // is only issued when no read is pending and no RVALID is waiting for the
+    // AXI master.
     always @* begin
         issue_read_r = 1'b0;
         issue_last_r = 1'b0;
@@ -389,6 +326,10 @@ module MY_IP #(
             map_rd_en_r       <= 1'b0;
             map_rd_addr_r     <= {C_S00_AXI_ADDR_WIDTH{1'b0}};
         end else begin
+            // map_rd_en_r is a one-cycle local read request.  Returned data
+            // may come from the register map or from Result BRAM, so it is
+            // merged back into the AXI R channel only after map_rd_valid is
+            // asserted.
             map_rd_en_r <= issue_read_r;
             if (issue_read_r)
                 map_rd_addr_r <= issue_addr_r;
@@ -428,11 +369,11 @@ module MY_IP #(
         end
     end
 
+    // The mapping layer receives serialized local requests and handles the
+    // register map, data windows, GEMV core connection, and read-range errors.
     AXI4_Mapping #(
         .AXI_DATA_WIDTH          (C_S00_AXI_DATA_WIDTH),
         .AXI_ADDR_WIDTH          (C_S00_AXI_ADDR_WIDTH),
-        .VPU_BASE_ADDR           (S00_AXI_BASE_ADDR),
-        .S01_BASE_ADDR           (S01_AXI_BASE_ADDR),
         .NUM_LANES               (NUM_LANES),
         .ACT_WIDTH               (ACT_WIDTH),
         .WEIGHT_WIDTH            (WEIGHT_WIDTH),
@@ -441,7 +382,9 @@ module MY_IP #(
         .SCALE_FRAC_BITS         (SCALE_FRAC_BITS),
         .RESULT_FIFO_DEPTH       (RESULT_FIFO_DEPTH),
         .MAX_ROWS                (MAX_ROWS),
-        .MAX_COL_BEATS           (MAX_COL_BEATS)
+        .MAX_COL_BEATS           (MAX_COL_BEATS),
+        .MAX_GROUP_Q8_BLOCKS     (MAX_GROUP_Q8_BLOCKS),
+        .SPU_STREAM_TEST_STALL_ENABLE (SPU_STREAM_TEST_STALL_ENABLE)
     ) u_axi4_mapping (
         .clk            (s00_axi_aclk),
         .resetn         (s00_axi_aresetn),
@@ -449,10 +392,6 @@ module MY_IP #(
         .map_wr_addr    (map_wr_addr_r),
         .map_wr_data    (map_wr_data_r),
         .map_wr_strb    (map_wr_strb_r),
-        .map_wr_en_1    (map_wr_en_1_r),
-        .map_wr_addr_1  (map_wr_addr_1_r),
-        .map_wr_data_1  (map_wr_data_1_r),
-        .map_wr_strb_1  (map_wr_strb_1_r),
         .map_rd_en      (map_rd_en_r),
         .map_rd_addr    (map_rd_addr_r),
         .map_rd_data    (map_rd_data),

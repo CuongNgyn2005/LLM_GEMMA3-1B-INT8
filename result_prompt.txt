@@ -1,8 +1,31 @@
-debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo ./build_mem/bin/llama-cli     -m ./models/gemma-3-1b-it-Q8_0.gguf     -p "Please write about AI"        --single-turn     --temp 0
+debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo rm /tmp/fpga_debug.log
+[sudo] password for debian:
+debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo env \
+  FPGA_INIT_VERBOSE=1 \
+  FPGA_P6_ACCUM_TRACE=1 \
+  FPGA_P6_TENSOR=blk.0.ffn_down.weight \
+  FPGA_P6_LAYER=0 \
+  FPGA_P6_TILE_ROW0=0 \
+  FPGA_P6_ROW_FIRST=0 \
+  FPGA_P6_ROW_COUNT=4 \
+  FPGA_P6_EXPECTED_K_CHUNKS=4 \
+  FPGA_P6_RECORD_LIMIT=16 \
+  FPGA_PL_SCALE_CONTRACT_CHECK=1 \
+  FPGA_P2_ALLOW_MULTITILE=1 \
+  FPGA_P2_TILE_LIMIT=4 \
+  FPGA_CONTRACT_ABORT=1 \
+  FPGA_P3_SPLIT_SCALE=0 \
+  FPGA_PIPELINE_ENABLE=0 \
+  FPGA_P2_INPUT_PRELOAD=0 \
+  ./build_mem/bin/llama-cli \
+  -m ./models/gemma-3-1b-it-Q8_0.gguf \
+  -p "Please write about AI" \
+  -n 2 --single-turn --temp 0
 build: 198 (b9d4df9) with cc (Debian 10.2.1-6) 10.2.1 20210110 for aarch64-linux-gnu
 main: llama backend init
 main: load the model and apply lora adapter, if any
-main: FPGA host initialized (Bare-metal mode)
+main: FPGA C0 requested; host hardware initialization deferred until model tensor validation completes
+llama_model_loader: enabling tensor validation for FPGA C0/P2/source-audit before accelerator execution
 llama_model_loader: loaded meta data with 38 key-value pairs and 340 tensors from ./models/gemma-3-1b-it-Q8_0.gguf (version GGUF V3 (latest))
 llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
 llama_model_loader: - kv   0:                       general.architecture str              = gemma3
@@ -104,6 +127,7 @@ print_info: max token length = 48
 load_tensors: loading model tensors, this can take a while... (mmap = true)
 load_tensors:   CPU_Mapped model buffer size =  1013.54 MiB
 .......................................................................
+load_all_data: FPGA C0/P2/source-audit tensor-validation handshake complete
 llama_context: constructing llama_context
 llama_context: n_seq_max     = 1
 llama_context: n_ctx         = 4096
@@ -131,6 +155,25 @@ common_init_from_params: added <eos> logit bias = -inf
 common_init_from_params: added <end_of_turn> logit bias = -inf
 common_init_from_params: setting dry_penalty_last_n to ctx_size = 4096
 common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=config_loader_gate begin pl_scale=1
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=config_loader_gate policy=p2_uio_only my_ip_phys=0xa0000000 my_ip_offset=0 my_ip_required_size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=config_loader_gate pass p2_contract_limit=1 loader_validation=pass
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=mapping begin
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=mapping_zdma begin policy=uio_only
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=mapping_zdma pass source=/dev/uio4(dma,O_SYNC) size=0x1000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=mapping_my_ip begin required_phys=0xa0000000 required_offset=0 required_size=0x400000 policy=uio_only
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=mapping_my_ip pass source=/dev/uio14(MY_IP,O_SYNC) phys=0xa0000000 offset=0 size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=mapping_ddr begin policy=uio_only phys=[0x70000000,0x80000000) required_size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=mapping_ddr pass source=/dev/uio15(fpga_ddr_low,O_SYNC) map_kind=uio_physical size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=mapping pass my_ip_source=/dev/uio14(MY_IP,O_SYNC) my_ip_size=0x400000
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=zdma_init begin
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=zdma_preinit ctrl2=0x00000000 status=0x00000000 isr=0x00000000 total_bytes=0x00000000 en=0 action=init_permitted
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=zdma_init pass
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=identity_reads begin
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=identity_reads pass limits=0x00800100 caps=0x100040fb spu_caps=0x10000fc3 protocol=0x00000002 bitstream_id=0x56505532 p2_abi=0x50320003 p3_abi=0x50330001 stream_status=0x0000001f
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=admission pass p2_abi_ok=1 quiescent=1 capacity_ok=1 vpu_two_row_transport_cap=1 spu_q8_scale_pair_stream_cap=1 two_row_transport_ok=1 stream_supported=1
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=data_plane_selftests skipped reason=p2_passive_init
+[FPGA][P2_INIT] version=zcu104-gemma3-q8-v88-compact-telemetry phase=ready route=p2_single_bank init_data_plane=none pack_workers_requested=2 active=2
 [FPGA] Kernel ready!
 main: llama threadpool init, n_threads = 4
 main: chat template is available, enabling conversation mode (disable it with -no-cnv)
@@ -149,93 +192,33 @@ How are you?<end_of_turn>
 
 system_info: n_threads = 4 (n_threads_batch = 4) / 4 | CPU : NEON = 1 | ARM_FMA = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 |
 
-sampler seed: 2891782680
+sampler seed: 241169763
 sampler params:
         repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
         dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 4096
         top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
         mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000
 sampler chain: logits -> logit-bias -> penalties -> dry -> top-n-sigma -> top-k -> typical -> top-p -> min-p -> xtc -> temp-ext -> dist
-generate: n_ctx = 4096, n_batch = 2048, n_predict = -1, n_keep = 1
+generate: n_ctx = 4096, n_batch = 2048, n_predict = 2, n_keep = 1
 
 user
 Please write about AI
 model
-Okay, let's dive into the fascinating and rapidly evolving world of AI (Artificial Intelligence). It’s a topic that’s both incredibly exciting and often surrounded by a lot of hype and misunderstanding. Here’s a breakdown of what AI is, what it can do, its current state, and some of the key considerations:
+Okay[FPGA][P2_TILE_BOUNDARY] status=pass tensor=blk.0.ffn_down.weight layer=0 job=4 tile=3 bank=0 tile_limit=4 p2_tile_q16_checks=4 p2_matrix_contract_checks=0 matrix_value_contract=not_attempted zdma_ctrl2=0x00000000 stream_status=0x0000001f slot_state=0x00000000 desc_flags=0x00000000 reg_bank=0x00000000 bank_stat=0x00020000 active_job=0x00000004 done_job=0x00000004 action=cpu_shadow_current_matmul_then_cpu_native
+,
 
-**1. What is AI?**
-
-At its core, AI is about creating computer systems that can perform tasks that typically require human intelligence. This includes things like:
-
-* **Learning:**  The ability to identify patterns and improve performance based on data.
-* **Reasoning:**  The capacity to draw conclusions and solve problems.
-* **Problem-Solving:**  The ability to identify and address challenges.
-* **Perception:**  The ability to understand and interpret sensory input like images, sound, and text.
-* **Natural Language Processing (NLP):**  The ability to understand, interpret, and generate human language.
-
-
-**2. Types of AI**
-
-There are several levels and categories of AI, often overlapping:
-
-* **Narrow or Weak AI:** This is the type of AI we largely see today. It’  is designed and trained for a specific task. Examples include:
-    * **Spam Filters:**  Identify and filter unwanted emails.
-    * **Voice Assistants (Siri, Alexa, Google Assistant):** Respond to voice commands and perform tasks.
-    * **Recommendation Systems (Netflix, Amazon):** Suggest products or content based on your past behavior.
-* **General or Strong AI:** This is the theoretical type of AI that possesses human-level intelligence – the ability to understand, learn, and apply knowledge across a wide range of tasks, just like a human.  We haven't achieved this yet.
-* **Super AI:**  A hypothetical AI that surpasses human intelligence in all aspects. This is largely the subject of science fiction.
-
-
-**3. Current State of AI – Where We Are Now**
-
-* **Deep Learning:** A subset of AI that uses artificial neural networks with multiple layers (hence "deep") to analyze data and learn complex patterns. This is the driving force behind many recent advances.
-* **Large Language Models (LLMs):**  These are incredibly powerful AI models, like GPT-3, LaMDA, and others, that can generate human-quality text, translate languages, write different kinds of creative content, and answer your questions in an informative way.
-* **Image Recognition & Computer Vision:** AI can now identify objects, people, and scenes in images and videos with impressive accuracy.
-* **Autonomous Vehicles:**  AI is essential for self-driving cars, enabling them to perceive their surroundings, make decisions, and navigate.
-
-
-**4.  How AI is Being Used Today**
-
-* **Healthcare:**  AI is being used for diagnosis, drug discovery, personalized treatment plans, and robotic surgery.
-* **Finance:**  Fraud detection, algorithmic trading, and customer service chatbots.
-  * **Retail:** Personalized recommendations, inventory management, and supply chain optimization.
-* **Manufacturing:**  Robotics and automation, predictive maintenance.
-* **Transportation:**  Self-driving trucks and logistics.
-
-
-**5.  Challenges and Concerns**
-
-* **Bias:** AI systems are trained on data, and if that data reflects existing societal biases, the AI will perpetuate and even amplify those biases.
-* **Job Displacement:**  As AI becomes more capable, there are concerns about the impact on jobs, particularly in roles involving repetitive tasks.
-  * **Ethical Considerations:**  Questions around accountability, transparency, and the potential misuse of AI are increasingly important.
-* **Security Risks:**  AI systems can be vulnerable to attacks and manipulation.
-* **Lack of Explainability (Black Box Problem):**  Some AI models, particularly deep learning models, are difficult to understand – it’s hard to know *why* they make certain desions.
-
-
-**6.  The Future of AI**
-
-* **Continued Advancement:**  AI is expected to continue to advance rapidly, with even more sophisticated capabilities.
-* **Human-AI Collaboration:**  The most likely future is one of collaboration between humans and AI, where AI handles routine tasks and humans focus on creativity, critical thiing, and complex decision-making.
-* **Personalized AI:**  AI will become increasingly tailored to individual needs and preferences.
-
-
-**Resources for Further Learning:**
-
-* **Google AI:** [https://ai.google/](https://ai.google/)
-* **OpenAI:** [https://openai.com/](https://openai.
-llama_perf_sampler_print:    sampling time =    1787.20 ms /   964 runs   (    1.85 ms per token,   539.39 tokens per second)
+llama_perf_sampler_print:    sampling time =       3.77 ms /    15 runs   (    0.25 ms per token,  3974.56 tokens per second)
 
 --- Detailed Function Profiling (within sampler print) ---
-llama_perf_sampler_print: Total_Attn_MHA       time =       3.05 ms ( 39.45 %)
-llama_perf_sampler_print: Total_FFN            time =       1.36 ms ( 17.64 %)
+llama_perf_sampler_print: Total_Attn_MHA       time =       2.15 ms ( 40.49 %)
+llama_perf_sampler_print: Total_FFN            time =       0.91 ms ( 17.14 %)
 llama_perf_sampler_print: Total_MoE_FFN        time =       0.00 ms (  0.00 %)
-llama_perf_sampler_print: Total_Norm           time =       3.32 ms ( 42.91 %)
-llama_perf_sampler_print: Total Profiled       time =       7.73 ms
+llama_perf_sampler_print: Total_Norm           time =       2.25 ms ( 42.36 %)
+llama_perf_sampler_print: Total Profiled       time =       5.31 ms
 ----------------------------------------------------------
-llama_perf_context_print:        load time =    9826.93 ms
-llama_perf_context_print: prompt eval time =   34554.55 ms /    13 tokens ( 2658.04 ms per token,     0.38 tokens per second)
-llama_perf_context_print:        eval time = 3587650.93 ms /   950 runs   ( 3776.47 ms per token,     0.26 tokens per second)
-llama_perf_context_print:       total time = 3628292.45 ms /   963 tokens
-llama_perf_context_print:    graphs reused =        947
-Interrupted by user
+llama_perf_context_print:        load time =   49605.48 ms
+llama_perf_context_print: prompt eval time =    2709.34 ms /    13 tokens (  208.41 ms per token,     4.80 tokens per second)
+llama_perf_context_print:        eval time =     372.36 ms /     1 runs   (  372.36 ms per token,     2.69 tokens per second)
+llama_perf_context_print:       total time =    3217.54 ms /    14 tokens
+llama_perf_context_print:    graphs reused =          0
 debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$
