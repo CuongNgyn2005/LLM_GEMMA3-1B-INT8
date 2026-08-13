@@ -152,7 +152,11 @@ module tb_VPU8_burst;
         reg [127:0] held_row;
         reg [255:0] held_index;
         begin
-            while (!spu_raw_valid) @(posedge clk);
+            // spu_raw_valid can remain asserted while the existing serialized
+            // Result BRAM writer finishes the previously accepted bundle. Such
+            // cycles have lane_valid=0 and are not x8 stream entries. Wait for
+            // an actual bundle with active lanes before checking ordering.
+            while (!(spu_raw_valid && (spu_raw_lane_valid != 8'd0))) @(posedge clk);
             #1;
 
             if (spu_raw_lane_valid !== 8'hff) begin
