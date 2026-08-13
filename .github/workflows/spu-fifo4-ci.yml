@@ -20,7 +20,7 @@ jobs:
           git diff --check
       - name: SPU standalone
         run: |
-          iverilog -g2012 -s tb_SPU_Stream8 -o /tmp/tb_spu8 TESTBENCH/vendor_stubs.v RTL/SPU_Q8_Scale_Accum.v RTL/SPU_VPU_Stream8.v RTL/SPU_Local_Memory.v TESTBENCH/tb_SPU_Stream8.v
+          iverilog -g2012 -s tb_SPU_Stream8 -o /tmp/tb_spu8 TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/SPU_Q8_Scale_Accum.v RTL/SPU_VPU_Stream8.v RTL/SPU_Local_Memory.v TESTBENCH/tb_SPU_Stream8.v
           vvp /tmp/tb_spu8 | tee /tmp/tb_spu8.log
           grep -q "PASS tb_SPU_Stream8" /tmp/tb_spu8.log
       - name: VPU burst
