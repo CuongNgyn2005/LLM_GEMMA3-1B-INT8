@@ -135,6 +135,8 @@ module SPU_Controller #(
     reg [31:0] block_count_r;
     reg [31:0] scale_out_count_r;
     reg [1:0]  q_word_idx_r;
+    reg [Q8_INPUT_WORDS-1:0] q_capture_word_en_r;
+    reg [31:0] q_capture_block_idx_r;
     reg [16*Q8_BLOCK_VALUES-1:0] quant_values_r;
     reg [AXI_DATA_WIDTH-1:0] scale_entry_word_r;
     reg [15:0] scale_out_row_r;
@@ -385,6 +387,8 @@ module SPU_Controller #(
             block_count_r  <= ceil_div32(len);
             scale_out_count_r <= 32'd0;
             q_word_idx_r   <= 2'd0;
+            q_capture_word_en_r <= {Q8_INPUT_WORDS{1'b0}};
+            q_capture_block_idx_r <= 32'd0;
             quant_values_r <= {16*Q8_BLOCK_VALUES{1'b0}};
             scale_entry_word_r <= {AXI_DATA_WIDTH{1'b0}};
             vec_input_word_r <= {AXI_DATA_WIDTH{1'b0}};
@@ -414,6 +418,8 @@ module SPU_Controller #(
             block_count_r  <= 32'd0;
             scale_out_count_r <= 32'd0;
             q_word_idx_r   <= 2'd0;
+            q_capture_word_en_r <= {Q8_INPUT_WORDS{1'b0}};
+            q_capture_block_idx_r <= 32'd0;
             quant_values_r <= {16*Q8_BLOCK_VALUES{1'b0}};
             scale_entry_word_r <= {AXI_DATA_WIDTH{1'b0}};
             scale_out_row_r <= 16'd0;
@@ -583,12 +589,29 @@ module SPU_Controller #(
                 end
 
                 S_Q_WAIT: begin
+                    q_capture_block_idx_r <= block_idx_r;
+                    case (q_word_idx_r)
+                        2'd0: q_capture_word_en_r <= 4'b0001;
+                        2'd1: q_capture_word_en_r <= 4'b0010;
+                        2'd2: q_capture_word_en_r <= 4'b0100;
+                        default: q_capture_word_en_r <= 4'b1000;
+                    endcase
                     state_r <= S_Q_CAPTURE;
                 end
 
                 S_Q_CAPTURE: begin
-                    quant_values_r[AXI_DATA_WIDTH*q_word_idx_r +: AXI_DATA_WIDTH] <=
-                        masked_input_word(mem_rdata, block_idx_r, q_word_idx_r, len_r);
+                    if (q_capture_word_en_r[0])
+                        quant_values_r[127:0] <=
+                            masked_input_word(mem_rdata, q_capture_block_idx_r, 2'd0, len_r);
+                    if (q_capture_word_en_r[1])
+                        quant_values_r[255:128] <=
+                            masked_input_word(mem_rdata, q_capture_block_idx_r, 2'd1, len_r);
+                    if (q_capture_word_en_r[2])
+                        quant_values_r[383:256] <=
+                            masked_input_word(mem_rdata, q_capture_block_idx_r, 2'd2, len_r);
+                    if (q_capture_word_en_r[3])
+                        quant_values_r[511:384] <=
+                            masked_input_word(mem_rdata, q_capture_block_idx_r, 2'd3, len_r);
                     if (q_word_idx_r == Q8_INPUT_WORDS - 1) begin
                         q_word_idx_r <= 2'd0;
                         state_r      <= S_Q_COMPUTE;
@@ -642,7 +665,6 @@ module SPU_Controller #(
                     end else begin
                         block_idx_r    <= block_idx_r + 32'd1;
                         q_word_idx_r   <= 2'd0;
-                        quant_values_r <= {16*Q8_BLOCK_VALUES{1'b0}};
                         state_r        <= S_Q_READ;
                     end
                 end

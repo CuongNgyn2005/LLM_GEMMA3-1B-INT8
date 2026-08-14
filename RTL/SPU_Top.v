@@ -126,6 +126,8 @@ module SPU_Top #(
     wire [AXI_DATA_WIDTH-1:0]         ctrl_mem_wdata;
     wire [(AXI_DATA_WIDTH/8)-1:0]     ctrl_mem_wstrb;
     wire [AXI_DATA_WIDTH-1:0]         core_mem_rdata;
+    wire [AXI_DATA_WIDTH-1:0]         bundle8_param_core_rdata;
+    wire [AXI_DATA_WIDTH-1:0]         bundle8_param_mm_rdata;
     localparam [31:0] WORD_DEPTH_32 = WORD_DEPTH;
     localparam [15:0] WORD_DEPTH_16 = WORD_DEPTH_32[15:0];
     localparam [1:0] REGION_OUT     = 2'd1;
@@ -138,6 +140,7 @@ module SPU_Top #(
         STREAM_P3_BANK_WORD_DEPTH * STREAM_P3_SCALE_LANES;
     localparam integer STREAM_FIFO_PTR_WIDTH = clog2(STREAM_FIFO_DEPTH);
     localparam integer STREAM_FIFO_COUNT_WIDTH = clog2(STREAM_FIFO_DEPTH + 1);
+    localparam integer LOCAL_MEM_ADDR_WIDTH = (WORD_DEPTH <= 1) ? 1 : $clog2(WORD_DEPTH);
 
     // Unit engines exist, but they are not yet wired through the GGML graph.
     // Keep their capability bits clear until end-to-end numerical validation.
@@ -391,6 +394,10 @@ module SPU_Top #(
     wire b8_mem0_en, b8_mem0_we, b8_mem1_en, b8_mem1_we, b8_mem3_en;
     wire [1:0] b8_mem0_region, b8_mem1_region;
     wire [31:0] b8_mem0_index, b8_mem1_index, b8_mem3_index;
+    wire [31:0] b8_mem0_local_index = {{(32-LOCAL_MEM_ADDR_WIDTH){1'b0}},
+                                        b8_mem0_index[LOCAL_MEM_ADDR_WIDTH-1:0]};
+    wire [31:0] b8_mem1_local_index = {{(32-LOCAL_MEM_ADDR_WIDTH){1'b0}},
+                                        b8_mem1_index[LOCAL_MEM_ADDR_WIDTH-1:0]};
     wire [AXI_DATA_WIDTH-1:0] b8_mem0_wdata, b8_mem1_wdata;
     wire [(AXI_DATA_WIDTH/8)-1:0] b8_mem0_wstrb, b8_mem1_wstrb;
     wire b8_lock_valid, b8_lock_bank;
@@ -405,8 +412,8 @@ module SPU_Top #(
         .vpu_lane_data(vpu_raw_lane_data), .vpu_lane_row(vpu_raw_lane_row), .vpu_lane_scale_index(vpu_raw_lane_scale_index),
         .vpu_block(vpu_raw_block), .vpu_group_blocks(vpu_raw_group_blocks), .vpu_last_block(vpu_raw_last_block),
         .vpu_clear_accum(vpu_raw_clear_accum), .vpu_job_id(vpu_raw_job_id), .vpu_bank(vpu_raw_bank), .vpu_done(vpu_raw_done),
-        .mem0_en(b8_mem0_en), .mem0_we(b8_mem0_we), .mem0_region(b8_mem0_region), .mem0_index(b8_mem0_index), .mem0_wdata(b8_mem0_wdata), .mem0_wstrb(b8_mem0_wstrb), .mem0_rdata(core_mem_rdata),
-        .mem1_en(b8_mem1_en), .mem1_we(b8_mem1_we), .mem1_region(b8_mem1_region), .mem1_index(b8_mem1_index), .mem1_wdata(b8_mem1_wdata), .mem1_wstrb(b8_mem1_wstrb), .mem1_rdata(core_mem2_rdata),
+        .mem0_en(b8_mem0_en), .mem0_we(b8_mem0_we), .mem0_region(b8_mem0_region), .mem0_index(b8_mem0_index), .mem0_wdata(b8_mem0_wdata), .mem0_wstrb(b8_mem0_wstrb), .mem0_rdata(bundle8_active ? bundle8_param_core_rdata : core_mem_rdata),
+        .mem1_en(b8_mem1_en), .mem1_we(b8_mem1_we), .mem1_region(b8_mem1_region), .mem1_index(b8_mem1_index), .mem1_wdata(b8_mem1_wdata), .mem1_wstrb(b8_mem1_wstrb), .mem1_rdata(bundle8_active ? bundle8_param_mm_rdata : core_mem2_rdata),
         .mem3_scratch_en(b8_mem3_en), .mem3_scratch_index(b8_mem3_index), .mem3_scratch_rdata(core_mem3_rdata),
         .p3_bank_lock_valid(b8_lock_valid), .p3_bank_lock(b8_lock_bank),
         .stream_count(b8_count), .stream_done_count(b8_done_count), .stream_drop_count(b8_drop_count), .stream_out_count(b8_out_count), .stream_error_count(b8_error_count),
@@ -421,13 +428,13 @@ module SPU_Top #(
     wire core_mem_en = bundle8_active ? (b8_mem0_en ? 1'b1 : ctrl_mem_en) : legacy_core_mem_en;
     wire core_mem_we = bundle8_active ? (b8_mem0_en ? b8_mem0_we : ctrl_mem_we) : legacy_core_mem_we;
     wire [1:0] core_mem_region = bundle8_active ? (b8_mem0_en ? b8_mem0_region : ctrl_mem_region) : legacy_core_mem_region;
-    wire [31:0] core_mem_index = bundle8_active ? (b8_mem0_en ? b8_mem0_index : ctrl_mem_index) : legacy_core_mem_index;
+    wire [31:0] core_mem_index = bundle8_active ? (b8_mem0_en ? b8_mem0_local_index : ctrl_mem_index) : legacy_core_mem_index;
     wire [AXI_DATA_WIDTH-1:0] core_mem_wdata = bundle8_active ? (b8_mem0_en ? b8_mem0_wdata : ctrl_mem_wdata) : legacy_core_mem_wdata;
     wire [(AXI_DATA_WIDTH/8)-1:0] core_mem_wstrb = bundle8_active ? (b8_mem0_en ? b8_mem0_wstrb : ctrl_mem_wstrb) : legacy_core_mem_wstrb;
     wire core_mem2_en = bundle8_active ? b8_mem1_en : legacy_core_mem2_en;
     wire core_mem2_we = bundle8_active ? b8_mem1_we : legacy_core_mem2_we;
     wire [1:0] core_mem2_region = bundle8_active ? b8_mem1_region : legacy_core_mem2_region;
-    wire [31:0] core_mem2_index = bundle8_active ? b8_mem1_index : legacy_core_mem2_index;
+    wire [31:0] core_mem2_index = bundle8_active ? b8_mem1_local_index : legacy_core_mem2_index;
     wire [AXI_DATA_WIDTH-1:0] core_mem2_wdata = bundle8_active ? b8_mem1_wdata : legacy_core_mem2_wdata;
     wire [(AXI_DATA_WIDTH/8)-1:0] core_mem2_wstrb = bundle8_active ? b8_mem1_wstrb : legacy_core_mem2_wstrb;
     wire core_mem3_scratch_en = bundle8_active ? b8_mem3_en : legacy_core_mem3_scratch_en;
@@ -908,7 +915,8 @@ module SPU_Top #(
         .core_index     (core_mem_index),
         .core_wdata     (core_mem_wdata),
         .core_wstrb     (core_mem_wstrb),
-        .core_rdata     (core_mem_rdata)
+        .core_rdata     (core_mem_rdata),
+        .param_core_rdata(bundle8_param_core_rdata)
         ,.core2_en       (core_mem2_en)
         ,.core2_we       (core_mem2_we)
         ,.core2_region   (core_mem2_region)
@@ -916,6 +924,7 @@ module SPU_Top #(
         ,.core2_wdata    (core_mem2_wdata)
         ,.core2_wstrb    (core_mem2_wstrb)
         ,.core2_rdata    (core_mem2_rdata)
+        ,.param_mm_rdata (bundle8_param_mm_rdata)
         ,.core3_scratch_en(core_mem3_scratch_en)
         ,.core3_scratch_index(core_mem3_scratch_index)
         ,.core3_scratch_rdata(core_mem3_rdata)

@@ -1173,6 +1173,42 @@ module tb_SPU_Top;
         end
     endtask
 
+    task check_rmsnorm_saturation;
+        input signed [63:0] product_q38;
+        input signed [15:0] expected;
+        begin
+            force dut.u_spu_controller.u_rmsnorm.state_r = 2'd3;
+            force dut.u_spu_controller.u_rmsnorm.lane_active_r = 1'b1;
+            force dut.u_spu_controller.u_rmsnorm.lane_idx_r = 3'd0;
+            force dut.u_spu_controller.u_rmsnorm.norm_product_r = product_q38;
+            @(posedge clk);
+            #1;
+            if ($signed(dut.u_spu_controller.u_rmsnorm.result_word[15:0]) !== expected) begin
+                $display("[TB][FAIL] RMS saturation product=%0d got=%0d expected=%0d",
+                         product_q38,
+                         $signed(dut.u_spu_controller.u_rmsnorm.result_word[15:0]),
+                         expected);
+                fail_count = fail_count + 1;
+            end else begin
+                pass_count = pass_count + 1;
+            end
+            release dut.u_spu_controller.u_rmsnorm.norm_product_r;
+            release dut.u_spu_controller.u_rmsnorm.lane_idx_r;
+            release dut.u_spu_controller.u_rmsnorm.lane_active_r;
+            release dut.u_spu_controller.u_rmsnorm.state_r;
+        end
+    endtask
+
+    task run_rmsnorm_saturation_case;
+        begin
+            $display("[TB] SPU_RMSNorm saturation-boundary test");
+            check_rmsnorm_saturation(64'sd274869518848,  16'sd32767); //  32767 <<< 23
+            check_rmsnorm_saturation(64'sd274877906944,  16'sd32767); //  32768 <<< 23
+            check_rmsnorm_saturation(-64'sd274877906944, -16'sd32768); // -32768 <<< 23
+            check_rmsnorm_saturation(-64'sd274886295552, -16'sd32768); // -32769 <<< 23
+        end
+    endtask
+
     task run_rope_case;
         reg [DATA_WIDTH-1:0] out0;
         reg signed [15:0] got;
@@ -1357,6 +1393,7 @@ module tb_SPU_Top;
         run_vpu_stream_p3_split_scale_case();
         run_silu_mul_case();
         run_rmsnorm_case();
+        run_rmsnorm_saturation_case();
         run_rope_case();
         run_softmax_case();
 

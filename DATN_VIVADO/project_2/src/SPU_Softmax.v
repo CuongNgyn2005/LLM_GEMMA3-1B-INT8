@@ -136,6 +136,8 @@ module SPU_Softmax #(
                         max_value_q8_r <= max_value_q8;
                         sum_value_r <= sum_value;
                         lane_valid_r <= lane_valid;
+                        lane_active_r <= lane_valid[0];
+                        lane_value_r <= input_word[15:0];
                         output_word <= {AXI_DATA_WIDTH{1'b0}};
                         word_max_q8 <= -16'sd32768;
                         word_sum <= 64'd0;
@@ -145,23 +147,17 @@ module SPU_Softmax #(
 
                 S_LANE: begin
                     busy <= 1'b1;
-                    lane_active_r <= lane_valid_r[lane_idx_r];
-                    lane_value_r <= input_word_r[16*lane_idx_r +: 16];
-
                     if (op_r == OP_MAX) begin
-                        if (lane_valid_r[lane_idx_r] &&
-                            ($signed(input_word_r[16*lane_idx_r +: 16]) > word_max_q8))
-                            word_max_q8 <= input_word_r[16*lane_idx_r +: 16];
+                        if (lane_active_r && (lane_value_r > word_max_q8))
+                            word_max_q8 <= lane_value_r;
                         state_r <= S_NEXT;
                     end else if (op_r == OP_SCORE) begin
-                        lane_score_r <= exp_score_q15(
-                            $signed(input_word_r[16*lane_idx_r +: 16]) -
-                            max_value_q8_r);
+                        lane_score_r <= exp_score_q15(lane_value_r - max_value_q8_r);
                         state_r <= S_WRITE_SCORE;
                     end else begin
-                        lane_score_r <= input_word_r[16*lane_idx_r +: 16];
-                        if (lane_valid_r[lane_idx_r] && (sum_value_r != 64'd0)) begin
-                            div_num_r <= ({48'd0, input_word_r[16*lane_idx_r +: 16]} << 15);
+                        lane_score_r <= lane_value_r;
+                        if (lane_active_r && (sum_value_r != 64'd0)) begin
+                            div_num_r <= ({48'd0, lane_value_r} << 15);
                             div_rem_r <= 65'd0;
                             div_quot_r <= 64'd0;
                             div_denom_r <= sum_value_r;
@@ -222,6 +218,8 @@ module SPU_Softmax #(
                         state_r <= S_IDLE;
                     end else begin
                         lane_idx_r <= lane_idx_r + 3'd1;
+                        lane_active_r <= lane_valid_r[lane_idx_r + 3'd1];
+                        lane_value_r <= input_word_r[16*(lane_idx_r + 3'd1) +: 16];
                         state_r <= S_LANE;
                     end
                 end

@@ -76,6 +76,7 @@ module AXI4_Mapping #(
     endfunction
 
     localparam integer ADDR_LSB = clog2(AXI_DATA_WIDTH / 8);
+    localparam integer SPU_ADDR_WIDTH = (SPU_WORD_DEPTH <= 1) ? 1 : clog2(SPU_WORD_DEPTH);
     localparam integer WEIGHT_DEPTH = MAX_ROWS * MAX_COL_BEATS;
     localparam integer RESULT_PACK_LANES = AXI_DATA_WIDTH / ACC_WIDTH;
     localparam integer MAX_RESULT_VALUES = MAX_ROWS * MAX_GROUP_Q8_BLOCKS;
@@ -521,6 +522,7 @@ module AXI4_Mapping #(
     wire spu_wr_hit =
         wr_decode_en && is_spu_mem_addr(wr_decode_addr) &&
         spu_mem_index_in_range(wr_decode_addr);
+    wire [31:0] spu_wr_index_w = spu_mem_index(wr_decode_addr);
 
     reg core_start_r;
     reg core_clear_done_r;
@@ -608,7 +610,8 @@ module AXI4_Mapping #(
 
             if (spu_wr_hit) begin
                 spu_wr_region_r <= spu_mem_region(wr_decode_addr);
-                spu_wr_index_r  <= spu_mem_index(wr_decode_addr);
+                spu_wr_index_r  <= {{(32-SPU_ADDR_WIDTH){1'b0}},
+                                    spu_wr_index_w[SPU_ADDR_WIDTH-1:0]};
                 spu_wr_data_r   <= wr_decode_data;
                 spu_wr_strb_r   <= wr_decode_strb;
             end

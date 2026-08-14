@@ -361,6 +361,10 @@ module Matrix_Vector_Multiplication #(
     // place each side locally.
     reg result_write_pending_r;
     reg [RESULT_ADDR_WIDTH-1:0] result_write_addr_r;
+    // Each Result BRAM bank receives a local address replica on the existing
+    // result-address capture edge; only the active bank enables port B.
+    (* keep = "true" *)
+    reg [RESULT_ADDR_WIDTH-1:0] result_write_addr_bank_r [0:BANK_COUNT-1];
     reg [RESULT_I8_LANE_SHIFT-1:0] result_write_lane_r;
     reg signed [7:0] result_write_i8_r;
     reg signed [ACC_WIDTH-1:0] result_write_i32_r;
@@ -455,6 +459,20 @@ module Matrix_Vector_Multiplication #(
     reg [2:0] read_quad6_row_slot_x_r;
     reg [2:0] read_quad7_row_slot_d_r, read_quad7_row_slot_q_r;
     reg [2:0] read_quad7_row_slot_x_r;
+    // One kept selector replica per static top-bank/lane localizes the quad7
+    // output mux while preserving the d/q/x response alignment.
+    (* keep = "true" *)
+    reg [2:0] read_quad7_row_slot_local_r [0:WEIGHT_COMPUTE_ADDR_COUNT-1];
+
+    // Raw x8 group placement is immutable for one job after S_VALIDATE.
+    reg [31:0] raw_group_offset_r [0:7];
+    reg [31:0] raw_row_base_advance_r;
+    // Keep the complete per-lane raw-result placement with the retire side of
+    // the PMAU pipeline.  These values are advanced only when retirement
+    // advances a block or row, so the VPU->SPU metadata ports and Result-BRAM
+    // enables never need to add the live block counter in the result cycle.
+    (* keep = "true" *)
+    reg [31:0] raw_lane_result_index_r [0:7];
 
     wire [15:0] auto_col_beats =
         (cfg_cols + NUM_LANES_16 - 16'd1) >> LANE_SHIFT;
@@ -628,6 +646,12 @@ module Matrix_Vector_Multiplication #(
     wire can_issue_read =
         (state_r == S_RUN) &&
         read_req_slot_open &&
+        // Memory read data has no independent response FIFO.  Do not launch
+        // a following address until the prior response has been consumed by
+        // PMAU; otherwise a stalled x/feed stage lets the synchronous BRAM
+        // output advance past its matching read metadata.
+        !read_req_valid_r && !read_valid_d_r && !read_valid_q_r &&
+        !read_valid_x_r && !feed_valid_r &&
         (read_beat_idx_r < issue_read_limit);
     wire issue_read_last =
         result_i8_mode_r ? (read_beat_idx_r == (active_col_beats_r - 16'd1)) :
@@ -636,24 +660,18 @@ module Matrix_Vector_Multiplication #(
     wire issue_read_group_last =
         (read_beat_idx_r == (active_col_beats_r - 16'd1));
 
+    wire [31:0] raw_result_value_index = raw_lane_result_index_r[0];
     wire [31:0] result_value_index =
         result_i8_mode_r ? {16'd0, row_idx_r} :
-        group_mode_r ? (result_row_base_r + {16'd0, block_idx_r}) :
-                       {16'd0, row_idx_r};
-    wire [31:0] pair_result_value_index =
-        result_row_base_r + {16'd0, group_blocks_r} + {16'd0, block_idx_r};
-    wire [31:0] quad2_result_value_index =
-        result_row_base_r + ({16'd0, group_blocks_r} << 1) + {16'd0, block_idx_r};
-    wire [31:0] quad3_result_value_index =
-        result_row_base_r + ({16'd0, group_blocks_r} * 3) + {16'd0, block_idx_r};
-    wire [31:0] quad4_result_value_index =
-        result_row_base_r + ({16'd0, group_blocks_r} << 2) + {16'd0, block_idx_r};
-    wire [31:0] quad5_result_value_index =
-        result_row_base_r + ({16'd0, group_blocks_r} * 5) + {16'd0, block_idx_r};
-    wire [31:0] quad6_result_value_index =
-        result_row_base_r + ({16'd0, group_blocks_r} * 6) + {16'd0, block_idx_r};
-    wire [31:0] quad7_result_value_index =
-        result_row_base_r + ({16'd0, group_blocks_r} * 7) + {16'd0, block_idx_r};
+        group_mode_r ? raw_result_value_index :
+                        {16'd0, row_idx_r};
+    wire [31:0] pair_result_value_index = raw_lane_result_index_r[1];
+    wire [31:0] quad2_result_value_index = raw_lane_result_index_r[2];
+    wire [31:0] quad3_result_value_index = raw_lane_result_index_r[3];
+    wire [31:0] quad4_result_value_index = raw_lane_result_index_r[4];
+    wire [31:0] quad5_result_value_index = raw_lane_result_index_r[5];
+    wire [31:0] quad6_result_value_index = raw_lane_result_index_r[6];
+    wire [31:0] quad7_result_value_index = raw_lane_result_index_r[7];
     wire [RESULT_ADDR_WIDTH-1:0] pair_result_wr_addr_i32 =
         pair_result_value_index[RESULT_LANE_SHIFT +: RESULT_ADDR_WIDTH];
     wire [RESULT_LANE_SHIFT-1:0] pair_result_wr_lane_i32 =
@@ -1270,9 +1288,21 @@ module Matrix_Vector_Multiplication #(
                 weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT + mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_quad5_row_slot_x_r) +: WEIGHT_BANK_WIDTH];
             weight_quad6_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
                 weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT + mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_x_r) +: WEIGHT_BANK_WIDTH];
-            weight_quad7_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
-                weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT + mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_x_r) +: WEIGHT_BANK_WIDTH];
         end
+        case (active_bank_r)
+            1'b0: begin
+                weight_quad7_compute_data[WEIGHT_BANK_WIDTH*0 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 0*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[0]) +: WEIGHT_BANK_WIDTH];
+                weight_quad7_compute_data[WEIGHT_BANK_WIDTH*1 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 1*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[1]) +: WEIGHT_BANK_WIDTH];
+                weight_quad7_compute_data[WEIGHT_BANK_WIDTH*2 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 2*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[2]) +: WEIGHT_BANK_WIDTH];
+                weight_quad7_compute_data[WEIGHT_BANK_WIDTH*3 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 3*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[3]) +: WEIGHT_BANK_WIDTH];
+            end
+            default: begin
+                weight_quad7_compute_data[WEIGHT_BANK_WIDTH*0 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(1*WEIGHT_RAM_COUNT + 0*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[4]) +: WEIGHT_BANK_WIDTH];
+                weight_quad7_compute_data[WEIGHT_BANK_WIDTH*1 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(1*WEIGHT_RAM_COUNT + 1*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[5]) +: WEIGHT_BANK_WIDTH];
+                weight_quad7_compute_data[WEIGHT_BANK_WIDTH*2 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(1*WEIGHT_RAM_COUNT + 2*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[6]) +: WEIGHT_BANK_WIDTH];
+                weight_quad7_compute_data[WEIGHT_BANK_WIDTH*3 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(1*WEIGHT_RAM_COUNT + 3*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[7]) +: WEIGHT_BANK_WIDTH];
+            end
+        endcase
     end
 
     assign result_cpu_rd_data =
@@ -1295,7 +1325,7 @@ module Matrix_Vector_Multiplication #(
                 .clkb  (CLK),
                 .enb   (result_writeback_fire && (active_bank_r == result_bank_g)),
                 .web   (result_wr_strobe),
-                .addrb (result_write_addr_r),
+                .addrb (result_write_addr_bank_r[result_bank_g]),
                 .dinb  (result_wr_data),
                 .doutb (result_compute_rd_unused_bank[AXI_DATA_WIDTH*result_bank_g +: AXI_DATA_WIDTH])
             );
@@ -1483,6 +1513,15 @@ module Matrix_Vector_Multiplication #(
             act_compute_addr    <= {ACT_ADDR_WIDTH{1'b0}};
             for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_COMPUTE_ADDR_COUNT; fsm_bank_i = fsm_bank_i + 1)
                 weight_compute_addr_shared[fsm_bank_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
+            for (fsm_bank_i = 0; fsm_bank_i < BANK_COUNT; fsm_bank_i = fsm_bank_i + 1)
+                result_write_addr_bank_r[fsm_bank_i] <= {RESULT_ADDR_WIDTH{1'b0}};
+            for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_COMPUTE_ADDR_COUNT; fsm_bank_i = fsm_bank_i + 1)
+                read_quad7_row_slot_local_r[fsm_bank_i] <= 3'd0;
+            for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                raw_group_offset_r[fsm_bank_i] <= 32'd0;
+            for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                raw_lane_result_index_r[fsm_bank_i] <= 32'd0;
+            raw_row_base_advance_r <= 32'd0;
             for (fsm_ram_i = 0; fsm_ram_i < WEIGHT_RAM_TOTAL; fsm_ram_i = fsm_ram_i + 1) begin
                 weight_compute_en_leaf[fsm_ram_i]   <= 1'b0;
             end
@@ -1506,8 +1545,13 @@ module Matrix_Vector_Multiplication #(
             end
             if (shift_req_to_d)
                 read_req_valid_r <= 1'b0;
-            read_valid_d_r <= 1'b0;
-            read_group_last_d_r <= 1'b0;
+            // The d stage is an elastic pipeline stage. It may be blocked
+            // while q/x/feed drain, so clear it only when it transfers to q.
+            // An unconditional clear drops the final read request of a row.
+            if (shift_d_to_q) begin
+                read_valid_d_r <= 1'b0;
+                read_group_last_d_r <= 1'b0;
+            end
 
             // Address registers are staged on the same request edge as the
             // original compute-read enables, but outside the FSM case.  The
@@ -1620,6 +1664,25 @@ module Matrix_Vector_Multiplication #(
                         done_job_id_r <= active_job_id_r;
                         state_r <= S_ERROR;
                     end else if (!weight_write_pipeline_busy) begin
+                        raw_group_offset_r[0] <= 32'd0;
+                        raw_group_offset_r[1] <= {16'd0,group_blocks_r};
+                        raw_group_offset_r[2] <= ({16'd0,group_blocks_r} << 1);
+                        raw_group_offset_r[3] <= ({16'd0,group_blocks_r} * 3);
+                        raw_group_offset_r[4] <= ({16'd0,group_blocks_r} << 2);
+                        raw_group_offset_r[5] <= ({16'd0,group_blocks_r} * 5);
+                        raw_group_offset_r[6] <= ({16'd0,group_blocks_r} * 6);
+                        raw_group_offset_r[7] <= ({16'd0,group_blocks_r} * 7);
+                        raw_lane_result_index_r[0] <= 32'd0;
+                        raw_lane_result_index_r[1] <= {16'd0,group_blocks_r};
+                        raw_lane_result_index_r[2] <= ({16'd0,group_blocks_r} << 1);
+                        raw_lane_result_index_r[3] <= ({16'd0,group_blocks_r} * 3);
+                        raw_lane_result_index_r[4] <= ({16'd0,group_blocks_r} << 2);
+                        raw_lane_result_index_r[5] <= ({16'd0,group_blocks_r} * 5);
+                        raw_lane_result_index_r[6] <= ({16'd0,group_blocks_r} * 6);
+                        raw_lane_result_index_r[7] <= ({16'd0,group_blocks_r} * 7);
+                        raw_row_base_advance_r <= pair_mode_r ?
+                                                  ({16'd0,group_blocks_r} << 3) :
+                                                  {16'd0,group_blocks_r};
                         state_r <= S_RUN;
                     end
                 end
@@ -1660,6 +1723,8 @@ module Matrix_Vector_Multiplication #(
                         read_quad5_row_slot_x_r <= read_quad5_row_slot_q_r;
                         read_quad6_row_slot_x_r <= read_quad6_row_slot_q_r;
                         read_quad7_row_slot_x_r <= read_quad7_row_slot_q_r;
+                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_COMPUTE_ADDR_COUNT; fsm_bank_i = fsm_bank_i + 1)
+                            read_quad7_row_slot_local_r[fsm_bank_i] <= read_quad7_row_slot_q_r;
                         read_valid_q_r <= 1'b0;
                     end
 
@@ -1770,6 +1835,7 @@ module Matrix_Vector_Multiplication #(
                                      (!pair_lane7_valid || (quad7_result_value_index < MAX_RESULT_VALUES_32))) begin
                             result_write_pending_r <= 1'b1;
                             result_write_addr_r <= result_wr_addr;
+                            result_write_addr_bank_r[active_bank_r] <= result_wr_addr;
                             result_write_lane_r <= result_wr_lane;
                             result_write_i32_r <= pmau_result_data;
                             result_write_is_i8_r <= 1'b0;
@@ -1833,13 +1899,13 @@ module Matrix_Vector_Multiplication #(
                     feed_valid_r <= 1'b0;
                     if (result_writeback_fire) begin
                         case (result_write_slot_r)
-                            3'd0: if (pair_lane1_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row1_addr_r; result_write_lane_r<=result_row1_lane_r; result_write_i32_r<=result_row1_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd1; end else result_writes_done_r<=1'b1;
-                            3'd1: if (pair_lane2_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row2_addr_r; result_write_lane_r<=result_row2_lane_r; result_write_i32_r<=result_row2_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd2; end else result_writes_done_r<=1'b1;
-                            3'd2: if (pair_lane3_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row3_addr_r; result_write_lane_r<=result_row3_lane_r; result_write_i32_r<=result_row3_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd3; end else result_writes_done_r<=1'b1;
-                            3'd3: if (pair_lane4_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row4_addr_r; result_write_lane_r<=result_row4_lane_r; result_write_i32_r<=result_row4_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd4; end else result_writes_done_r<=1'b1;
-                            3'd4: if (pair_lane5_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row5_addr_r; result_write_lane_r<=result_row5_lane_r; result_write_i32_r<=result_row5_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd5; end else result_writes_done_r<=1'b1;
-                            3'd5: if (pair_lane6_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row6_addr_r; result_write_lane_r<=result_row6_lane_r; result_write_i32_r<=result_row6_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd6; end else result_writes_done_r<=1'b1;
-                            3'd6: if (pair_lane7_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row7_addr_r; result_write_lane_r<=result_row7_lane_r; result_write_i32_r<=result_row7_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd7; end else result_writes_done_r<=1'b1;
+                            3'd0: if (pair_lane1_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row1_addr_r; result_write_addr_bank_r[active_bank_r]<=result_row1_addr_r; result_write_lane_r<=result_row1_lane_r; result_write_i32_r<=result_row1_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd1; end else result_writes_done_r<=1'b1;
+                            3'd1: if (pair_lane2_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row2_addr_r; result_write_addr_bank_r[active_bank_r]<=result_row2_addr_r; result_write_lane_r<=result_row2_lane_r; result_write_i32_r<=result_row2_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd2; end else result_writes_done_r<=1'b1;
+                            3'd2: if (pair_lane3_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row3_addr_r; result_write_addr_bank_r[active_bank_r]<=result_row3_addr_r; result_write_lane_r<=result_row3_lane_r; result_write_i32_r<=result_row3_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd3; end else result_writes_done_r<=1'b1;
+                            3'd3: if (pair_lane4_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row4_addr_r; result_write_addr_bank_r[active_bank_r]<=result_row4_addr_r; result_write_lane_r<=result_row4_lane_r; result_write_i32_r<=result_row4_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd4; end else result_writes_done_r<=1'b1;
+                            3'd4: if (pair_lane5_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row5_addr_r; result_write_addr_bank_r[active_bank_r]<=result_row5_addr_r; result_write_lane_r<=result_row5_lane_r; result_write_i32_r<=result_row5_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd5; end else result_writes_done_r<=1'b1;
+                            3'd5: if (pair_lane6_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row6_addr_r; result_write_addr_bank_r[active_bank_r]<=result_row6_addr_r; result_write_lane_r<=result_row6_lane_r; result_write_i32_r<=result_row6_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd6; end else result_writes_done_r<=1'b1;
+                            3'd6: if (pair_lane7_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row7_addr_r; result_write_addr_bank_r[active_bank_r]<=result_row7_addr_r; result_write_lane_r<=result_row7_lane_r; result_write_i32_r<=result_row7_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd7; end else result_writes_done_r<=1'b1;
                             default: result_writes_done_r <= 1'b1;
                         endcase
                         spu_raw_valid <= 1'b1;
@@ -1858,6 +1924,8 @@ module Matrix_Vector_Multiplication #(
                                 // the retire-side block index and pop the next one.
                                 raw_burst_retired_r <= raw_burst_retired_r + 3'd1;
                                 block_idx_r         <= block_idx_r + 16'd1;
+                                for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                                    raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
                                 state_r             <= S_WAIT_RESULT;
                             end else begin
                                 // Burst fully retired. Either issue the next
@@ -1867,6 +1935,8 @@ module Matrix_Vector_Multiplication #(
                                 if ((issue_block_idx_r + 16'd1) < group_blocks_r) begin
                                     issue_block_idx_r <= issue_block_idx_r + 16'd1;
                                     block_idx_r       <= block_idx_r + 16'd1;
+                                    for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                                        raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
                                     state_r           <= S_RUN;
                                 end else begin
                                     issue_block_idx_r <= 16'd0;
@@ -1876,8 +1946,10 @@ module Matrix_Vector_Multiplication #(
                                     end else begin
                                         row_idx_r <= row_idx_r + (pair_mode_r ? 16'd8 : 16'd1);
                                         read_beat_idx_r <= 16'd0;
-                                        result_row_base_r <= result_row_base_r +
-                                            (pair_mode_r ? ({16'd0,group_blocks_r} << 3) : {16'd0,group_blocks_r});
+                                        result_row_base_r <= result_row_base_r + raw_row_base_advance_r;
+                                        for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                                            raw_lane_result_index_r[fsm_bank_i] <=
+                                                result_row_base_r + raw_row_base_advance_r + raw_group_offset_r[fsm_bank_i];
                                         if (pair_mode_r || (row_idx_r[2:0] == 3'd7))
                                             weight_row_base_r <= weight_row_base_r + active_col_beats_r;
                                         state_r <= S_RUN;
@@ -1887,6 +1959,8 @@ module Matrix_Vector_Multiplication #(
                         end else begin
                             if ((block_idx_r + 16'd1) < group_blocks_r) begin
                                 block_idx_r <= block_idx_r + 16'd1;
+                                for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                                    raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
                                 state_r <= S_RUN;
                             end else begin
                                 block_idx_r <= 16'd0;
@@ -1895,8 +1969,10 @@ module Matrix_Vector_Multiplication #(
                                 end else begin
                                     row_idx_r <= row_idx_r + (pair_mode_r ? 16'd8 : 16'd1);
                                     read_beat_idx_r <= 16'd0;
-                                    result_row_base_r <= result_row_base_r +
-                                        (pair_mode_r ? ({16'd0,group_blocks_r} << 3) : {16'd0,group_blocks_r});
+                                    result_row_base_r <= result_row_base_r + raw_row_base_advance_r;
+                                    for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                                        raw_lane_result_index_r[fsm_bank_i] <=
+                                            result_row_base_r + raw_row_base_advance_r + raw_group_offset_r[fsm_bank_i];
                                     if (pair_mode_r || (row_idx_r[2:0] == 3'd7))
                                         weight_row_base_r <= weight_row_base_r + active_col_beats_r;
                                     state_r <= S_RUN;
@@ -1966,6 +2042,7 @@ module Matrix_Vector_Multiplication #(
                     if (result_requant_pending_r) begin
                         result_write_pending_r <= 1'b1;
                         result_write_addr_r    <= result_requant_addr_r;
+                        result_write_addr_bank_r[active_bank_r] <= result_requant_addr_r;
                         result_write_lane_r    <= result_requant_lane_r;
                         result_write_i8_r      <= pmau_result_i8;
                         result_write_is_i8_r   <= 1'b1;

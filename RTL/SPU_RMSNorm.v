@@ -58,17 +58,17 @@ module SPU_RMSNorm #(
     wire signed [63:0] norm_product_w =
         value_weight_r * $signed({1'b0, inv_rms_q15_r[30:0]});
 
-    function signed [15:0] sat16;
-        input signed [63:0] value;
-        begin
-            if (value > 64'sd32767)
-                sat16 = 16'sd32767;
-            else if (value < -64'sd32768)
-                sat16 = -16'sd32768;
-            else
-                sat16 = value[15:0];
-        end
-    endfunction
+    // The Q8.8 result is norm_product_r >>> 23.  Retain only the 41 bits
+    // that can affect the signed-16 saturation decision, then detect whether
+    // bits above bit 15 are a valid sign extension.  This is equivalent to
+    // the former two 64-bit signed comparisons, but avoids their long carry
+    // chains on the DSP-output-to-result-word timing path.
+    wire signed [40:0] norm_scaled_w = norm_product_r[63:23];
+    wire norm_pos_sat_w = !norm_scaled_w[40] && |norm_scaled_w[39:15];
+    wire norm_neg_sat_w =  norm_scaled_w[40] && ~&norm_scaled_w[39:15];
+    wire signed [15:0] norm_sat16_w = norm_pos_sat_w ? 16'sd32767 :
+                                      norm_neg_sat_w ? -16'sd32768 :
+                                                       norm_scaled_w[15:0];
 
     always @(posedge clk) begin
         if (!resetn) begin
@@ -140,7 +140,7 @@ module SPU_RMSNorm #(
                     busy <= 1'b1;
                     if (lane_active_r)
                         result_word[16*lane_idx_r +: 16] <=
-                            sat16(norm_product_r >>> 23);
+                            norm_sat16_w;
 
                     if (lane_idx_r == (LANES - 1)) begin
                         busy <= 1'b0;

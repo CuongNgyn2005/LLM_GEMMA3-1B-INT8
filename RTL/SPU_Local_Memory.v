@@ -48,7 +48,8 @@ module SPU_Local_Memory #(
     input  wire [31:0]                       core_index,
     input  wire [AXI_DATA_WIDTH-1:0]         core_wdata,
     input  wire [(AXI_DATA_WIDTH/8)-1:0]     core_wstrb,
-    output wire [AXI_DATA_WIDTH-1:0]         core_rdata
+    output wire [AXI_DATA_WIDTH-1:0]         core_rdata,
+    output wire [AXI_DATA_WIDTH-1:0]         param_core_rdata
 ,
     // P2-v2 claims the MMIO-side port only while the paired stream performs
     // its second scale read or second SPU_OUT write.  Host software must wait
@@ -61,6 +62,7 @@ module SPU_Local_Memory #(
     input  wire [AXI_DATA_WIDTH-1:0]         core2_wdata,
     input  wire [(AXI_DATA_WIDTH/8)-1:0]     core2_wstrb,
     output wire [AXI_DATA_WIDTH-1:0]         core2_rdata,
+    output wire [AXI_DATA_WIDTH-1:0]         param_mm_rdata,
 
     // P3 split-scale path.  The existing core port reads the primary
     // immutable scale from PARAM while this independent scratch-port read
@@ -133,11 +135,9 @@ module SPU_Local_Memory #(
 
     wire [AXI_DATA_WIDTH-1:0] in_mm_rdata;
     wire [AXI_DATA_WIDTH-1:0] out_mm_rdata;
-    wire [AXI_DATA_WIDTH-1:0] param_mm_rdata;
     wire [AXI_DATA_WIDTH-1:0] scratch_mm_rdata;
     wire [AXI_DATA_WIDTH-1:0] in_core_rdata;
     wire [AXI_DATA_WIDTH-1:0] out_core_rdata;
-    wire [AXI_DATA_WIDTH-1:0] param_core_rdata;
     wire [AXI_DATA_WIDTH-1:0] scratch_core_rdata;
 
     // Dual_Port_BRAM registers each read.  These multiplexers intentionally

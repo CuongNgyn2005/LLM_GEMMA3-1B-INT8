@@ -4,7 +4,7 @@
  * Scale RAM is read two rows/cycle through the existing two PARAM ports;
  * all valid rows then execute SPU_Q8_Scale_Accum in parallel.  On the P2
  * path, the next queued bundle is scale-prefetched while the current eight
- * accumulators are busy, hiding the existing four READ/CAPTURE pairs without
+ * accumulators are busy, hiding the existing four registered read/return pairs without
  * changing accumulation order or the external stream ABI.
  *
  * A four-entry input FIFO decouples the VPU result handshake from the SPU
@@ -94,11 +94,13 @@ module SPU_VPU_Stream8 #(
     localparam [2:0] S_START   = 3'd3;
     localparam [2:0] S_WAIT    = 3'd4;
     localparam [2:0] S_WRITE   = 3'd5;
+    localparam [2:0] S_RESPONSE = 3'd6;
 
-    localparam [1:0] PF_IDLE    = 2'd0;
-    localparam [1:0] PF_READ    = 2'd1;
-    localparam [1:0] PF_CAPTURE = 2'd2;
-    localparam [1:0] PF_READY   = 2'd3;
+    localparam [2:0] PF_IDLE     = 3'd0;
+    localparam [2:0] PF_READ     = 3'd1;
+    localparam [2:0] PF_CAPTURE  = 3'd2;
+    localparam [2:0] PF_READY    = 3'd3;
+    localparam [2:0] PF_RESPONSE = 3'd4;
 
     reg [2:0] state_r;
     reg [1:0] pair_idx_r;
@@ -124,10 +126,55 @@ module SPU_VPU_Stream8 #(
     reg [15:0] p3_act_scale_r;
     reg [7:0] accum_start_r;
 
+    // Register the complete PARAM/SCRATCH read command one cycle before it
+    // reaches a memory port.  pair_idx_r advances bundle accounting, but it
+    // does not select a live memory address or enable.
+    reg read_req_valid_r;
+    reg read_req_lane0_valid_r;
+    reg read_req_lane1_valid_r;
+    reg [2:0] read_req_lane0_dest_r;
+    reg [2:0] read_req_lane1_dest_r;
+    reg [31:0] read_req_lane0_word_index_r;
+    reg [31:0] read_req_lane1_word_index_r;
+    reg [2:0] read_req_lane0_scale_lane_r;
+    reg [2:0] read_req_lane1_scale_lane_r;
+    reg read_req_p3_r;
+    reg read_req_scratch_valid_r;
+    reg [31:0] read_req_scratch_index_r;
+    reg [2:0] read_req_scratch_lane_r;
+
+    // read_req_* is the registered request/command bundle.  The exported
+    // mem0/mem1/mem3 signals are registered from it, and its tags are copied
+    // into the response bundle at the RAM return boundary.
+
+    reg [AXI_DATA_WIDTH-1:0] read_rsp_mem0_data_r;
+    reg [AXI_DATA_WIDTH-1:0] read_rsp_mem1_data_r;
+    reg [AXI_DATA_WIDTH-1:0] read_rsp_scratch_data_r;
+    reg read_rsp_valid_r;
+    reg read_rsp_lane0_valid_r;
+    reg read_rsp_lane1_valid_r;
+    reg [2:0] read_rsp_lane0_dest_r;
+    reg [2:0] read_rsp_lane1_dest_r;
+    reg [2:0] read_rsp_lane0_scale_lane_r;
+    reg [2:0] read_rsp_lane1_scale_lane_r;
+    reg read_rsp_p3_r;
+    reg read_rsp_scratch_valid_r;
+    reg [2:0] read_rsp_scratch_lane_r;
+
+    // SPU_OUT commits use the same registered destination boundary.  This
+    // leaves pair_idx_r as sequencing/accounting state only.
+    reg write_req_valid_r;
+    reg write_req_lane0_valid_r;
+    reg write_req_lane1_valid_r;
+    reg [2:0] write_req_lane0_dest_r;
+    reg [2:0] write_req_lane1_dest_r;
+    reg [15:0] write_req_lane0_row_r;
+    reg [15:0] write_req_lane1_row_r;
+
     // One P2 look-ahead slot owns a bundle after it leaves the FIFO.  Raw
     // data/metadata and decoded scale addresses are copied immediately; the
     // four scale pairs are then fetched while the active accumulators run.
-    reg [1:0] prefetch_state_r;
+    reg [2:0] prefetch_state_r;
     reg [1:0] prefetch_pair_idx_r;
     reg [7:0] prefetch_lane_valid_r;
     reg signed [31:0] prefetch_raw_r [0:7];
@@ -142,6 +189,36 @@ module SPU_VPU_Stream8 #(
     reg prefetch_clear_accum_r;
     reg [31:0] prefetch_job_id_r;
     reg prefetch_bank_r;
+
+    // The prefetcher has the same registered read boundary as the active
+    // reader so PF_READ never drives PARAM from prefetch_pair_idx_r.
+    reg prefetch_req_valid_r;
+    reg prefetch_req_lane0_valid_r;
+    reg prefetch_req_lane1_valid_r;
+    reg [2:0] prefetch_req_lane0_dest_r;
+    reg [2:0] prefetch_req_lane1_dest_r;
+    reg [31:0] prefetch_req_lane0_word_index_r;
+    reg [31:0] prefetch_req_lane1_word_index_r;
+    reg [2:0] prefetch_req_lane0_scale_lane_r;
+    reg [2:0] prefetch_req_lane1_scale_lane_r;
+    reg prefetch_req_p3_r;
+    reg prefetch_req_scratch_valid_r;
+    reg [31:0] prefetch_req_scratch_index_r;
+    reg [2:0] prefetch_req_scratch_lane_r;
+
+    reg [AXI_DATA_WIDTH-1:0] prefetch_rsp_mem0_data_r;
+    reg [AXI_DATA_WIDTH-1:0] prefetch_rsp_mem1_data_r;
+    reg [AXI_DATA_WIDTH-1:0] prefetch_rsp_scratch_data_r;
+    reg prefetch_rsp_valid_r;
+    reg prefetch_rsp_lane0_valid_r;
+    reg prefetch_rsp_lane1_valid_r;
+    reg [2:0] prefetch_rsp_lane0_dest_r;
+    reg [2:0] prefetch_rsp_lane1_dest_r;
+    reg [2:0] prefetch_rsp_lane0_scale_lane_r;
+    reg [2:0] prefetch_rsp_lane1_scale_lane_r;
+    reg prefetch_rsp_p3_r;
+    reg prefetch_rsp_scratch_valid_r;
+    reg [2:0] prefetch_rsp_scratch_lane_r;
 
     // Four-entry x8 bundle FIFO.  Wide buses are kept packed so this remains
     // plain Verilog-2001 compatible (one unpacked memory dimension only).
@@ -242,26 +319,6 @@ module SPU_VPU_Stream8 #(
     wire [3:0] accepted_lanes = popcount8(vpu_lane_valid);
     wire [2:0] tail_lane = highest_lane(vpu_lane_valid);
 
-    wire [2:0] lane0_sel = {pair_idx_r, 1'b0};
-    wire [2:0] lane1_sel = {pair_idx_r, 1'b1};
-    wire [2:0] prefetch_lane0_sel = {prefetch_pair_idx_r, 1'b0};
-    wire [2:0] prefetch_lane1_sel = {prefetch_pair_idx_r, 1'b1};
-    wire [31:0] prefetch_lane0_word_index =
-        prefetch_scale_word_index_r[prefetch_lane0_sel];
-    wire [31:0] prefetch_lane1_word_index =
-        prefetch_scale_word_index_r[prefetch_lane1_sel];
-    wire [2:0] prefetch_lane0_scale_lane =
-        prefetch_scale_lane_r[prefetch_lane0_sel];
-    wire [2:0] prefetch_lane1_scale_lane =
-        prefetch_scale_lane_r[prefetch_lane1_sel];
-    wire [31:0] p3_bank_base = bank_r ? P3_BANK_WORD_DEPTH : 32'd0;
-    wire [31:0] lane0_word_index = scale_word_index_r[lane0_sel];
-    wire [31:0] lane1_word_index = scale_word_index_r[lane1_sel];
-    wire [2:0] lane0_scale_lane = scale_lane_r[lane0_sel];
-    wire [2:0] lane1_scale_lane = scale_lane_r[lane1_sel];
-    wire [31:0] p3_act_word_index = p3_bank_base + ({16'd0,block_r} >> 3);
-    wire [2:0] p3_act_lane = block_r[2:0];
-
     wire all_accum_idle = ((accum_busy & lane_valid_r) == 8'd0);
     wire all_accum_done = ((accum_entry_done | ~lane_valid_r) == 8'hff);
     wire any_accum_error = |(accum_error & lane_valid_r);
@@ -271,54 +328,11 @@ module SPU_VPU_Stream8 #(
     wire prefetch_mem_available = !split_scale_enable &&
                                   (state_r != S_READ) &&
                                   (state_r != S_CAPTURE) &&
+                                  (state_r != S_RESPONSE) &&
                                   (state_r != S_WRITE);
 
-    always @* begin
-        mem0_en = 1'b0; mem0_we = 1'b0; mem0_region = REGION_PARAM;
-        mem0_index = 32'd0; mem0_wdata = {AXI_DATA_WIDTH{1'b0}};
-        mem0_wstrb = {(AXI_DATA_WIDTH/8){1'b0}};
-        mem1_en = 1'b0; mem1_we = 1'b0; mem1_region = REGION_PARAM;
-        mem1_index = 32'd0; mem1_wdata = {AXI_DATA_WIDTH{1'b0}};
-        mem1_wstrb = {(AXI_DATA_WIDTH/8){1'b0}};
-        mem3_scratch_en = 1'b0; mem3_scratch_index = 32'd0;
-
-        if (state_r == S_READ) begin
-            if (lane_valid_r[lane0_sel]) begin
-                mem0_en = 1'b1;
-                mem0_index = lane0_word_index;
-            end
-            if (lane_valid_r[lane1_sel]) begin
-                mem1_en = 1'b1;
-                mem1_index = lane1_word_index;
-            end
-            if (p3_r && (pair_idx_r == 2'd0)) begin
-                mem3_scratch_en = 1'b1;
-                mem3_scratch_index = p3_act_word_index;
-            end
-        end else if (state_r == S_WRITE) begin
-            if (lane_valid_r[lane0_sel]) begin
-                mem0_en = 1'b1; mem0_we = 1'b1; mem0_region = REGION_OUT;
-                mem0_index = {16'd0,row_r[lane0_sel]};
-                mem0_wdata = {{(AXI_DATA_WIDTH-80){1'b0}},final_q16_r[lane0_sel],row_r[lane0_sel]};
-                mem0_wstrb = 16'h03ff;
-            end
-            if (lane_valid_r[lane1_sel]) begin
-                mem1_en = 1'b1; mem1_we = 1'b1; mem1_region = REGION_OUT;
-                mem1_index = {16'd0,row_r[lane1_sel]};
-                mem1_wdata = {{(AXI_DATA_WIDTH-80){1'b0}},final_q16_r[lane1_sel],row_r[lane1_sel]};
-                mem1_wstrb = 16'h03ff;
-            end
-        end else if ((prefetch_state_r == PF_READ) && prefetch_mem_available) begin
-            if (prefetch_lane_valid_r[prefetch_lane0_sel]) begin
-                mem0_en = 1'b1;
-                mem0_index = prefetch_lane0_word_index;
-            end
-            if (prefetch_lane_valid_r[prefetch_lane1_sel]) begin
-                mem1_en = 1'b1;
-                mem1_index = prefetch_lane1_word_index;
-            end
-        end
-    end
+    // mem0/mem1/mem3 commands are registered in the clocked FSM below.  The
+    // response registers there form the tagged RAM return boundary.
 
     // Idle/ownership status includes queued bundles; otherwise the host could
     // observe S_IDLE during the one-cycle FIFO-to-FSM handoff and overwrite
@@ -338,11 +352,16 @@ module SPU_VPU_Stream8 #(
     genvar gi;
     generate
         for (gi = 0; gi < 8; gi = gi + 1) begin : GEN_ACCUM8
+            // Keep an independent identity branch for each accumulator reset
+            // load; reset polarity and the asynchronous assertion semantics of
+            // SPU_Q8_Scale_Accum remain unchanged.
+            (* keep = "true" *) wire resetn_local;
+            assign resetn_local = resetn;
             SPU_Q8_Scale_Accum #(
                 .ROW_ID_WIDTH(16), .MAX_ROWS(MAX_ROWS),
                 .ACC_WIDTH(64), .FIXED_FRAC_BITS(16)
             ) u_accum (
-                .clk(clk), .resetn(resetn), .start(accum_start_r[gi]),
+                .clk(clk), .resetn(resetn_local), .start(accum_start_r[gi]),
                 .raw_in(raw_r[gi]), .act_scale_fp16(act_scale_r[gi]),
                 .weight_scale_fp16(weight_scale_r[gi]), .row_id(row_r[gi]),
                 .clear_accum(clear_accum_r), .last_block(last_block_r),
@@ -369,6 +388,26 @@ module SPU_VPU_Stream8 #(
             job_id_r <= 32'd0; bank_r <= 1'b0; p3_r <= 1'b0;
             p3_done_seen_r <= 1'b0; p3_act_scale_r <= 16'd0;
             accum_start_r <= 8'd0;
+            read_req_valid_r <= 1'b0;
+            read_req_lane0_valid_r <= 1'b0; read_req_lane1_valid_r <= 1'b0;
+            read_req_lane0_dest_r <= 3'd0; read_req_lane1_dest_r <= 3'd0;
+            read_req_lane0_word_index_r <= 32'd0; read_req_lane1_word_index_r <= 32'd0;
+            read_req_lane0_scale_lane_r <= 3'd0; read_req_lane1_scale_lane_r <= 3'd0;
+            read_req_p3_r <= 1'b0; read_req_scratch_valid_r <= 1'b0;
+            read_req_scratch_index_r <= 32'd0; read_req_scratch_lane_r <= 3'd0;
+            read_rsp_mem0_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            read_rsp_mem1_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            read_rsp_scratch_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            read_rsp_valid_r <= 1'b0;
+            read_rsp_lane0_valid_r <= 1'b0; read_rsp_lane1_valid_r <= 1'b0;
+            read_rsp_lane0_dest_r <= 3'd0; read_rsp_lane1_dest_r <= 3'd0;
+            read_rsp_lane0_scale_lane_r <= 3'd0; read_rsp_lane1_scale_lane_r <= 3'd0;
+            read_rsp_p3_r <= 1'b0; read_rsp_scratch_valid_r <= 1'b0;
+            read_rsp_scratch_lane_r <= 3'd0;
+            write_req_valid_r <= 1'b0;
+            write_req_lane0_valid_r <= 1'b0; write_req_lane1_valid_r <= 1'b0;
+            write_req_lane0_dest_r <= 3'd0; write_req_lane1_dest_r <= 3'd0;
+            write_req_lane0_row_r <= 16'd0; write_req_lane1_row_r <= 16'd0;
             p3_bank_lock_valid <= 1'b0; p3_bank_lock <= 1'b0;
             stream_count <= 32'd0; stream_done_count <= 32'd0;
             stream_drop_count <= 32'd0; stream_out_count <= 32'd0;
@@ -386,6 +425,33 @@ module SPU_VPU_Stream8 #(
             prefetch_block_r <= 16'd0; prefetch_group_blocks_r <= 16'd0;
             prefetch_last_block_r <= 1'b0; prefetch_clear_accum_r <= 1'b0;
             prefetch_job_id_r <= 32'd0; prefetch_bank_r <= 1'b0;
+            prefetch_req_valid_r <= 1'b0;
+            prefetch_req_lane0_valid_r <= 1'b0; prefetch_req_lane1_valid_r <= 1'b0;
+            prefetch_req_lane0_dest_r <= 3'd0; prefetch_req_lane1_dest_r <= 3'd0;
+            prefetch_req_lane0_word_index_r <= 32'd0;
+            prefetch_req_lane1_word_index_r <= 32'd0;
+            prefetch_req_lane0_scale_lane_r <= 3'd0;
+            prefetch_req_lane1_scale_lane_r <= 3'd0;
+            prefetch_req_p3_r <= 1'b0; prefetch_req_scratch_valid_r <= 1'b0;
+            prefetch_req_scratch_index_r <= 32'd0;
+            prefetch_req_scratch_lane_r <= 3'd0;
+            prefetch_rsp_mem0_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            prefetch_rsp_mem1_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            prefetch_rsp_scratch_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            prefetch_rsp_valid_r <= 1'b0;
+            prefetch_rsp_lane0_valid_r <= 1'b0; prefetch_rsp_lane1_valid_r <= 1'b0;
+            prefetch_rsp_lane0_dest_r <= 3'd0; prefetch_rsp_lane1_dest_r <= 3'd0;
+            prefetch_rsp_lane0_scale_lane_r <= 3'd0;
+            prefetch_rsp_lane1_scale_lane_r <= 3'd0;
+            prefetch_rsp_p3_r <= 1'b0; prefetch_rsp_scratch_valid_r <= 1'b0;
+            prefetch_rsp_scratch_lane_r <= 3'd0;
+            mem0_en <= 1'b0; mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+            mem0_index <= 32'd0; mem0_wdata <= {AXI_DATA_WIDTH{1'b0}};
+            mem0_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
+            mem1_en <= 1'b0; mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+            mem1_index <= 32'd0; mem1_wdata <= {AXI_DATA_WIDTH{1'b0}};
+            mem1_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
+            mem3_scratch_en <= 1'b0; mem3_scratch_index <= 32'd0;
             write_count <= 4'd0;
             for (i = 0; i < 8; i = i + 1) begin
                 raw_r[i] <= 32'sd0; row_r[i] <= 16'd0;
@@ -410,6 +476,16 @@ module SPU_VPU_Stream8 #(
             end
         end else begin
             accum_start_r <= 8'd0;
+            // Commands are one-cycle registered ownership tokens.  Branches
+            // below replace these defaults when a PARAM/SCRATCH read or an
+            // SPU_OUT write is issued for the next memory clock.
+            mem0_en <= 1'b0; mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+            mem0_index <= 32'd0; mem0_wdata <= {AXI_DATA_WIDTH{1'b0}};
+            mem0_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
+            mem1_en <= 1'b0; mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+            mem1_index <= 32'd0; mem1_wdata <= {AXI_DATA_WIDTH{1'b0}};
+            mem1_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
+            mem3_scratch_en <= 1'b0; mem3_scratch_index <= 32'd0;
 
             if (vpu_valid && !vpu_ready)
                 stream_raw_stall_cycles <= stream_raw_stall_cycles + 32'd1;
@@ -487,13 +563,33 @@ module SPU_VPU_Stream8 #(
                 prefetch_job_id_r <= fifo_job_id[fifo_rd_ptr_r];
                 prefetch_bank_r <= fifo_bank[fifo_rd_ptr_r];
                 prefetch_pair_idx_r <= 2'd0;
+                prefetch_req_valid_r <= 1'b1;
+                prefetch_req_lane0_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][0];
+                prefetch_req_lane1_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][1];
+                prefetch_req_lane0_dest_r <= 3'd0;
+                prefetch_req_lane1_dest_r <= 3'd1;
+                prefetch_req_lane0_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
+                prefetch_req_lane1_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
+                prefetch_req_lane0_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][2:0];
+                prefetch_req_lane1_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][5:3];
+                prefetch_req_p3_r <= 1'b0;
+                prefetch_req_scratch_valid_r <= 1'b0;
+                prefetch_req_scratch_index_r <= 32'd0;
+                prefetch_req_scratch_lane_r <= 3'd0;
+                mem0_en <= fifo_lane_valid[fifo_rd_ptr_r][0];
+                mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+                mem0_index <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
+                mem1_en <= fifo_lane_valid[fifo_rd_ptr_r][1];
+                mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+                mem1_index <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
+                mem3_scratch_en <= 1'b0; mem3_scratch_index <= 32'd0;
                 prefetch_state_r <= PF_READ;
             end
 
             // Look-ahead scale reader.  It uses PARAM ports only when the
-            // active FSM is not reading/capturing scales or writing SPU_OUT.
-            // Keeping the same READ/CAPTURE cadence preserves the synchronous
-            // BRAM timing contract; the latency is hidden under S_WAIT.
+            // active FSM is not reading/capturing/returning scales or writing
+            // SPU_OUT.  PF_RESPONSE is an internal tagged-return phase; the
+            // external FIFO and raw-stream cadence remain unchanged.
             if (!split_scale_enable) begin
                 case (prefetch_state_r)
                     PF_READ: begin
@@ -502,27 +598,101 @@ module SPU_VPU_Stream8 #(
                     end
                     PF_CAPTURE: begin
                         if (prefetch_mem_available) begin
-                            if (prefetch_lane_valid_r[prefetch_lane0_sel]) begin
-                                prefetch_act_scale_r[prefetch_lane0_sel] <=
-                                    mem0_rdata[32*prefetch_lane0_scale_lane +: 16];
-                                prefetch_weight_scale_r[prefetch_lane0_sel] <=
-                                    mem0_rdata[32*prefetch_lane0_scale_lane+16 +: 16];
+                            prefetch_rsp_mem0_data_r <= mem0_rdata;
+                            prefetch_rsp_mem1_data_r <= mem1_rdata;
+                            prefetch_rsp_scratch_data_r <= mem3_scratch_rdata;
+                            prefetch_rsp_valid_r <= prefetch_req_valid_r;
+                            prefetch_rsp_lane0_valid_r <= prefetch_req_lane0_valid_r;
+                            prefetch_rsp_lane1_valid_r <= prefetch_req_lane1_valid_r;
+                            prefetch_rsp_lane0_dest_r <= prefetch_req_lane0_dest_r;
+                            prefetch_rsp_lane1_dest_r <= prefetch_req_lane1_dest_r;
+                            prefetch_rsp_lane0_scale_lane_r <= prefetch_req_lane0_scale_lane_r;
+                            prefetch_rsp_lane1_scale_lane_r <= prefetch_req_lane1_scale_lane_r;
+                            prefetch_rsp_p3_r <= prefetch_req_p3_r;
+                            prefetch_rsp_scratch_valid_r <= prefetch_req_scratch_valid_r;
+                            prefetch_rsp_scratch_lane_r <= prefetch_req_scratch_lane_r;
+                            if (prefetch_pair_idx_r != 2'd3) begin
+                                prefetch_req_valid_r <= 1'b1;
+                                prefetch_req_lane0_valid_r <=
+                                    prefetch_lane_valid_r[{(prefetch_pair_idx_r + 2'd1),1'b0}];
+                                prefetch_req_lane1_valid_r <=
+                                    prefetch_lane_valid_r[{(prefetch_pair_idx_r + 2'd1),1'b1}];
+                                prefetch_req_lane0_dest_r <=
+                                    {(prefetch_pair_idx_r + 2'd1),1'b0};
+                                prefetch_req_lane1_dest_r <=
+                                    {(prefetch_pair_idx_r + 2'd1),1'b1};
+                                prefetch_req_lane0_word_index_r <=
+                                    prefetch_scale_word_index_r[{(prefetch_pair_idx_r + 2'd1),1'b0}];
+                                prefetch_req_lane1_word_index_r <=
+                                    prefetch_scale_word_index_r[{(prefetch_pair_idx_r + 2'd1),1'b1}];
+                                prefetch_req_lane0_scale_lane_r <=
+                                    prefetch_scale_lane_r[{(prefetch_pair_idx_r + 2'd1),1'b0}];
+                                prefetch_req_lane1_scale_lane_r <=
+                                    prefetch_scale_lane_r[{(prefetch_pair_idx_r + 2'd1),1'b1}];
+                                prefetch_req_p3_r <= 1'b0;
+                                prefetch_req_scratch_valid_r <= 1'b0;
+                                prefetch_req_scratch_index_r <= 32'd0;
+                                prefetch_req_scratch_lane_r <= 3'd0;
                             end
-                            if (prefetch_lane_valid_r[prefetch_lane1_sel]) begin
-                                prefetch_act_scale_r[prefetch_lane1_sel] <=
-                                    mem1_rdata[32*prefetch_lane1_scale_lane +: 16];
-                                prefetch_weight_scale_r[prefetch_lane1_sel] <=
-                                    mem1_rdata[32*prefetch_lane1_scale_lane+16 +: 16];
+                            prefetch_state_r <= PF_RESPONSE;
+                        end
+                    end
+                    PF_RESPONSE: begin
+                        if (prefetch_mem_available) begin
+                            if (prefetch_rsp_valid_r && prefetch_rsp_lane0_valid_r) begin
+                                if (prefetch_rsp_p3_r) begin
+                                    prefetch_act_scale_r[prefetch_rsp_lane0_dest_r] <=
+                                        prefetch_rsp_scratch_valid_r ?
+                                        prefetch_rsp_scratch_data_r[16*prefetch_rsp_scratch_lane_r +: 16] : 16'd0;
+                                    prefetch_weight_scale_r[prefetch_rsp_lane0_dest_r] <=
+                                        prefetch_rsp_mem0_data_r[16*prefetch_rsp_lane0_scale_lane_r +: 16];
+                                end else begin
+                                    prefetch_act_scale_r[prefetch_rsp_lane0_dest_r] <=
+                                        prefetch_rsp_mem0_data_r[32*prefetch_rsp_lane0_scale_lane_r +: 16];
+                                    prefetch_weight_scale_r[prefetch_rsp_lane0_dest_r] <=
+                                        prefetch_rsp_mem0_data_r[32*prefetch_rsp_lane0_scale_lane_r+16 +: 16];
+                                end
+                            end
+                            if (prefetch_rsp_valid_r && prefetch_rsp_lane1_valid_r) begin
+                                if (prefetch_rsp_p3_r) begin
+                                    prefetch_act_scale_r[prefetch_rsp_lane1_dest_r] <=
+                                        prefetch_rsp_scratch_valid_r ?
+                                        prefetch_rsp_scratch_data_r[16*prefetch_rsp_scratch_lane_r +: 16] : 16'd0;
+                                    prefetch_weight_scale_r[prefetch_rsp_lane1_dest_r] <=
+                                        prefetch_rsp_mem1_data_r[16*prefetch_rsp_lane1_scale_lane_r +: 16];
+                                end else begin
+                                    prefetch_act_scale_r[prefetch_rsp_lane1_dest_r] <=
+                                        prefetch_rsp_mem1_data_r[32*prefetch_rsp_lane1_scale_lane_r +: 16];
+                                    prefetch_weight_scale_r[prefetch_rsp_lane1_dest_r] <=
+                                        prefetch_rsp_mem1_data_r[32*prefetch_rsp_lane1_scale_lane_r+16 +: 16];
+                                end
                             end
                             if (prefetch_pair_idx_r == 2'd3) begin
                                 prefetch_pair_idx_r <= 2'd0;
+                                prefetch_req_valid_r <= 1'b0;
+                                prefetch_req_lane0_valid_r <= 1'b0;
+                                prefetch_req_lane1_valid_r <= 1'b0;
+                                prefetch_req_p3_r <= 1'b0;
+                                prefetch_req_scratch_valid_r <= 1'b0;
+                                prefetch_rsp_valid_r <= 1'b0;
+                                prefetch_rsp_p3_r <= 1'b0;
+                                prefetch_rsp_scratch_valid_r <= 1'b0;
+                                prefetch_rsp_scratch_lane_r <= 3'd0;
                                 prefetch_state_r <= PF_READY;
                             end else begin
+                                mem0_en <= prefetch_req_valid_r && prefetch_req_lane0_valid_r;
+                                mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+                                mem0_index <= prefetch_req_lane0_word_index_r;
+                                mem1_en <= prefetch_req_valid_r && prefetch_req_lane1_valid_r;
+                                mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+                                mem1_index <= prefetch_req_lane1_word_index_r;
+                                mem3_scratch_en <= prefetch_req_valid_r && prefetch_req_scratch_valid_r;
+                                mem3_scratch_index <= prefetch_req_scratch_index_r;
                                 prefetch_pair_idx_r <= prefetch_pair_idx_r + 2'd1;
                                 prefetch_state_r <= PF_READ;
                             end
-                        end
-                    end
+                        end // PF_RESPONSE command issue complete
+                    end // PF_RESPONSE ownership released
                     default: begin end
                 endcase
             end
@@ -555,6 +725,39 @@ module SPU_VPU_Stream8 #(
                             bank_r <= vpu_bank;
                             p3_r <= 1'b1;
                             pair_idx_r <= 2'd0;
+                            read_req_valid_r <= 1'b1;
+                            read_req_lane0_valid_r <= vpu_lane_valid[0];
+                            read_req_lane1_valid_r <= vpu_lane_valid[1];
+                            read_req_lane0_dest_r <= 3'd0;
+                            read_req_lane1_dest_r <= 3'd1;
+                            read_req_lane0_word_index_r <=
+                                (vpu_bank ? P3_BANK_WORD_DEPTH : 32'd0) +
+                                (vpu_lane_scale_index[31:0] >> 3);
+                            read_req_lane1_word_index_r <=
+                                (vpu_bank ? P3_BANK_WORD_DEPTH : 32'd0) +
+                                (vpu_lane_scale_index[63:32] >> 3);
+                            read_req_lane0_scale_lane_r <= vpu_lane_scale_index[2:0];
+                            read_req_lane1_scale_lane_r <= vpu_lane_scale_index[34:32];
+                            read_req_p3_r <= 1'b1;
+                            read_req_scratch_valid_r <= 1'b1;
+                            read_req_scratch_index_r <=
+                                (vpu_bank ? P3_BANK_WORD_DEPTH : 32'd0) +
+                                ({16'd0,vpu_block} >> 3);
+                            read_req_scratch_lane_r <= vpu_block[2:0];
+                            mem0_en <= vpu_lane_valid[0];
+                            mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+                            mem0_index <=
+                                (vpu_bank ? P3_BANK_WORD_DEPTH : 32'd0) +
+                                (vpu_lane_scale_index[31:0] >> 3);
+                            mem1_en <= vpu_lane_valid[1];
+                            mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+                            mem1_index <=
+                                (vpu_bank ? P3_BANK_WORD_DEPTH : 32'd0) +
+                                (vpu_lane_scale_index[63:32] >> 3);
+                            mem3_scratch_en <= 1'b1;
+                            mem3_scratch_index <=
+                                (vpu_bank ? P3_BANK_WORD_DEPTH : 32'd0) +
+                                ({16'd0,vpu_block} >> 3);
                             stream_count <= stream_count + accepted_lanes;
                             stream_fifo_high_water <= 32'd1;
                             stream_last_raw <= vpu_lane_data[32*tail_lane +: 32];
@@ -606,6 +809,26 @@ module SPU_VPU_Stream8 #(
                         bank_r <= fifo_bank[fifo_rd_ptr_r];
                         p3_r <= 1'b0;
                         pair_idx_r <= 2'd0;
+                        read_req_valid_r <= 1'b1;
+                        read_req_lane0_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][0];
+                        read_req_lane1_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][1];
+                        read_req_lane0_dest_r <= 3'd0;
+                        read_req_lane1_dest_r <= 3'd1;
+                        read_req_lane0_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
+                        read_req_lane1_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
+                        read_req_lane0_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][2:0];
+                        read_req_lane1_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][5:3];
+                        read_req_p3_r <= 1'b0;
+                        read_req_scratch_valid_r <= 1'b0;
+                        read_req_scratch_index_r <= 32'd0;
+                        read_req_scratch_lane_r <= 3'd0;
+                        mem0_en <= fifo_lane_valid[fifo_rd_ptr_r][0];
+                        mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+                        mem0_index <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
+                        mem1_en <= fifo_lane_valid[fifo_rd_ptr_r][1];
+                        mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+                        mem1_index <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
+                        mem3_scratch_en <= 1'b0; mem3_scratch_index <= 32'd0;
                         state_r <= S_READ;
                     end
                 end
@@ -613,32 +836,101 @@ module SPU_VPU_Stream8 #(
                 S_READ: state_r <= S_CAPTURE;
 
                 S_CAPTURE: begin
-                    if (p3_r && (pair_idx_r == 2'd0))
-                        p3_act_scale_r <= mem3_scratch_rdata[16*p3_act_lane +: 16];
-                    if (lane_valid_r[lane0_sel]) begin
-                        if (p3_r) begin
-                            weight_scale_r[lane0_sel] <= mem0_rdata[16*lane0_scale_lane +: 16];
-                            act_scale_r[lane0_sel] <= (pair_idx_r == 2'd0) ?
-                                mem3_scratch_rdata[16*p3_act_lane +: 16] : p3_act_scale_r;
+                    // Register the complete RAM return and its command tags.
+                    // Dynamic lane extraction is deliberately deferred to
+                    // S_RESPONSE, after this full-width boundary.
+                    read_rsp_mem0_data_r <= mem0_rdata;
+                    read_rsp_mem1_data_r <= mem1_rdata;
+                    read_rsp_scratch_data_r <= mem3_scratch_rdata;
+                    read_rsp_valid_r <= read_req_valid_r;
+                    read_rsp_lane0_valid_r <= read_req_lane0_valid_r;
+                    read_rsp_lane1_valid_r <= read_req_lane1_valid_r;
+                    read_rsp_lane0_dest_r <= read_req_lane0_dest_r;
+                    read_rsp_lane1_dest_r <= read_req_lane1_dest_r;
+                    read_rsp_lane0_scale_lane_r <= read_req_lane0_scale_lane_r;
+                    read_rsp_lane1_scale_lane_r <= read_req_lane1_scale_lane_r;
+                    read_rsp_p3_r <= read_req_p3_r;
+                    read_rsp_scratch_valid_r <= read_req_scratch_valid_r;
+                    read_rsp_scratch_lane_r <= read_req_scratch_lane_r;
+                    if (pair_idx_r != 2'd3) begin
+                        read_req_valid_r <= 1'b1;
+                        read_req_lane0_valid_r <=
+                            lane_valid_r[{(pair_idx_r + 2'd1),1'b0}];
+                        read_req_lane1_valid_r <=
+                            lane_valid_r[{(pair_idx_r + 2'd1),1'b1}];
+                        read_req_lane0_dest_r <= {(pair_idx_r + 2'd1),1'b0};
+                        read_req_lane1_dest_r <= {(pair_idx_r + 2'd1),1'b1};
+                        read_req_lane0_word_index_r <=
+                            scale_word_index_r[{(pair_idx_r + 2'd1),1'b0}];
+                        read_req_lane1_word_index_r <=
+                            scale_word_index_r[{(pair_idx_r + 2'd1),1'b1}];
+                        read_req_lane0_scale_lane_r <=
+                            scale_lane_r[{(pair_idx_r + 2'd1),1'b0}];
+                        read_req_lane1_scale_lane_r <=
+                            scale_lane_r[{(pair_idx_r + 2'd1),1'b1}];
+                        read_req_p3_r <= p3_r;
+                        read_req_scratch_valid_r <= 1'b0;
+                        read_req_scratch_index_r <= 32'd0;
+                        read_req_scratch_lane_r <= 3'd0;
+                    end
+                    state_r <= S_RESPONSE;
+                end
+
+                S_RESPONSE: begin
+                    if (read_rsp_valid_r && read_rsp_scratch_valid_r)
+                        p3_act_scale_r <=
+                            read_rsp_scratch_data_r[16*read_rsp_scratch_lane_r +: 16];
+                    if (read_rsp_valid_r && read_rsp_lane0_valid_r) begin
+                        if (read_rsp_p3_r) begin
+                            weight_scale_r[read_rsp_lane0_dest_r] <=
+                                read_rsp_mem0_data_r[16*read_rsp_lane0_scale_lane_r +: 16];
+                            act_scale_r[read_rsp_lane0_dest_r] <= read_rsp_scratch_valid_r ?
+                                read_rsp_scratch_data_r[16*read_rsp_scratch_lane_r +: 16] :
+                                p3_act_scale_r;
                         end else begin
-                            act_scale_r[lane0_sel] <= mem0_rdata[32*lane0_scale_lane +: 16];
-                            weight_scale_r[lane0_sel] <= mem0_rdata[32*lane0_scale_lane+16 +: 16];
+                            act_scale_r[read_rsp_lane0_dest_r] <=
+                                read_rsp_mem0_data_r[32*read_rsp_lane0_scale_lane_r +: 16];
+                            weight_scale_r[read_rsp_lane0_dest_r] <=
+                                read_rsp_mem0_data_r[32*read_rsp_lane0_scale_lane_r+16 +: 16];
                         end
                     end
-                    if (lane_valid_r[lane1_sel]) begin
-                        if (p3_r) begin
-                            weight_scale_r[lane1_sel] <= mem1_rdata[16*lane1_scale_lane +: 16];
-                            act_scale_r[lane1_sel] <= (pair_idx_r == 2'd0) ?
-                                mem3_scratch_rdata[16*p3_act_lane +: 16] : p3_act_scale_r;
+                    if (read_rsp_valid_r && read_rsp_lane1_valid_r) begin
+                        if (read_rsp_p3_r) begin
+                            weight_scale_r[read_rsp_lane1_dest_r] <=
+                                read_rsp_mem1_data_r[16*read_rsp_lane1_scale_lane_r +: 16];
+                            act_scale_r[read_rsp_lane1_dest_r] <= read_rsp_scratch_valid_r ?
+                                read_rsp_scratch_data_r[16*read_rsp_scratch_lane_r +: 16] :
+                                p3_act_scale_r;
                         end else begin
-                            act_scale_r[lane1_sel] <= mem1_rdata[32*lane1_scale_lane +: 16];
-                            weight_scale_r[lane1_sel] <= mem1_rdata[32*lane1_scale_lane+16 +: 16];
+                            act_scale_r[read_rsp_lane1_dest_r] <=
+                                read_rsp_mem1_data_r[32*read_rsp_lane1_scale_lane_r +: 16];
+                            weight_scale_r[read_rsp_lane1_dest_r] <=
+                                read_rsp_mem1_data_r[32*read_rsp_lane1_scale_lane_r+16 +: 16];
                         end
                     end
+                        read_rsp_valid_r <= 1'b0;
+                        read_rsp_lane0_valid_r <= 1'b0;
+                        read_rsp_lane1_valid_r <= 1'b0;
+                        read_rsp_p3_r <= 1'b0;
+                        read_rsp_scratch_valid_r <= 1'b0;
+                        read_rsp_scratch_lane_r <= 3'd0;
                     if (pair_idx_r == 2'd3) begin
                         pair_idx_r <= 2'd0;
+                        read_req_valid_r <= 1'b0;
+                        read_req_lane0_valid_r <= 1'b0;
+                        read_req_lane1_valid_r <= 1'b0;
+                        read_req_p3_r <= 1'b0;
+                        read_req_scratch_valid_r <= 1'b0;
                         state_r <= S_START;
                     end else begin
+                        mem0_en <= read_req_valid_r && read_req_lane0_valid_r;
+                        mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+                        mem0_index <= read_req_lane0_word_index_r;
+                        mem1_en <= read_req_valid_r && read_req_lane1_valid_r;
+                        mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+                        mem1_index <= read_req_lane1_word_index_r;
+                        mem3_scratch_en <= read_req_valid_r && read_req_scratch_valid_r;
+                        mem3_scratch_index <= read_req_scratch_index_r;
                         pair_idx_r <= pair_idx_r + 2'd1;
                         state_r <= S_READ;
                     end
@@ -660,6 +952,25 @@ module SPU_VPU_Stream8 #(
                             for (i = 0; i < 8; i = i + 1)
                                 if (lane_valid_r[i]) final_q16_r[i] <= accum_out_q16_bus[64*i +: 64];
                             pair_idx_r <= 2'd0;
+                            write_req_valid_r <= 1'b1;
+                            write_req_lane0_valid_r <= lane_valid_r[0];
+                            write_req_lane1_valid_r <= lane_valid_r[1];
+                            write_req_lane0_dest_r <= 3'd0;
+                            write_req_lane1_dest_r <= 3'd1;
+                            write_req_lane0_row_r <= row_r[0];
+                            write_req_lane1_row_r <= row_r[1];
+                            mem0_en <= lane_valid_r[0];
+                            mem0_we <= lane_valid_r[0]; mem0_region <= REGION_OUT;
+                            mem0_index <= {16'd0,row_r[0]};
+                            mem0_wdata <= {{(AXI_DATA_WIDTH-80){1'b0}},
+                                           accum_out_q16_bus[63:0],row_r[0]};
+                            mem0_wstrb <= 16'h03ff;
+                            mem1_en <= lane_valid_r[1];
+                            mem1_we <= lane_valid_r[1]; mem1_region <= REGION_OUT;
+                            mem1_index <= {16'd0,row_r[1]};
+                            mem1_wdata <= {{(AXI_DATA_WIDTH-80){1'b0}},
+                                           accum_out_q16_bus[127:64],row_r[1]};
+                            mem1_wstrb <= 16'h03ff;
                             state_r <= S_WRITE;
                         end else begin
                             state_r <= S_IDLE;
@@ -668,22 +979,52 @@ module SPU_VPU_Stream8 #(
                 end
 
                 S_WRITE: begin
-                    write_count = lane_valid_r[lane0_sel] + lane_valid_r[lane1_sel];
+                    write_count = write_req_valid_r ?
+                                  ({3'd0,write_req_lane0_valid_r} +
+                                   {3'd0,write_req_lane1_valid_r}) : 4'd0;
                     if (write_count != 0) begin
                         stream_out_count <= stream_out_count + write_count;
                         stream_final_write_count <= stream_final_write_count + write_count;
-                        if (lane_valid_r[lane1_sel]) begin
-                            stream_last_accum_lo <= final_q16_r[lane1_sel][31:0];
-                            stream_last_accum_hi <= final_q16_r[lane1_sel][63:32];
-                        end else if (lane_valid_r[lane0_sel]) begin
-                            stream_last_accum_lo <= final_q16_r[lane0_sel][31:0];
-                            stream_last_accum_hi <= final_q16_r[lane0_sel][63:32];
+                        if (write_req_lane1_valid_r) begin
+                            stream_last_accum_lo <= final_q16_r[write_req_lane1_dest_r][31:0];
+                            stream_last_accum_hi <= final_q16_r[write_req_lane1_dest_r][63:32];
+                        end else if (write_req_lane0_valid_r) begin
+                            stream_last_accum_lo <= final_q16_r[write_req_lane0_dest_r][31:0];
+                            stream_last_accum_hi <= final_q16_r[write_req_lane0_dest_r][63:32];
                         end
                     end
                     if (pair_idx_r == 2'd3) begin
                         pair_idx_r <= 2'd0;
+                        write_req_valid_r <= 1'b0;
+                        write_req_lane0_valid_r <= 1'b0;
+                        write_req_lane1_valid_r <= 1'b0;
                         state_r <= S_IDLE;
                     end else begin
+                        write_req_valid_r <= 1'b1;
+                        write_req_lane0_valid_r <=
+                            lane_valid_r[{(pair_idx_r + 2'd1),1'b0}];
+                        write_req_lane1_valid_r <=
+                            lane_valid_r[{(pair_idx_r + 2'd1),1'b1}];
+                        write_req_lane0_dest_r <= {(pair_idx_r + 2'd1),1'b0};
+                        write_req_lane1_dest_r <= {(pair_idx_r + 2'd1),1'b1};
+                        write_req_lane0_row_r <= row_r[{(pair_idx_r + 2'd1),1'b0}];
+                        write_req_lane1_row_r <= row_r[{(pair_idx_r + 2'd1),1'b1}];
+                        mem0_en <= lane_valid_r[{(pair_idx_r + 2'd1),1'b0}];
+                        mem0_we <= lane_valid_r[{(pair_idx_r + 2'd1),1'b0}];
+                        mem0_region <= REGION_OUT;
+                        mem0_index <= {16'd0,row_r[{(pair_idx_r + 2'd1),1'b0}]};
+                        mem0_wdata <= {{(AXI_DATA_WIDTH-80){1'b0}},
+                                       final_q16_r[{(pair_idx_r + 2'd1),1'b0}],
+                                       row_r[{(pair_idx_r + 2'd1),1'b0}]};
+                        mem0_wstrb <= 16'h03ff;
+                        mem1_en <= lane_valid_r[{(pair_idx_r + 2'd1),1'b1}];
+                        mem1_we <= lane_valid_r[{(pair_idx_r + 2'd1),1'b1}];
+                        mem1_region <= REGION_OUT;
+                        mem1_index <= {16'd0,row_r[{(pair_idx_r + 2'd1),1'b1}]};
+                        mem1_wdata <= {{(AXI_DATA_WIDTH-80){1'b0}},
+                                       final_q16_r[{(pair_idx_r + 2'd1),1'b1}],
+                                       row_r[{(pair_idx_r + 2'd1),1'b1}]};
+                        mem1_wstrb <= 16'h03ff;
                         pair_idx_r <= pair_idx_r + 2'd1;
                     end
                 end

@@ -130,6 +130,7 @@ module tb_VPU_Top;
     integer current_cols;
     integer current_col_beats;
     integer stream_stall_observed;
+    integer stream_stall_ever_observed;
     reg [DATA_WIDTH-1:0] init_rd_word;
     reg stream_hold_valid;
     reg signed [31:0] stream_hold_data;
@@ -1737,6 +1738,101 @@ module tb_VPU_Top;
         end
     endtask
 
+    // The production RTL accepts arbitrary SPU backpressure.  The previous
+    // pseudo-random stall generator is intentionally opportunistic, so a
+    // faster VPU can complete every raw transfer between its random windows
+    // and leave the root test with unexercised hold behavior.  This focused
+    // system-level case makes one boundary stall deterministic, verifies the
+    // VPU token-hold assertion above, then releases the real SPU path to
+    // complete the same job normally.
+    task run_forced_stream_stall_case;
+        integer beat;
+        integer scale_word_idx;
+        integer timeout;
+        integer stall_before;
+        reg [DATA_WIDTH-1:0] rd_word;
+        reg signed [31:0] got;
+        reg signed [31:0] expected;
+        begin
+            $display("[TB] FORCED RAW STALL CASE: verify stable VPU->SPU token");
+            init_case_data(140, 1, 32);
+
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_JOB_ID, word32(32'h0000_1140), 16'h000f);
+            axi_write(REG_ROWS, word32(1), 16'h000f);
+            axi_write(REG_COLS, word32(32), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(2), 16'h000f);
+            axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
+            axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8), 16'h000f);
+            for (beat = 0; beat < 2; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+            stage_pair_weight_image(1, 2);
+            for (scale_word_idx = 0; scale_word_idx < 1;
+                 scale_word_idx = scale_word_idx + 1)
+                axi_write(SPU_PARAM_BASE + scale_word_idx * 16,
+                          pack_stream_scale_word(1, 1, scale_word_idx),
+                          16'hffff);
+
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            timeout = 0;
+            while (!dut.u_my_ip.u_axi4_mapping.core_busy) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 1000) begin
+                    fail("forced-stall job never became busy");
+                    timeout = 1001;
+                end
+            end
+
+            stall_before = stream_stall_observed;
+            force dut.u_my_ip.u_axi4_mapping.core_spu_raw_ready = 1'b0;
+            timeout = 0;
+            while (!dut.u_my_ip.u_axi4_mapping.core_spu_raw_valid) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 10000) begin
+                    fail("forced-stall job never presented a raw token");
+                    timeout = 10001;
+                end
+            end
+            repeat (3) @(posedge clk);
+            if (stream_stall_observed <= stall_before)
+                fail("forced raw stall was not observed at the VPU->SPU boundary");
+            else
+                pass_count = pass_count + 1;
+            release dut.u_my_ip.u_axi4_mapping.core_spu_raw_ready;
+
+            timeout = 0;
+            rd_word = {DATA_WIDTH{1'b0}};
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word);
+                timeout = timeout + 1;
+                if (rd_word[2] || timeout > 100000) begin
+                    fail("forced-stall job did not complete cleanly");
+                    rd_word[0] = 1'b1;
+                end
+            end
+            timeout = 0;
+            rd_word = 32'd0;
+            while (rd_word[4:0] !== 5'b1_1111) begin
+                axi_read32(REG_SPU_STREAM_STATUS, rd_word[31:0]);
+                timeout = timeout + 1;
+                if (timeout > 100000) begin
+                    fail("forced-stall stream did not quiesce");
+                    rd_word = 32'h0000_001f;
+                end
+            end
+            axi_read(RESULT_BASE, rd_word);
+            got = rd_word[31:0];
+            expected = golden_q8_block(0, 0);
+            if (got !== expected)
+                fail("forced-stall raw result mismatch after release");
+            else
+                pass_count = pass_count + 1;
+        end
+    endtask
+
     // Protocol assertion: a VPU raw token must not change while the SPU FIFO
     // backpressures it.  The DUT test parameter creates pseudo-random stalls.
     always @(posedge clk) begin
@@ -1759,6 +1855,7 @@ module tb_VPU_Top;
                 fail("VPU raw data or metadata changed while valid was held");
             if (!dut.u_my_ip.u_axi4_mapping.core_spu_raw_ready) begin
                 stream_stall_observed <= stream_stall_observed + 1;
+                stream_stall_ever_observed <= 1;
                 stream_hold_valid <= 1'b1;
                 stream_hold_data <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_data;
                 stream_hold_row <= dut.u_my_ip.u_axi4_mapping.core_spu_raw_row;
@@ -2781,6 +2878,7 @@ module tb_VPU_Top;
         pass_count = 0;
         fail_count = 0;
         cycle_count = 0;
+        stream_stall_ever_observed = 0;
         preload_watch_enable = 1'b0;
         preload_compute_write_overlap = 0;
         preload_busy_violation = 0;
@@ -2824,6 +2922,7 @@ module tb_VPU_Top;
         // existing randomized SPU ready generator must accept rows 0/1 before
         // rows 2/3; run_group_case checks every raw Result lane and stream row.
         run_group_case(100, 4, 2);
+        run_forced_stream_stall_case();
         run_pair_weight_port_ownership_case();
         run_group_case(132, 255, 36);
         run_group_case(133, 256, 64);
@@ -2836,7 +2935,7 @@ module tb_VPU_Top;
         if (pair_issue_desync_count != 0)
             fail("P2-v2 pair issue skew assertion failed");
 
-        if (stream_stall_observed == 0)
+        if (stream_stall_ever_observed == 0)
             fail("ready/valid random-stall test did not observe a stalled raw token");
 
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
