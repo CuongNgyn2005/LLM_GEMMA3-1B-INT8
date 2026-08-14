@@ -54,18 +54,17 @@ jobs:
       - name: Simulate VPU four-block burst regression
         run: |
           iverilog -g2012 -Wall -s tb_VPU8_burst -o /tmp/tb_vpu8_burst \
-            TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/PMAU_Full.v \
-            RTL/Matrix_Vector_Multiplication.v TESTBENCH/tb_VPU8_burst.v
+            TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/VPU_Result_Requantizer.v \
+            RTL/PMAU_Full.v RTL/Matrix_Vector_Multiplication.v TESTBENCH/tb_VPU8_burst.v
           vvp /tmp/tb_vpu8_burst | tee /tmp/tb_vpu8_burst.log
           grep -q "PASS tb_VPU8_burst" /tmp/tb_vpu8_burst.log
 
       - name: Simulate full VPU to SPU integration regression
         run: |
           iverilog -g2012 -Wall -s tb_VPU_SPU8_integration -o /tmp/tb_vpu_spu8 \
-            TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/PMAU_Full.v \
-            RTL/Matrix_Vector_Multiplication.v RTL/SPU_Q8_Scale_Accum.v \
-            RTL/SPU_VPU_Stream8.v RTL/SPU_Local_Memory.v \
-            TESTBENCH/tb_VPU_SPU8_integration.v
+            TESTBENCH/vendor_stubs.v RTL/Dual_Port_BRAM.v RTL/VPU_Result_Requantizer.v \
+            RTL/PMAU_Full.v RTL/Matrix_Vector_Multiplication.v RTL/SPU_Q8_Scale_Accum.v \
+            RTL/SPU_VPU_Stream8.v RTL/SPU_Local_Memory.v TESTBENCH/tb_VPU_SPU8_integration.v
           vvp /tmp/tb_vpu_spu8 | tee /tmp/tb_vpu_spu8.log
           grep -q "PASS tb_VPU_SPU8_integration" /tmp/tb_vpu_spu8.log
 
