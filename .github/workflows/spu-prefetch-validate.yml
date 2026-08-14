@@ -1,0 +1,81 @@
+name: SPU P2 prefetch validation
+
+on:
+  push:
+    branches:
+      - chatgpt/vpu16x8-spu8
+    paths:
+      - .github/workflows/spu-prefetch-validate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: chatgpt/vpu16x8-spu8
+          fetch-depth: 0
+
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+
+      - name: Apply P2 look-ahead prefetch transformation
+        run: python3 tools/apply_spu_stream8_prefetch.py
+
+      - name: Structural checks
+        run: |
+          cmp RTL/SPU_VPU_Stream8.v DATN_VIVADO/project_2/src/SPU_VPU_Stream8.v
+          git diff --check
+          grep -q "fifo_prefetch_pop" RTL/SPU_VPU_Stream8.v
+          grep -q "prefetch_state_r <= PF_READY" RTL/SPU_VPU_Stream8.v
+
+      - name: Simulate existing SPU stream regression
+        run: |
+          iverilog -g2012 -Wall -s tb_SPU_Stream8 -o /tmp/tb_spu_stream8 \
+            RTL/SPU_Q8_Scale_Accum.v RTL/SPU_VPU_Stream8.v RTL/SPU_Local_Memory.v \
+            TESTBENCH/tb_SPU_Stream8.v
+          vvp /tmp/tb_spu_stream8 | tee /tmp/tb_spu_stream8.log
+          grep -q "PASS tb_SPU_Stream8" /tmp/tb_spu_stream8.log
+
+      - name: Simulate directed prefetch overlap regression
+        run: |
+          iverilog -g2012 -Wall -s tb_SPU_Stream8_prefetch -o /tmp/tb_spu_prefetch \
+            RTL/SPU_Q8_Scale_Accum.v RTL/SPU_VPU_Stream8.v RTL/SPU_Local_Memory.v \
+            TESTBENCH/tb_SPU_Stream8_prefetch.v
+          vvp /tmp/tb_spu_prefetch | tee /tmp/tb_spu_prefetch.log
+          grep -q "PASS tb_SPU_Stream8_prefetch" /tmp/tb_spu_prefetch.log
+
+      - name: Simulate VPU four-block burst regression
+        run: |
+          iverilog -g2012 -Wall -s tb_VPU8_burst -o /tmp/tb_vpu8_burst \
+            TESTBENCH/vendor_stubs.v RTL/PMAU_Full.v RTL/Matrix_Vector_Multiplication.v \
+            TESTBENCH/tb_VPU8_burst.v
+          vvp /tmp/tb_vpu8_burst | tee /tmp/tb_vpu8_burst.log
+          grep -q "PASS tb_VPU8_burst" /tmp/tb_vpu8_burst.log
+
+      - name: Simulate full VPU to SPU integration regression
+        run: |
+          iverilog -g2012 -Wall -s tb_VPU_SPU8_integration -o /tmp/tb_vpu_spu8 \
+            TESTBENCH/vendor_stubs.v RTL/PMAU_Full.v RTL/Matrix_Vector_Multiplication.v \
+            RTL/SPU_Q8_Scale_Accum.v RTL/SPU_VPU_Stream8.v RTL/SPU_Local_Memory.v \
+            TESTBENCH/tb_VPU_SPU8_integration.v
+          vvp /tmp/tb_vpu_spu8 | tee /tmp/tb_vpu_spu8.log
+          grep -q "PASS tb_VPU_SPU8_integration" /tmp/tb_vpu_spu8.log
+
+      - name: Commit validated RTL
+        run: |
+          git config user.name "ChatGPT RTL Validation"
+          git config user.email "actions@users.noreply.github.com"
+          git add RTL/SPU_VPU_Stream8.v DATN_VIVADO/project_2/src/SPU_VPU_Stream8.v
+          if git diff --cached --quiet; then
+            echo "Expected RTL changes are missing"
+            exit 1
+          fi
+          git commit -m "SPU: prefetch next P2 bundle scales"
+          git push origin HEAD:chatgpt/vpu16x8-spu8
