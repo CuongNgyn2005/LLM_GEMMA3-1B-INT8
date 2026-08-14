@@ -2,7 +2,10 @@
  * 8-lane VPU -> SPU Q8_0 scale/accumulate stream.
  * One accepted bundle carries up to eight row results for one Q8 block.
  * Scale RAM is read two rows/cycle through the existing two PARAM ports;
- * all valid rows then execute SPU_Q8_Scale_Accum in parallel.
+ * all valid rows then execute SPU_Q8_Scale_Accum in parallel.  On the P2
+ * path, the next queued bundle is scale-prefetched while the current eight
+ * accumulators are busy, hiding the existing four READ/CAPTURE pairs without
+ * changing accumulation order or the external stream ABI.
  *
  * A four-entry input FIFO decouples the VPU result handshake from the SPU
  * scale/accumulate FSM.  Its depth matches the VPU raw burst scheduler's
@@ -92,6 +95,11 @@ module SPU_VPU_Stream8 #(
     localparam [2:0] S_WAIT    = 3'd4;
     localparam [2:0] S_WRITE   = 3'd5;
 
+    localparam [1:0] PF_IDLE    = 2'd0;
+    localparam [1:0] PF_READ    = 2'd1;
+    localparam [1:0] PF_CAPTURE = 2'd2;
+    localparam [1:0] PF_READY   = 2'd3;
+
     reg [2:0] state_r;
     reg [1:0] pair_idx_r;
     reg [7:0] lane_valid_r;
@@ -115,6 +123,25 @@ module SPU_VPU_Stream8 #(
     reg p3_done_seen_r;
     reg [15:0] p3_act_scale_r;
     reg [7:0] accum_start_r;
+
+    // One P2 look-ahead slot owns a bundle after it leaves the FIFO.  Raw
+    // data/metadata and decoded scale addresses are copied immediately; the
+    // four scale pairs are then fetched while the active accumulators run.
+    reg [1:0] prefetch_state_r;
+    reg [1:0] prefetch_pair_idx_r;
+    reg [7:0] prefetch_lane_valid_r;
+    reg signed [31:0] prefetch_raw_r [0:7];
+    reg [15:0] prefetch_row_r [0:7];
+    reg [31:0] prefetch_scale_word_index_r [0:7];
+    reg [2:0] prefetch_scale_lane_r [0:7];
+    reg [15:0] prefetch_act_scale_r [0:7];
+    reg [15:0] prefetch_weight_scale_r [0:7];
+    reg [15:0] prefetch_block_r;
+    reg [15:0] prefetch_group_blocks_r;
+    reg prefetch_last_block_r;
+    reg prefetch_clear_accum_r;
+    reg [31:0] prefetch_job_id_r;
+    reg prefetch_bank_r;
 
     // Four-entry x8 bundle FIFO.  Wide buses are kept packed so this remains
     // plain Verilog-2001 compatible (one unpacked memory dimension only).
@@ -190,16 +217,25 @@ module SPU_VPU_Stream8 #(
                          (vpu_bank != p3_bank_lock);
     wire fifo_empty = (fifo_count_r == 3'd0);
     wire fifo_full = (fifo_count_r == 3'd4);
-    // The head can be removed in the same cycle that a new tail is accepted,
-    // so a full FIFO need not insert an avoidable bubble when the FSM is idle.
-    wire fifo_pop = !split_scale_enable && (state_r == S_IDLE) &&
-                    !command_busy && !fifo_empty;
+    wire prefetch_empty = (prefetch_state_r == PF_IDLE);
+    wire prefetch_ready = (prefetch_state_r == PF_READY);
+    // The normal S_IDLE dequeue feeds the active bundle.  While a non-final
+    // P2 block is accumulating, a second dequeue feeds the look-ahead slot.
+    // Restrict prefetch to non-final blocks so SPU_OUT writes never contend
+    // with the look-ahead PARAM reads.
+    wire fifo_active_pop = !split_scale_enable && (state_r == S_IDLE) &&
+                           prefetch_empty && !command_busy && !fifo_empty;
+    wire fifo_prefetch_pop = !split_scale_enable && (state_r == S_WAIT) &&
+                             !last_block_r && prefetch_empty &&
+                             !command_busy && !fifo_empty;
+    wire fifo_pop = fifo_active_pop || fifo_prefetch_pop;
+    // Either dequeue may replace the head of a full FIFO in the same cycle.
     wire p2_fifo_ready = resetn && !command_busy && (!fifo_full || fifo_pop);
     wire p3_direct_ready = resetn && (state_r == S_IDLE) && !command_busy &&
                            !bank_mismatch;
-    // P2 uses the four-entry FIFO. P3 deliberately keeps the original
-    // direct one-bundle handshake so the existing bank-lock protocol is not
-    // changed by this performance experiment.
+    // P2 uses the four-entry FIFO plus one internal look-ahead slot. P3
+    // deliberately keeps the original direct one-bundle handshake so the
+    // existing bank-lock protocol is unchanged.
     assign vpu_ready = split_scale_enable ? p3_direct_ready : p2_fifo_ready;
     wire vpu_fire = vpu_valid && vpu_ready;
     wire fifo_push = !split_scale_enable && vpu_fire && bundle_index_ok;
@@ -208,6 +244,16 @@ module SPU_VPU_Stream8 #(
 
     wire [2:0] lane0_sel = {pair_idx_r, 1'b0};
     wire [2:0] lane1_sel = {pair_idx_r, 1'b1};
+    wire [2:0] prefetch_lane0_sel = {prefetch_pair_idx_r, 1'b0};
+    wire [2:0] prefetch_lane1_sel = {prefetch_pair_idx_r, 1'b1};
+    wire [31:0] prefetch_lane0_word_index =
+        prefetch_scale_word_index_r[prefetch_lane0_sel];
+    wire [31:0] prefetch_lane1_word_index =
+        prefetch_scale_word_index_r[prefetch_lane1_sel];
+    wire [2:0] prefetch_lane0_scale_lane =
+        prefetch_scale_lane_r[prefetch_lane0_sel];
+    wire [2:0] prefetch_lane1_scale_lane =
+        prefetch_scale_lane_r[prefetch_lane1_sel];
     wire [31:0] p3_bank_base = bank_r ? P3_BANK_WORD_DEPTH : 32'd0;
     wire [31:0] lane0_word_index = scale_word_index_r[lane0_sel];
     wire [31:0] lane1_word_index = scale_word_index_r[lane1_sel];
@@ -221,7 +267,11 @@ module SPU_VPU_Stream8 #(
     wire any_accum_error = |(accum_error & lane_valid_r);
     wire stream_engine_idle = split_scale_enable ?
                               (state_r == S_IDLE) :
-                              ((state_r == S_IDLE) && fifo_empty);
+                              ((state_r == S_IDLE) && fifo_empty && prefetch_empty);
+    wire prefetch_mem_available = !split_scale_enable &&
+                                  (state_r != S_READ) &&
+                                  (state_r != S_CAPTURE) &&
+                                  (state_r != S_WRITE);
 
     always @* begin
         mem0_en = 1'b0; mem0_we = 1'b0; mem0_region = REGION_PARAM;
@@ -257,6 +307,15 @@ module SPU_VPU_Stream8 #(
                 mem1_index = {16'd0,row_r[lane1_sel]};
                 mem1_wdata = {{(AXI_DATA_WIDTH-80){1'b0}},final_q16_r[lane1_sel],row_r[lane1_sel]};
                 mem1_wstrb = 16'h03ff;
+            end
+        end else if ((prefetch_state_r == PF_READ) && prefetch_mem_available) begin
+            if (prefetch_lane_valid_r[prefetch_lane0_sel]) begin
+                mem0_en = 1'b1;
+                mem0_index = prefetch_lane0_word_index;
+            end
+            if (prefetch_lane_valid_r[prefetch_lane1_sel]) begin
+                mem1_en = 1'b1;
+                mem1_index = prefetch_lane1_word_index;
             end
         end
     end
@@ -322,12 +381,22 @@ module SPU_VPU_Stream8 #(
             stream_final_write_count <= 32'd0;
             stream_p3_reject_count <= 32'd0;
             fifo_count_r <= 3'd0; fifo_wr_ptr_r <= 2'd0; fifo_rd_ptr_r <= 2'd0;
+            prefetch_state_r <= PF_IDLE; prefetch_pair_idx_r <= 2'd0;
+            prefetch_lane_valid_r <= 8'd0;
+            prefetch_block_r <= 16'd0; prefetch_group_blocks_r <= 16'd0;
+            prefetch_last_block_r <= 1'b0; prefetch_clear_accum_r <= 1'b0;
+            prefetch_job_id_r <= 32'd0; prefetch_bank_r <= 1'b0;
             write_count <= 4'd0;
             for (i = 0; i < 8; i = i + 1) begin
                 raw_r[i] <= 32'sd0; row_r[i] <= 16'd0;
                 scale_word_index_r[i] <= 32'd0; scale_lane_r[i] <= 3'd0;
                 act_scale_r[i] <= 16'd0; weight_scale_r[i] <= 16'd0;
                 final_q16_r[i] <= 64'sd0;
+                prefetch_raw_r[i] <= 32'sd0; prefetch_row_r[i] <= 16'd0;
+                prefetch_scale_word_index_r[i] <= 32'd0;
+                prefetch_scale_lane_r[i] <= 3'd0;
+                prefetch_act_scale_r[i] <= 16'd0;
+                prefetch_weight_scale_r[i] <= 16'd0;
             end
             for (fi = 0; fi < 4; fi = fi + 1) begin
                 fifo_lane_valid[fi] <= 8'd0;
@@ -399,6 +468,65 @@ module SPU_VPU_Stream8 #(
             if (fifo_pop)
                 fifo_rd_ptr_r <= fifo_rd_ptr_r + 2'd1;
 
+            // Pull the next non-final P2 bundle out of FIFO while the active
+            // accumulators are busy.  It owns this look-ahead slot until all
+            // four scale pairs have been captured.
+            if (fifo_prefetch_pop) begin
+                prefetch_lane_valid_r <= fifo_lane_valid[fifo_rd_ptr_r];
+                for (i = 0; i < 8; i = i + 1) begin
+                    prefetch_raw_r[i] <= fifo_lane_data[fifo_rd_ptr_r][32*i +: 32];
+                    prefetch_row_r[i] <= fifo_lane_row[fifo_rd_ptr_r][16*i +: 16];
+                    prefetch_scale_word_index_r[i] <=
+                        fifo_scale_word_index[fifo_rd_ptr_r][32*i +: 32];
+                    prefetch_scale_lane_r[i] <= fifo_scale_lane[fifo_rd_ptr_r][3*i +: 3];
+                end
+                prefetch_block_r <= fifo_block[fifo_rd_ptr_r];
+                prefetch_group_blocks_r <= fifo_group_blocks[fifo_rd_ptr_r];
+                prefetch_last_block_r <= fifo_last_block[fifo_rd_ptr_r];
+                prefetch_clear_accum_r <= fifo_clear_accum[fifo_rd_ptr_r];
+                prefetch_job_id_r <= fifo_job_id[fifo_rd_ptr_r];
+                prefetch_bank_r <= fifo_bank[fifo_rd_ptr_r];
+                prefetch_pair_idx_r <= 2'd0;
+                prefetch_state_r <= PF_READ;
+            end
+
+            // Look-ahead scale reader.  It uses PARAM ports only when the
+            // active FSM is not reading/capturing scales or writing SPU_OUT.
+            // Keeping the same READ/CAPTURE cadence preserves the synchronous
+            // BRAM timing contract; the latency is hidden under S_WAIT.
+            if (!split_scale_enable) begin
+                case (prefetch_state_r)
+                    PF_READ: begin
+                        if (prefetch_mem_available)
+                            prefetch_state_r <= PF_CAPTURE;
+                    end
+                    PF_CAPTURE: begin
+                        if (prefetch_mem_available) begin
+                            if (prefetch_lane_valid_r[prefetch_lane0_sel]) begin
+                                prefetch_act_scale_r[prefetch_lane0_sel] <=
+                                    mem0_rdata[32*prefetch_lane0_scale_lane +: 16];
+                                prefetch_weight_scale_r[prefetch_lane0_sel] <=
+                                    mem0_rdata[32*prefetch_lane0_scale_lane+16 +: 16];
+                            end
+                            if (prefetch_lane_valid_r[prefetch_lane1_sel]) begin
+                                prefetch_act_scale_r[prefetch_lane1_sel] <=
+                                    mem1_rdata[32*prefetch_lane1_scale_lane +: 16];
+                                prefetch_weight_scale_r[prefetch_lane1_sel] <=
+                                    mem1_rdata[32*prefetch_lane1_scale_lane+16 +: 16];
+                            end
+                            if (prefetch_pair_idx_r == 2'd3) begin
+                                prefetch_pair_idx_r <= 2'd0;
+                                prefetch_state_r <= PF_READY;
+                            end else begin
+                                prefetch_pair_idx_r <= prefetch_pair_idx_r + 2'd1;
+                                prefetch_state_r <= PF_READ;
+                            end
+                        end
+                    end
+                    default: begin end
+                endcase
+            end
+
             case (state_r)
                 S_IDLE: begin
                     if (p3_done_seen_r && p3_bank_lock_valid) begin
@@ -440,7 +568,29 @@ module SPU_VPU_Stream8 #(
                             end
                             state_r <= S_READ;
                         end
-                    end else if (fifo_pop) begin
+                    end else if (prefetch_ready) begin
+                        // Scales are already captured, so bypass the normal
+                        // four READ/CAPTURE pairs and proceed directly to start.
+                        lane_valid_r <= prefetch_lane_valid_r;
+                        for (i = 0; i < 8; i = i + 1) begin
+                            raw_r[i] <= prefetch_raw_r[i];
+                            row_r[i] <= prefetch_row_r[i];
+                            scale_word_index_r[i] <= prefetch_scale_word_index_r[i];
+                            scale_lane_r[i] <= prefetch_scale_lane_r[i];
+                            act_scale_r[i] <= prefetch_act_scale_r[i];
+                            weight_scale_r[i] <= prefetch_weight_scale_r[i];
+                        end
+                        block_r <= prefetch_block_r;
+                        group_blocks_r <= prefetch_group_blocks_r;
+                        last_block_r <= prefetch_last_block_r;
+                        clear_accum_r <= prefetch_clear_accum_r;
+                        job_id_r <= prefetch_job_id_r;
+                        bank_r <= prefetch_bank_r;
+                        p3_r <= 1'b0;
+                        pair_idx_r <= 2'd0;
+                        prefetch_state_r <= PF_IDLE;
+                        state_r <= S_START;
+                    end else if (fifo_active_pop) begin
                         lane_valid_r <= fifo_lane_valid[fifo_rd_ptr_r];
                         for (i = 0; i < 8; i = i + 1) begin
                             raw_r[i] <= fifo_lane_data[fifo_rd_ptr_r][32*i +: 32];
