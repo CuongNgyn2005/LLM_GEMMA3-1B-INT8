@@ -13,6 +13,13 @@
  * zero before multiplication by the INT32 raw dot product.  The module rejects
  * negative, NaN, and infinity FP16 scales.  Zero scale is allowed for zero
  * blocks and contributes zero.
+ *
+ * A finite nonnegative FP16 value has an exact Q0.32 representation of an
+ * 11-bit significand shifted by a small integer amount.  Multiplying those
+ * significands first and applying the combined shift is bit-identical to the
+ * previous 64x64 Q0.32 product.  Input validation, FP16 decode and the
+ * accumulator-memory read are performed on the accepted start edge, leaving
+ * the product/alignment/raw-multiply register boundaries intact for timing.
  *-----------------------------------------------------------------------------
  */
 
@@ -44,49 +51,35 @@ module SPU_Q8_Scale_Accum #(
     output reg  [3:0]                        error_code
 );
 
-    localparam [3:0] S_IDLE           = 4'd0;
-    localparam [3:0] S_SCALE          = 4'd1;
-    localparam [3:0] S_PRODUCT_MUL    = 4'd2;
-    localparam [3:0] S_PRODUCT_CROSS  = 4'd3;
-    localparam [3:0] S_PRODUCT_MID    = 4'd4;
-    localparam [3:0] S_PRODUCT_FULL   = 4'd5;
-    localparam [3:0] S_PRODUCT_CLAMP  = 4'd6;
-    localparam [3:0] S_RAW_MUL        = 4'd7;
-    localparam [3:0] S_CONTRIB_Q16    = 4'd8;
-    localparam [3:0] S_ACCUM          = 4'd9;
+    localparam [2:0] S_IDLE          = 3'd0;
+    localparam [2:0] S_PRODUCT_MUL   = 3'd1;
+    localparam [2:0] S_PRODUCT_ALIGN = 3'd2;
+    localparam [2:0] S_RAW_MUL       = 3'd3;
+    localparam [2:0] S_ACCUM         = 3'd4;
 
     localparam [3:0] ERR_NONE      = 4'd0;
     localparam [3:0] ERR_BAD_SCALE = 4'd1;
     localparam [3:0] ERR_ROW_RANGE = 4'd2;
 
-    reg [3:0] state_r;
+    reg [2:0] state_r;
 
     reg signed [31:0] raw_r;
-    reg [15:0] act_scale_r;
-    reg [15:0] weight_scale_r;
     reg [ROW_ID_WIDTH-1:0] row_id_r;
-    reg clear_accum_r;
     reg last_block_r;
 
-    reg [63:0] act_scale_q32_r;
-    reg [63:0] weight_scale_q32_r;
-    // The scale product is split into four 32x32 partial products.  The
-    // partial, cross-term, and carry assembly registers keep each DSP chain
-    // within one clk_pl_0 cycle instead of inferring one long 64x64 path.
-    reg [63:0] product_scale_ll_r;
-    reg [63:0] product_scale_lh_r;
-    reg [63:0] product_scale_hl_r;
-    reg [63:0] product_scale_hh_r;
-    reg [64:0] product_scale_cross_r;
-    reg [65:0] product_scale_mid_r;
-    reg [127:0] product_scale_full_r;
-    // Keep this architectural pipeline boundary as fabric flip-flops.  If the
-    // register is absorbed into the following multiplier's DSP A/B input,
-    // product_scale_full_r drives the clamp logic and the distant DSP input in
-    // one cycle, creating the routed scale-product critical path.
+    reg [10:0] act_scale_sig_r;
+    reg [10:0] weight_scale_sig_r;
+    reg [5:0] act_scale_shift_r;
+    reg [5:0] weight_scale_shift_r;
+    reg [21:0] product_scale_sig_r;
+    reg [6:0] product_scale_shift_r;
+
+    // Keep a register boundary before the signed raw multiply.  Besides
+    // preserving timing margin, this keeps the compact scale-product rewrite
+    // local to the scale path and leaves the raw/contribution arithmetic
+    // bit-identical to the previous implementation.
     (* dont_touch = "yes" *) reg [63:0] product_scale_q32_r;
     reg signed [96:0] contribution_full_r;
-    reg signed [ACC_WIDTH-1:0] contribution_q16_r;
 
     (* ram_style = "block" *) reg signed [ACC_WIDTH-1:0] accum_mem [0:MAX_ROWS-1];
     reg signed [ACC_WIDTH-1:0] accum_prev_r;
@@ -99,58 +92,40 @@ module SPU_Q8_Scale_Accum #(
         end
     endfunction
 
-    function [63:0] fp16_to_q0_32;
+    // Exact significand used by fp16_to_q0_32:
+    //   normal    -> {1, frac}
+    //   subnormal -> {0, frac}
+    function [10:0] fp16_q32_significand;
         input [15:0] value;
-        reg [4:0] exp;
-        reg [9:0] frac;
-        reg [10:0] mantissa;
-        reg [63:0] shifted;
-        integer shift;
         begin
-            exp = value[14:10];
-            frac = value[9:0];
-            shifted = 64'd0;
-
-            if (exp == 5'd0) begin
-                // Subnormal half: frac * 2^-24.  In Q0.32 this is frac << 8.
-                fp16_to_q0_32 = {54'd0, frac} << 8;
-            end else begin
-                mantissa = {1'b1, frac};
-                shift = exp;
-                shift = shift + 7;
-                if (shift >= 0)
-                    shifted = {53'd0, mantissa} << shift;
-                else
-                    shifted = {53'd0, mantissa} >> (-shift);
-
-                fp16_to_q0_32 = shifted;
-            end
+            fp16_q32_significand =
+                (value[14:10] == 5'd0) ? {1'b0, value[9:0]} :
+                                         {1'b1, value[9:0]};
         end
     endfunction
 
-    wire row_in_range = (row_id_r < MAX_ROWS);
-    (* use_dsp = "yes" *) wire [63:0] product_scale_ll_w =
-        act_scale_q32_r[31:0] * weight_scale_q32_r[31:0];
-    (* use_dsp = "yes" *) wire [63:0] product_scale_lh_w =
-        act_scale_q32_r[31:0] * weight_scale_q32_r[63:32];
-    (* use_dsp = "yes" *) wire [63:0] product_scale_hl_w =
-        act_scale_q32_r[63:32] * weight_scale_q32_r[31:0];
-    (* use_dsp = "yes" *) wire [63:0] product_scale_hh_w =
-        act_scale_q32_r[63:32] * weight_scale_q32_r[63:32];
-    wire [64:0] product_scale_cross_w =
-        {1'b0, product_scale_lh_r} + {1'b0, product_scale_hl_r};
-    wire [65:0] product_scale_mid_w =
-        {34'd0, product_scale_ll_r[63:32]} +
-        {1'b0, product_scale_cross_r};
-    wire [64:0] product_scale_upper_w =
-        {1'b0, product_scale_hh_r} +
-        {31'd0, product_scale_mid_r[65:32]};
-    wire [127:0] product_scale_full_w = {
-        product_scale_upper_w[63:0],
-        product_scale_mid_r[31:0],
-        product_scale_ll_r[31:0]
-    };
-    wire product_scale_overflow_w = |product_scale_full_r[127:96];
+    // For finite nonnegative FP16 values:
+    //   fp16_to_q0_32(value) = significand << q32_shift
+    // Normal exponent e uses e+7; subnormals use the exact frac<<8 form.
+    function [5:0] fp16_q32_shift;
+        input [15:0] value;
+        begin
+            fp16_q32_shift =
+                (value[14:10] == 5'd0) ? 6'd8 :
+                                         ({1'b0, value[14:10]} + 6'd7);
+        end
+    endfunction
+
+    (* use_dsp = "yes" *) wire [21:0] product_scale_sig_w =
+        act_scale_sig_r * weight_scale_sig_r;
+    wire [6:0] product_scale_shift_w =
+        {1'b0, act_scale_shift_r} + {1'b0, weight_scale_shift_r};
+    wire [63:0] product_scale_sig_ext_w = {42'd0, product_scale_sig_r};
+    wire [63:0] product_scale_aligned_w =
+        (product_scale_shift_r >= 7'd32) ?
+            (product_scale_sig_ext_w << (product_scale_shift_r - 7'd32)) :
+            (product_scale_sig_ext_w >> (7'd32 - product_scale_shift_r));
+
     wire signed [96:0] contribution_mul_w =
         $signed(raw_r) * $signed({1'b0, product_scale_q32_r});
     wire signed [96:0] contribution_shifted_w =
@@ -158,7 +133,7 @@ module SPU_Q8_Scale_Accum #(
     wire signed [ACC_WIDTH-1:0] contribution_shifted_q16_w =
         contribution_shifted_w[ACC_WIDTH-1:0];
     wire signed [ACC_WIDTH-1:0] accum_next_w =
-        accum_prev_r + contribution_q16_r;
+        accum_prev_r + contribution_shifted_q16_w;
 
     assign busy = (state_r != S_IDLE);
 
@@ -166,24 +141,17 @@ module SPU_Q8_Scale_Accum #(
         if (!resetn) begin
             state_r <= S_IDLE;
             raw_r <= 32'sd0;
-            act_scale_r <= 16'd0;
-            weight_scale_r <= 16'd0;
             row_id_r <= {ROW_ID_WIDTH{1'b0}};
-            clear_accum_r <= 1'b0;
             last_block_r <= 1'b0;
-            accum_prev_r <= {ACC_WIDTH{1'b0}};
-            act_scale_q32_r <= 64'd0;
-            weight_scale_q32_r <= 64'd0;
-            product_scale_ll_r <= 64'd0;
-            product_scale_lh_r <= 64'd0;
-            product_scale_hl_r <= 64'd0;
-            product_scale_hh_r <= 64'd0;
-            product_scale_cross_r <= 65'd0;
-            product_scale_mid_r <= 66'd0;
-            product_scale_full_r <= 128'd0;
+            act_scale_sig_r <= 11'd0;
+            weight_scale_sig_r <= 11'd0;
+            act_scale_shift_r <= 6'd0;
+            weight_scale_shift_r <= 6'd0;
+            product_scale_sig_r <= 22'd0;
+            product_scale_shift_r <= 7'd0;
             product_scale_q32_r <= 64'd0;
             contribution_full_r <= 97'sd0;
-            contribution_q16_r <= {ACC_WIDTH{1'b0}};
+            accum_prev_r <= {ACC_WIDTH{1'b0}};
             entry_done <= 1'b0;
             out_valid <= 1'b0;
             out_row_id <= {ROW_ID_WIDTH{1'b0}};
@@ -197,75 +165,45 @@ module SPU_Q8_Scale_Accum #(
             case (state_r)
                 S_IDLE: begin
                     if (start) begin
-                        raw_r <= raw_in;
-                        act_scale_r <= act_scale_fp16;
-                        weight_scale_r <= weight_scale_fp16;
-                        row_id_r <= row_id;
-                        clear_accum_r <= clear_accum;
-                        last_block_r <= last_block;
-                        error <= 1'b0;
-                        error_code <= ERR_NONE;
-                        state_r <= S_SCALE;
-                    end
-                end
-
-                S_SCALE: begin
-                    if (!fp16_is_nonnegative_finite(act_scale_r) ||
-                        !fp16_is_nonnegative_finite(weight_scale_r)) begin
-                        error <= 1'b1;
-                        error_code <= ERR_BAD_SCALE;
-                        entry_done <= 1'b1;
-                        state_r <= S_IDLE;
-                    end else if (!row_in_range) begin
-                        error <= 1'b1;
-                        error_code <= ERR_ROW_RANGE;
-                        entry_done <= 1'b1;
-                        state_r <= S_IDLE;
-                    end else begin
-                        act_scale_q32_r <= fp16_to_q0_32(act_scale_r);
-                        weight_scale_q32_r <= fp16_to_q0_32(weight_scale_r);
-                        state_r <= S_PRODUCT_MUL;
+                        if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
+                            !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
+                            error <= 1'b1;
+                            error_code <= ERR_BAD_SCALE;
+                            entry_done <= 1'b1;
+                        end else if (row_id >= MAX_ROWS) begin
+                            error <= 1'b1;
+                            error_code <= ERR_ROW_RANGE;
+                            entry_done <= 1'b1;
+                        end else begin
+                            raw_r <= raw_in;
+                            row_id_r <= row_id;
+                            last_block_r <= last_block;
+                            act_scale_sig_r <= fp16_q32_significand(act_scale_fp16);
+                            weight_scale_sig_r <= fp16_q32_significand(weight_scale_fp16);
+                            act_scale_shift_r <= fp16_q32_shift(act_scale_fp16);
+                            weight_scale_shift_r <= fp16_q32_shift(weight_scale_fp16);
+                            accum_prev_r <= clear_accum ?
+                                            {ACC_WIDTH{1'b0}} : accum_mem[row_id];
+                            error <= 1'b0;
+                            error_code <= ERR_NONE;
+                            state_r <= S_PRODUCT_MUL;
+                        end
                     end
                 end
 
                 S_PRODUCT_MUL: begin
-                    product_scale_ll_r <= product_scale_ll_w;
-                    product_scale_lh_r <= product_scale_lh_w;
-                    product_scale_hl_r <= product_scale_hl_w;
-                    product_scale_hh_r <= product_scale_hh_w;
-                    accum_prev_r <= clear_accum_r ? {ACC_WIDTH{1'b0}} : accum_mem[row_id_r];
-                    state_r <= S_PRODUCT_CROSS;
+                    product_scale_sig_r <= product_scale_sig_w;
+                    product_scale_shift_r <= product_scale_shift_w;
+                    state_r <= S_PRODUCT_ALIGN;
                 end
 
-                S_PRODUCT_CROSS: begin
-                    product_scale_cross_r <= product_scale_cross_w;
-                    state_r <= S_PRODUCT_MID;
-                end
-
-                S_PRODUCT_MID: begin
-                    product_scale_mid_r <= product_scale_mid_w;
-                    state_r <= S_PRODUCT_FULL;
-                end
-
-                S_PRODUCT_FULL: begin
-                    product_scale_full_r <= product_scale_full_w;
-                    state_r <= S_PRODUCT_CLAMP;
-                end
-
-                S_PRODUCT_CLAMP: begin
-                    product_scale_q32_r <= product_scale_overflow_w ?
-                                           64'hffff_ffff_ffff_ffff :
-                                           product_scale_full_r[95:32];
+                S_PRODUCT_ALIGN: begin
+                    product_scale_q32_r <= product_scale_aligned_w;
                     state_r <= S_RAW_MUL;
                 end
 
                 S_RAW_MUL: begin
                     contribution_full_r <= contribution_mul_w;
-                    state_r <= S_CONTRIB_Q16;
-                end
-
-                S_CONTRIB_Q16: begin
-                    contribution_q16_r <= contribution_shifted_q16_w;
                     state_r <= S_ACCUM;
                 end
 

@@ -1727,15 +1727,13 @@ module Matrix_Vector_Multiplication #(
                                      (!pair_lane5_valid || (quad5_result_value_index < MAX_RESULT_VALUES_32)) &&
                                      (!pair_lane6_valid || (quad6_result_value_index < MAX_RESULT_VALUES_32)) &&
                                      (!pair_lane7_valid || (quad7_result_value_index < MAX_RESULT_VALUES_32))) begin
-                            if (raw_burst_mode) begin
-                                result_write_pending_r <= 1'b0;
-                                result_writes_done_r    <= 1'b1;
-                                spu_raw_valid           <= 1'b1;
-                            end else begin
-                                result_write_pending_r <= 1'b1;
-                                result_writes_done_r    <= 1'b0;
-                                spu_raw_valid           <= 1'b0;
-                            end
+                            // Raw P2 bundles are consumed by SPU, but the
+                            // Result window remains a host-visible contract.
+                            // Retire every raw lane through Result BRAM before
+                            // allowing the next block to advance.
+                            result_write_pending_r <= 1'b1;
+                            result_writes_done_r    <= 1'b0;
+                            spu_raw_valid           <= 1'b0;
                             result_write_addr_r <= result_wr_addr;
                             result_write_addr_bank_r[active_bank_r] <= result_wr_addr;
                             result_write_lane_r <= result_wr_lane;

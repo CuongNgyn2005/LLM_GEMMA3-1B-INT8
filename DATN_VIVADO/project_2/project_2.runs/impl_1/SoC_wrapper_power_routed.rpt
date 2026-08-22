@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
 -------------------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version     : Vivado v.2022.2 (win64) Build 3671981 Fri Oct 14 05:00:03 MDT 2022
-| Date             : Sat Aug 22 14:59:40 2026
+| Date             : Sat Aug 22 22:04:45 2026
 | Host             : Cuong-Desktop running 64-bit major release  (build 9200)
 | Command          : report_power -file SoC_wrapper_power_routed.rpt -pb SoC_wrapper_power_summary_routed.pb -rpx SoC_wrapper_power_routed.rpx
 | Design           : SoC_wrapper
@@ -30,14 +30,14 @@ Table of Contents
 ----------
 
 +--------------------------+--------------+
-| Total On-Chip Power (W)  | 4.618        |
+| Total On-Chip Power (W)  | 4.703        |
 | Design Power Budget (W)  | Unspecified* |
 | Power Budget Margin (W)  | NA           |
-| Dynamic (W)              | 3.911        |
-| Device Static (W)        | 0.707        |
+| Dynamic (W)              | 3.995        |
+| Device Static (W)        | 0.708        |
 | Effective TJA (C/W)      | 1.0          |
-| Max Ambient (C)          | 95.5         |
-| Junction Temperature (C) | 29.5         |
+| Max Ambient (C)          | 95.4         |
+| Junction Temperature (C) | 29.6         |
 | Confidence Level         | Medium       |
 | Setting File             | ---          |
 | Simulation Activity File | ---          |
@@ -52,25 +52,25 @@ Table of Contents
 +--------------------------+-----------+----------+-----------+-----------------+
 | On-Chip                  | Power (W) | Used     | Available | Utilization (%) |
 +--------------------------+-----------+----------+-----------+-----------------+
-| Clocks                   |     0.233 |        3 |       --- |             --- |
-| CLB Logic                |     0.207 |   103257 |       --- |             --- |
-|   LUT as Logic           |     0.105 |    37222 |    230400 |           16.16 |
-|   LUT as Distributed RAM |     0.080 |     3196 |    101760 |            3.14 |
+| Clocks                   |     0.246 |        3 |       --- |             --- |
+| CLB Logic                |     0.284 |    94633 |       --- |             --- |
+|   LUT as Logic           |     0.138 |    35885 |    230400 |           15.58 |
+|   LUT as Distributed RAM |     0.120 |     3556 |    101760 |            3.49 |
 |   LUT as Shift Register  |     0.014 |     1121 |    101760 |            1.10 |
-|   Register               |     0.006 |    48165 |    460800 |           10.45 |
-|   CARRY8                 |     0.003 |     1664 |     28800 |            5.78 |
+|   Register               |     0.006 |    43077 |    460800 |            9.35 |
+|   CARRY8                 |     0.005 |     1098 |     28800 |            3.81 |
 |   BUFG                   |    <0.001 |        2 |        64 |            3.13 |
-|   Others                 |     0.000 |      917 |       --- |             --- |
-|   F7/F8 Muxes            |     0.000 |     2973 |    230400 |            1.29 |
-| Signals                  |     0.203 |    89747 |       --- |             --- |
-| Block RAM                |     0.102 |    104.5 |       312 |           33.49 |
-| URAM                     |     0.398 |       64 |        96 |           66.67 |
-| DSPs                     |     0.123 |      406 |      1728 |           23.50 |
+|   Others                 |     0.000 |      914 |       --- |             --- |
+|   F7/F8 Muxes            |     0.000 |     1525 |    230400 |            0.66 |
+| Signals                  |     0.238 |    74531 |       --- |             --- |
+| Block RAM                |     0.105 |    104.5 |       312 |           33.49 |
+| URAM                     |     0.402 |       64 |        96 |           66.67 |
+| DSPs                     |     0.075 |      240 |      1728 |           13.89 |
 | PS8                      |     2.645 |        1 |       --- |             --- |
-| Static Power             |     0.707 |          |           |                 |
+| Static Power             |     0.708 |          |           |                 |
 |   PS Static              |     0.100 |          |           |                 |
-|   PL Static              |     0.607 |          |           |                 |
-| Total                    |     4.618 |          |           |                 |
+|   PL Static              |     0.608 |          |           |                 |
+| Total                    |     4.703 |          |           |                 |
 +--------------------------+-----------+----------+-----------+-----------------+
 
 
@@ -80,9 +80,9 @@ Table of Contents
 +-----------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
 | Source          | Voltage (V) | Total (A) | Dynamic (A) | Static (A) | Powerup (A) | Budget (A)  | Margin (A) |
 +-----------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
-| Vccint          |       0.850 |     1.646 |       1.480 |      0.166 |       NA    | Unspecified | NA         |
+| Vccint          |       0.850 |     1.746 |       1.579 |      0.167 |       NA    | Unspecified | NA         |
 | Vccint_io       |       0.850 |     0.071 |       0.000 |      0.071 |       NA    | Unspecified | NA         |
-| Vccbram         |       0.850 |     0.012 |       0.009 |      0.003 |       NA    | Unspecified | NA         |
+| Vccbram         |       0.850 |     0.013 |       0.010 |      0.003 |       NA    | Unspecified | NA         |
 | Vccaux          |       1.800 |     0.147 |       0.000 |      0.147 |       NA    | Unspecified | NA         |
 | Vccaux_io       |       1.800 |     0.055 |       0.000 |      0.055 |       NA    | Unspecified | NA         |
 | Vcco33          |       3.300 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
@@ -168,14 +168,14 @@ Table of Contents
 +-----------------------+-----------+
 | Name                  | Power (W) |
 +-----------------------+-----------+
-| SoC_wrapper           |     3.911 |
-|   SoC_i               |     3.911 |
-|     VPU_Top_0         |     0.985 |
-|       inst            |     0.985 |
-|     axi_smc           |     0.252 |
-|       inst            |     0.252 |
-|     zynq_ultra_ps_e_0 |     2.674 |
-|       inst            |     2.674 |
+| SoC_wrapper           |     3.995 |
+|   SoC_i               |     3.995 |
+|     VPU_Top_0         |     1.076 |
+|       inst            |     1.076 |
+|     axi_smc           |     0.265 |
+|       inst            |     0.265 |
+|     zynq_ultra_ps_e_0 |     2.654 |
+|       inst            |     2.654 |
 +-----------------------+-----------+
 
 
