@@ -8,7 +8,7 @@
 .Xil/
 *.cache/
 *.gen/
-*.runs/
+
 *.sim/
 *.hw/
 *.ip_user_files/
