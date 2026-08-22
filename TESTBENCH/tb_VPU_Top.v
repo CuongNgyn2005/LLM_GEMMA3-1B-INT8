@@ -824,8 +824,14 @@ module tb_VPU_Top;
                              dut.u_my_ip.map_rd_valid);
                     arvalid = 1'b0;
                 end
-                if (arvalid && arready)
+                if (arvalid && arready) begin
+                    // Keep ARVALID stable for the complete accepting rising
+                    // edge.  Deasserting it here races MY_IP's ar_fire
+                    // sampling block, which can otherwise lose the request
+                    // depending on simulator process ordering.
+                    @(negedge clk);
                     arvalid = 1'b0;
+                end
             end
 
             timeout = 0;
