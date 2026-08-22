@@ -2203,16 +2203,21 @@ module tb_VPU_Top;
             axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
             pair_inactive_weight_a_write_observed = 0;
             pair_weight_port_watch_enable = 1'b1;
-            // Replace the full inactive-bank row 0 with a deliberately
-            // different all-zero image while bank 0 is paired-active.  The
-            // later bank-1 launch must observe zero raw Q8 blocks only for
-            // this row; rows 1..3 remain the original golden image.
-            for (beat = 0; beat < 64; beat = beat + 1)
-                axi_write(WEIGHT_BASE + pair_weight_word_index(0, 64, beat) * 16,
-                          {DATA_WIDTH{1'b0}}, 16'hffff);
-            // AXI decode, core-write capture, and the local weight write
-            // register add several cycles before the A-port pulse appears.
-            repeat (20) @(posedge clk);
+            // One inactive-bank write proves the A-port route while the
+            // bank-0 job is live.  Do not spend an entire row-image transfer
+            // here: x8 issue can complete that small job before the following
+            // active-bank rejection checks would reach the core.
+            axi_write(WEIGHT_BASE + pair_weight_word_index(0, 64, 0) * 16,
+                      {DATA_WIDTH{1'b0}}, 16'hffff);
+            // The write crosses AXI decode, the local write register, and the
+            // 14-stage stride decoder.  Wait for the observable A-port pulse
+            // instead of coupling this check to a fixed pipeline latency.
+            timeout = 0;
+            while ((pair_inactive_weight_a_write_observed == 0) &&
+                   dut.u_my_ip.u_axi4_mapping.core_busy && (timeout < 80)) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+            end
             pair_weight_port_watch_enable = 1'b0;
             if (pair_inactive_weight_a_write_observed == 0)
                 fail("paired inactive-bank staging did not use weight port A");
@@ -2279,6 +2284,14 @@ module tb_VPU_Top;
                 fail("paired active-bank rejected write changed raw result");
             else
                 pass_count = pass_count + 1;
+
+            // The live-ownership checks above are complete.  Fill the full
+            // bank-1 row after bank 0 retires so the next launch separately
+            // proves persistence of the staged image.
+            axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
+            for (beat = 0; beat < 64; beat = beat + 1)
+                axi_write(WEIGHT_BASE + pair_weight_word_index(0, 64, beat) * 16,
+                          {DATA_WIDTH{1'b0}}, 16'hffff);
 
             // A second paired launch from the staged bank must expose the
             // altered row 0 and preserve the golden raw INT32 image for rows
