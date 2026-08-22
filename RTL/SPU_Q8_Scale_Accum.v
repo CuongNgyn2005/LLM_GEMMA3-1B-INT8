@@ -17,8 +17,9 @@
  * A finite nonnegative FP16 value has an exact Q0.32 representation of an
  * 11-bit significand shifted by a small integer amount.  Multiplying those
  * significands first and applying the combined shift is bit-identical to the
- * previous 64x64 Q0.32 product, while removing the serialized four-part
- * product/cross/mid/full/clamp sequence from the per-block service path.
+ * previous 64x64 Q0.32 product.  Input validation, FP16 decode and the
+ * accumulator-memory read are performed on the accepted start edge, leaving
+ * the product/alignment/raw-multiply register boundaries intact for timing.
  *-----------------------------------------------------------------------------
  */
 
@@ -50,24 +51,20 @@ module SPU_Q8_Scale_Accum #(
     output reg  [3:0]                        error_code
 );
 
-    localparam [3:0] S_IDLE          = 4'd0;
-    localparam [3:0] S_SCALE         = 4'd1;
-    localparam [3:0] S_PRODUCT_MUL   = 4'd2;
-    localparam [3:0] S_PRODUCT_ALIGN = 4'd3;
-    localparam [3:0] S_RAW_MUL       = 4'd4;
-    localparam [3:0] S_ACCUM         = 4'd5;
+    localparam [2:0] S_IDLE          = 3'd0;
+    localparam [2:0] S_PRODUCT_MUL   = 3'd1;
+    localparam [2:0] S_PRODUCT_ALIGN = 3'd2;
+    localparam [2:0] S_RAW_MUL       = 3'd3;
+    localparam [2:0] S_ACCUM         = 3'd4;
 
     localparam [3:0] ERR_NONE      = 4'd0;
     localparam [3:0] ERR_BAD_SCALE = 4'd1;
     localparam [3:0] ERR_ROW_RANGE = 4'd2;
 
-    reg [3:0] state_r;
+    reg [2:0] state_r;
 
     reg signed [31:0] raw_r;
-    reg [15:0] act_scale_r;
-    reg [15:0] weight_scale_r;
     reg [ROW_ID_WIDTH-1:0] row_id_r;
-    reg clear_accum_r;
     reg last_block_r;
 
     reg [10:0] act_scale_sig_r;
@@ -119,8 +116,6 @@ module SPU_Q8_Scale_Accum #(
         end
     endfunction
 
-    wire row_in_range = (row_id_r < MAX_ROWS);
-
     (* use_dsp = "yes" *) wire [21:0] product_scale_sig_w =
         act_scale_sig_r * weight_scale_sig_r;
     wire [6:0] product_scale_shift_w =
@@ -146,10 +141,7 @@ module SPU_Q8_Scale_Accum #(
         if (!resetn) begin
             state_r <= S_IDLE;
             raw_r <= 32'sd0;
-            act_scale_r <= 16'd0;
-            weight_scale_r <= 16'd0;
             row_id_r <= {ROW_ID_WIDTH{1'b0}};
-            clear_accum_r <= 1'b0;
             last_block_r <= 1'b0;
             act_scale_sig_r <= 11'd0;
             weight_scale_sig_r <= 11'd0;
@@ -173,38 +165,29 @@ module SPU_Q8_Scale_Accum #(
             case (state_r)
                 S_IDLE: begin
                     if (start) begin
-                        raw_r <= raw_in;
-                        act_scale_r <= act_scale_fp16;
-                        weight_scale_r <= weight_scale_fp16;
-                        row_id_r <= row_id;
-                        clear_accum_r <= clear_accum;
-                        last_block_r <= last_block;
-                        error <= 1'b0;
-                        error_code <= ERR_NONE;
-                        state_r <= S_SCALE;
-                    end
-                end
-
-                S_SCALE: begin
-                    if (!fp16_is_nonnegative_finite(act_scale_r) ||
-                        !fp16_is_nonnegative_finite(weight_scale_r)) begin
-                        error <= 1'b1;
-                        error_code <= ERR_BAD_SCALE;
-                        entry_done <= 1'b1;
-                        state_r <= S_IDLE;
-                    end else if (!row_in_range) begin
-                        error <= 1'b1;
-                        error_code <= ERR_ROW_RANGE;
-                        entry_done <= 1'b1;
-                        state_r <= S_IDLE;
-                    end else begin
-                        act_scale_sig_r <= fp16_q32_significand(act_scale_r);
-                        weight_scale_sig_r <= fp16_q32_significand(weight_scale_r);
-                        act_scale_shift_r <= fp16_q32_shift(act_scale_r);
-                        weight_scale_shift_r <= fp16_q32_shift(weight_scale_r);
-                        accum_prev_r <= clear_accum_r ?
-                                        {ACC_WIDTH{1'b0}} : accum_mem[row_id_r];
-                        state_r <= S_PRODUCT_MUL;
+                        if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
+                            !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
+                            error <= 1'b1;
+                            error_code <= ERR_BAD_SCALE;
+                            entry_done <= 1'b1;
+                        end else if (row_id >= MAX_ROWS) begin
+                            error <= 1'b1;
+                            error_code <= ERR_ROW_RANGE;
+                            entry_done <= 1'b1;
+                        end else begin
+                            raw_r <= raw_in;
+                            row_id_r <= row_id;
+                            last_block_r <= last_block;
+                            act_scale_sig_r <= fp16_q32_significand(act_scale_fp16);
+                            weight_scale_sig_r <= fp16_q32_significand(weight_scale_fp16);
+                            act_scale_shift_r <= fp16_q32_shift(act_scale_fp16);
+                            weight_scale_shift_r <= fp16_q32_shift(weight_scale_fp16);
+                            accum_prev_r <= clear_accum ?
+                                            {ACC_WIDTH{1'b0}} : accum_mem[row_id];
+                            error <= 1'b0;
+                            error_code <= ERR_NONE;
+                            state_r <= S_PRODUCT_MUL;
+                        end
                     end
                 end
 
