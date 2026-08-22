@@ -5,11 +5,12 @@
  * all valid rows then execute SPU_Q8_Scale_Accum in parallel.
  *
  * P2 bundles first enter a four-entry FIFO, then one look-ahead slot pipelines
- * the four PARAM read pairs.  The BRAM ports are synchronous, so request tags
- * are delayed alongside the one-cycle RAM return while the next pair is issued.
- * After fill, one pair is launched per clock.  A completed look-ahead bundle
- * can replace the active bundle directly when accumulation finishes, avoiding
- * an S_IDLE handoff bubble.  P3 retains its direct registered read protocol.
+ * the four PARAM read pairs. The synchronous BRAM return tags advance while
+ * the next pair is issued, so after fill one scale pair is launched per clock.
+ * A ready look-ahead bundle can start the eight accumulators on the same edge
+ * that it becomes the active bundle. If another FIFO entry exists, the
+ * look-ahead slot is replaced on that handoff edge. P3 retains its original
+ * direct registered read protocol and memory ownership rules.
  */
 `timescale 1ns/1ps
 
@@ -98,9 +99,9 @@ module SPU_VPU_Stream8 #(
 
     localparam [2:0] PF_IDLE     = 3'd0;
     localparam [2:0] PF_READ     = 3'd1;
-    localparam [2:0] PF_CAPTURE  = 3'd2; // retained encoding; P2 pipeline bypasses it
+    localparam [2:0] PF_CAPTURE  = 3'd2;
     localparam [2:0] PF_READY    = 3'd3;
-    localparam [2:0] PF_RESPONSE = 3'd4; // retained encoding; P2 pipeline bypasses it
+    localparam [2:0] PF_RESPONSE = 3'd4;
 
     reg [2:0] state_r;
     reg [1:0] pair_idx_r;
@@ -123,8 +124,6 @@ module SPU_VPU_Stream8 #(
     reg [15:0] p3_act_scale_r;
     reg [7:0] accum_start_r;
 
-    // Registered active-reader request/response boundary.  This path is kept
-    // for P3; P2 scale reads use the pipelined look-ahead path below.
     reg read_req_valid_r;
     reg read_req_lane0_valid_r;
     reg read_req_lane1_valid_r;
@@ -161,9 +160,6 @@ module SPU_VPU_Stream8 #(
     reg [15:0] write_req_lane0_row_r;
     reg [15:0] write_req_lane1_row_r;
 
-    // One P2 look-ahead slot.  req_* describes the RAM command that is being
-    // consumed by the synchronous PARAM BRAM. rsp_* is the matching tag stage
-    // used one clock later when mem*_rdata contains that request's data.
     reg [2:0] prefetch_state_r;
     reg [1:0] prefetch_pair_idx_r;
     reg [7:0] prefetch_lane_valid_r;
@@ -189,15 +185,14 @@ module SPU_VPU_Stream8 #(
     reg [31:0] prefetch_req_lane1_word_index_r;
     reg [2:0] prefetch_req_lane0_scale_lane_r;
     reg [2:0] prefetch_req_lane1_scale_lane_r;
-    reg prefetch_req_p3_r;
-    reg prefetch_req_scratch_valid_r;
-    reg [31:0] prefetch_req_scratch_index_r;
-    reg [2:0] prefetch_req_scratch_lane_r;
+    reg read_unused_prefetch_req_p3_r;
+    reg read_unused_prefetch_req_scratch_valid_r;
+    reg [31:0] read_unused_prefetch_req_scratch_index_r;
+    reg [2:0] read_unused_prefetch_req_scratch_lane_r;
     reg prefetch_req_last_r;
 
-    // Full-width response registers are retained for P3 structural stability;
-    // the P2 look-ahead pipeline consumes the registered BRAM outputs directly
-    // with the following response tags.
+    // Kept as registered fields so the structure remains friendly to the
+    // existing Vivado hierarchy; P2 only needs the tag subset below.
     reg [AXI_DATA_WIDTH-1:0] prefetch_rsp_mem0_data_r;
     reg [AXI_DATA_WIDTH-1:0] prefetch_rsp_mem1_data_r;
     reg [AXI_DATA_WIDTH-1:0] prefetch_rsp_scratch_data_r;
@@ -208,13 +203,11 @@ module SPU_VPU_Stream8 #(
     reg [2:0] prefetch_rsp_lane1_dest_r;
     reg [2:0] prefetch_rsp_lane0_scale_lane_r;
     reg [2:0] prefetch_rsp_lane1_scale_lane_r;
-    reg prefetch_rsp_p3_r;
-    reg prefetch_rsp_scratch_valid_r;
-    reg [2:0] prefetch_rsp_scratch_lane_r;
+    reg read_unused_prefetch_rsp_p3_r;
+    reg read_unused_prefetch_rsp_scratch_valid_r;
+    reg [2:0] read_unused_prefetch_rsp_scratch_lane_r;
     reg prefetch_rsp_last_r;
 
-    // Four-entry x8 bundle FIFO.  The existing depth is retained deliberately:
-    // the VPU raw interface already backpressures safely when this queue fills.
     reg [2:0] fifo_count_r;
     reg [1:0] fifo_wr_ptr_r;
     reg [1:0] fifo_rd_ptr_r;
@@ -290,12 +283,20 @@ module SPU_VPU_Stream8 #(
     wire prefetch_empty = (prefetch_state_r == PF_IDLE);
     wire prefetch_ready = (prefetch_state_r == PF_READY);
 
-    // Every P2 bundle goes through the same look-ahead scale reader.  It may
-    // dequeue while idle, while a non-final bundle accumulates, or on the edge
-    // that retires the fourth/final SPU_OUT write pair.  That last case is safe:
-    // the previous OUT command is consumed by RAM on this edge, while the new
-    // PARAM command assigned here is not consumed until the following edge.
-    wire fifo_prefetch_pop = !split_scale_enable && prefetch_empty &&
+    wire all_accum_idle = ((accum_busy & lane_valid_r) == 8'd0);
+    wire all_accum_done = ((accum_entry_done | ~lane_valid_r) == 8'hff);
+    wire any_accum_error = |(accum_error & lane_valid_r);
+
+    // P2 can consume a completed look-ahead bundle directly into the eight
+    // accumulator inputs.  The accumulator captures those prefetch registers
+    // on this edge while the active metadata registers are updated in parallel.
+    wire p2_prefetch_launch = !split_scale_enable && prefetch_ready &&
+                              (((state_r == S_IDLE) && all_accum_idle) ||
+                               ((state_r == S_WAIT) && all_accum_done &&
+                                !last_block_r));
+    wire prefetch_slot_open = prefetch_empty || p2_prefetch_launch;
+
+    wire fifo_prefetch_pop = !split_scale_enable && prefetch_slot_open &&
                              !command_busy && !fifo_empty &&
                              ((state_r == S_IDLE) ||
                               ((state_r == S_WAIT) && !last_block_r) ||
@@ -311,9 +312,6 @@ module SPU_VPU_Stream8 #(
     wire [3:0] accepted_lanes = popcount8(vpu_lane_valid);
     wire [2:0] tail_lane = highest_lane(vpu_lane_valid);
 
-    wire all_accum_idle = ((accum_busy & lane_valid_r) == 8'd0);
-    wire all_accum_done = ((accum_entry_done | ~lane_valid_r) == 8'hff);
-    wire any_accum_error = |(accum_error & lane_valid_r);
     wire stream_engine_idle = split_scale_enable ?
                               (state_r == S_IDLE) :
                               ((state_r == S_IDLE) && fifo_empty && prefetch_empty);
@@ -339,15 +337,22 @@ module SPU_VPU_Stream8 #(
     generate
         for (gi = 0; gi < 8; gi = gi + 1) begin : GEN_ACCUM8
             (* keep = "true" *) wire resetn_local;
+            wire launch_prefetch_lane = p2_prefetch_launch &&
+                                        prefetch_lane_valid_r[gi];
             assign resetn_local = resetn;
             SPU_Q8_Scale_Accum #(
                 .ROW_ID_WIDTH(16), .MAX_ROWS(MAX_ROWS),
                 .ACC_WIDTH(64), .FIXED_FRAC_BITS(16)
             ) u_accum (
-                .clk(clk), .resetn(resetn_local), .start(accum_start_r[gi]),
-                .raw_in(raw_r[gi]), .act_scale_fp16(act_scale_r[gi]),
-                .weight_scale_fp16(weight_scale_r[gi]), .row_id(row_r[gi]),
-                .clear_accum(clear_accum_r), .last_block(last_block_r),
+                .clk(clk),
+                .resetn(resetn_local),
+                .start(accum_start_r[gi] || launch_prefetch_lane),
+                .raw_in(p2_prefetch_launch ? prefetch_raw_r[gi] : raw_r[gi]),
+                .act_scale_fp16(p2_prefetch_launch ? prefetch_act_scale_r[gi] : act_scale_r[gi]),
+                .weight_scale_fp16(p2_prefetch_launch ? prefetch_weight_scale_r[gi] : weight_scale_r[gi]),
+                .row_id(p2_prefetch_launch ? prefetch_row_r[gi] : row_r[gi]),
+                .clear_accum(p2_prefetch_launch ? prefetch_clear_accum_r : clear_accum_r),
+                .last_block(p2_prefetch_launch ? prefetch_last_block_r : last_block_r),
                 .busy(accum_busy[gi]), .entry_done(accum_entry_done[gi]),
                 .out_valid(accum_out_valid[gi]),
                 .out_row_id(accum_out_row_bus[16*gi +: 16]),
@@ -415,9 +420,10 @@ module SPU_VPU_Stream8 #(
             prefetch_req_lane1_word_index_r <= 32'd0;
             prefetch_req_lane0_scale_lane_r <= 3'd0;
             prefetch_req_lane1_scale_lane_r <= 3'd0;
-            prefetch_req_p3_r <= 1'b0; prefetch_req_scratch_valid_r <= 1'b0;
-            prefetch_req_scratch_index_r <= 32'd0;
-            prefetch_req_scratch_lane_r <= 3'd0;
+            read_unused_prefetch_req_p3_r <= 1'b0;
+            read_unused_prefetch_req_scratch_valid_r <= 1'b0;
+            read_unused_prefetch_req_scratch_index_r <= 32'd0;
+            read_unused_prefetch_req_scratch_lane_r <= 3'd0;
             prefetch_req_last_r <= 1'b0;
             prefetch_rsp_mem0_data_r <= {AXI_DATA_WIDTH{1'b0}};
             prefetch_rsp_mem1_data_r <= {AXI_DATA_WIDTH{1'b0}};
@@ -427,15 +433,16 @@ module SPU_VPU_Stream8 #(
             prefetch_rsp_lane0_dest_r <= 3'd0; prefetch_rsp_lane1_dest_r <= 3'd0;
             prefetch_rsp_lane0_scale_lane_r <= 3'd0;
             prefetch_rsp_lane1_scale_lane_r <= 3'd0;
-            prefetch_rsp_p3_r <= 1'b0; prefetch_rsp_scratch_valid_r <= 1'b0;
-            prefetch_rsp_scratch_lane_r <= 3'd0;
+            read_unused_prefetch_rsp_p3_r <= 1'b0;
+            read_unused_prefetch_rsp_scratch_valid_r <= 1'b0;
+            read_unused_prefetch_rsp_scratch_lane_r <= 3'd0;
             prefetch_rsp_last_r <= 1'b0;
             mem0_en <= 1'b0; mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
             mem0_index <= 32'd0; mem0_wdata <= {AXI_DATA_WIDTH{1'b0}};
-            mem0_wstrb <= {(AXI_DATA_WIDTH/8)-1+1{1'b1}};
+            mem0_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
             mem1_en <= 1'b0; mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
             mem1_index <= 32'd0; mem1_wdata <= {AXI_DATA_WIDTH{1'b0}};
-            mem1_wstrb <= {(AXI_DATA_WIDTH/8)-1+1{1'b1}};
+            mem1_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
             mem3_scratch_en <= 1'b0; mem3_scratch_index <= 32'd0;
             write_count <= 4'd0;
             for (i = 0; i < 8; i = i + 1) begin
@@ -499,14 +506,12 @@ module SPU_VPU_Stream8 #(
                 fifo_bank[fifo_wr_ptr_r] <= vpu_bank;
                 fifo_p3[fifo_wr_ptr_r] <= 1'b0;
                 fifo_wr_ptr_r <= fifo_wr_ptr_r + 2'd1;
-
                 stream_count <= stream_count + accepted_lanes;
                 stream_last_raw <= vpu_lane_data[32*tail_lane +: 32];
                 stream_last_meta <= {vpu_clear_accum,vpu_last_block,
                                      vpu_block[13:0],vpu_lane_row[16*tail_lane +: 16]};
                 stream_last_job <= vpu_job_id;
                 stream_last_bank <= {31'd0,vpu_bank};
-
                 if (!fifo_pop &&
                     (stream_fifo_high_water < {29'd0,(fifo_count_r + 3'd1)}))
                     stream_fifo_high_water <= {29'd0,(fifo_count_r + 3'd1)};
@@ -520,6 +525,9 @@ module SPU_VPU_Stream8 #(
             if (fifo_pop)
                 fifo_rd_ptr_r <= fifo_rd_ptr_r + 2'd1;
 
+            // A pop may fill an empty prefetch slot or replace a slot that is
+            // being launched this cycle. RHS values still refer to the old
+            // prefetch bundle, so simultaneous launch/refill preserves FIFO order.
             if (fifo_prefetch_pop) begin
                 prefetch_lane_valid_r <= fifo_lane_valid[fifo_rd_ptr_r];
                 for (i = 0; i < 8; i = i + 1) begin
@@ -545,10 +553,6 @@ module SPU_VPU_Stream8 #(
                 prefetch_req_lane1_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
                 prefetch_req_lane0_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][2:0];
                 prefetch_req_lane1_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][5:3];
-                prefetch_req_p3_r <= 1'b0;
-                prefetch_req_scratch_valid_r <= 1'b0;
-                prefetch_req_scratch_index_r <= 32'd0;
-                prefetch_req_scratch_lane_r <= 3'd0;
                 prefetch_req_last_r <= 1'b0;
                 prefetch_rsp_valid_r <= 1'b0;
                 prefetch_rsp_last_r <= 1'b0;
@@ -562,12 +566,6 @@ module SPU_VPU_Stream8 #(
                 prefetch_state_r <= PF_READ;
             end
 
-            // P2 PARAM pipeline.  A command assigned at edge N is consumed by
-            // SPU_Local_Memory at N+1 and is visible to this FSM at N+2.  req
-            // tags therefore move to rsp tags while the next pair is issued;
-            // on the following clock mem*_rdata and rsp tags refer to the same
-            // pair.  If memory ownership is unavailable, both stages simply
-            // hold and the synchronous RAM output remains stable.
             if (!split_scale_enable) begin
                 case (prefetch_state_r)
                     PF_READ: begin
@@ -604,13 +602,9 @@ module SPU_VPU_Stream8 #(
                                 prefetch_rsp_lane1_dest_r <= prefetch_req_lane1_dest_r;
                                 prefetch_rsp_lane0_scale_lane_r <= prefetch_req_lane0_scale_lane_r;
                                 prefetch_rsp_lane1_scale_lane_r <= prefetch_req_lane1_scale_lane_r;
-                                prefetch_rsp_p3_r <= 1'b0;
-                                prefetch_rsp_scratch_valid_r <= 1'b0;
-                                prefetch_rsp_scratch_lane_r <= 3'd0;
                                 prefetch_rsp_last_r <= prefetch_req_last_r;
 
                                 if (prefetch_req_valid_r && !prefetch_req_last_r) begin
-                                    prefetch_req_valid_r <= 1'b1;
                                     prefetch_req_lane0_valid_r <=
                                         prefetch_lane_valid_r[{(prefetch_pair_idx_r + 2'd1),1'b0}];
                                     prefetch_req_lane1_valid_r <=
@@ -725,7 +719,7 @@ module SPU_VPU_Stream8 #(
                             end
                             state_r <= S_READ;
                         end
-                    end else if (prefetch_ready) begin
+                    end else if (p2_prefetch_launch) begin
                         lane_valid_r <= prefetch_lane_valid_r;
                         for (i = 0; i < 8; i = i + 1) begin
                             raw_r[i] <= prefetch_raw_r[i];
@@ -743,8 +737,9 @@ module SPU_VPU_Stream8 #(
                         bank_r <= prefetch_bank_r;
                         p3_r <= 1'b0;
                         pair_idx_r <= 2'd0;
-                        prefetch_state_r <= PF_IDLE;
-                        state_r <= S_START;
+                        if (!fifo_prefetch_pop)
+                            prefetch_state_r <= PF_IDLE;
+                        state_r <= S_WAIT;
                     end
                 end
 
@@ -848,6 +843,7 @@ module SPU_VPU_Stream8 #(
                     end
                 end
 
+                // S_START is now only needed by the retained P3 active-reader path.
                 S_START: begin
                     if (all_accum_idle) begin
                         accum_start_r <= lane_valid_r;
@@ -884,7 +880,7 @@ module SPU_VPU_Stream8 #(
                                            accum_out_q16_bus[127:64],row_r[1]};
                             mem1_wstrb <= 16'h03ff;
                             state_r <= S_WRITE;
-                        end else if (prefetch_ready) begin
+                        end else if (p2_prefetch_launch) begin
                             lane_valid_r <= prefetch_lane_valid_r;
                             for (i = 0; i < 8; i = i + 1) begin
                                 raw_r[i] <= prefetch_raw_r[i];
@@ -902,8 +898,9 @@ module SPU_VPU_Stream8 #(
                             bank_r <= prefetch_bank_r;
                             p3_r <= 1'b0;
                             pair_idx_r <= 2'd0;
-                            prefetch_state_r <= PF_IDLE;
-                            state_r <= S_START;
+                            if (!fifo_prefetch_pop)
+                                prefetch_state_r <= PF_IDLE;
+                            state_r <= S_WAIT;
                         end else begin
                             state_r <= S_IDLE;
                         end
