@@ -6,7 +6,7 @@
 <Project Version="7" Minor="61" Path="D:/DOAN/DATN_RTL/DATN_VIVADO/project_2/project_2.xpr">
   <DefaultLaunch Dir="$PRUNDIR"/>
   <Configuration>
-    <Option Name="Id" Val="1e274da3d0d84d7c82d90dcbab94d78c"/>
+    <Option Name="Id" Val="4e7102985ada426b8bfe9549d15426ec"/>
     <Option Name="Part" Val="xczu7ev-ffvc1156-2-e"/>
     <Option Name="CompiledLibDir" Val="$PCACHEDIR/compile_simlib"/>
     <Option Name="CompiledLibDirXSim" Val=""/>
@@ -112,181 +112,145 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/AXI4_Mapping.v">
+      <File Path="$PPRDIR/../../RTL/AXI4_Mapping.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/AXI4_Mapping.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/Dual_Port_BRAM.v">
+      <File Path="$PPRDIR/../../RTL/Dual_Port_BRAM.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/Dual_Port_BRAM.v"/>
-          <Attr Name="ImportTime" Val="1786276964"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/MY_IP.v">
+      <File Path="$PPRDIR/../../RTL/MY_IP.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/MY_IP.v"/>
-          <Attr Name="ImportTime" Val="1786276964"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/Matrix_Vector_Multiplication.v">
+      <File Path="$PPRDIR/../../RTL/Matrix_Vector_Multiplication.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/Matrix_Vector_Multiplication.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/PMAU_Full.v">
+      <File Path="$PPRDIR/../../RTL/PMAU_Full.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/PMAU_Full.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_Controller.v">
+      <File Path="$PPRDIR/../../RTL/SPU_Controller.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_Controller.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_Local_Memory.v">
+      <File Path="$PPRDIR/../../RTL/SPU_Local_Memory.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_Local_Memory.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_Q8_Scale_Accum.v">
+      <File Path="$PPRDIR/../../RTL/SPU_Q8_Scale_Accum.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_Q8_Scale_Accum.v"/>
-          <Attr Name="ImportTime" Val="1786610508"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_Quantize_Q8_0.v">
+      <File Path="$PPRDIR/../../RTL/SPU_Quantize_Q8_0.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_Quantize_Q8_0.v"/>
-          <Attr Name="ImportTime" Val="1786276964"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_RMSInv_Engine.v">
+      <File Path="$PPRDIR/../../RTL/SPU_RMSInv_Engine.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_RMSInv_Engine.v"/>
-          <Attr Name="ImportTime" Val="1786276964"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_RMSNorm.v">
+      <File Path="$PPRDIR/../../RTL/SPU_RMSNorm.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_RMSNorm.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_RoPE.v">
+      <File Path="$PPRDIR/../../RTL/SPU_RoPE.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_RoPE.v"/>
-          <Attr Name="ImportTime" Val="1786276964"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_SiLU_Mul.v">
+      <File Path="$PPRDIR/../../RTL/SPU_SiLU_Mul.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_SiLU_Mul.v"/>
-          <Attr Name="ImportTime" Val="1786276964"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_Softmax.v">
+      <File Path="$PPRDIR/../../RTL/SPU_Softmax.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_Softmax.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_Top.v">
+      <File Path="$PPRDIR/../../RTL/SPU_Top.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_Top.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/SPU_VPU_Stream8.v">
+      <File Path="$PPRDIR/../../RTL/SPU_VPU_Stream8.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/SPU_VPU_Stream8.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/VPU_Result_Requantizer.v">
+      <File Path="$PPRDIR/../../RTL/VPU_Result_Requantizer.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/VPU_Result_Requantizer.v"/>
-          <Attr Name="ImportTime" Val="1786276964"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/imports/RTL/VPU_Top.v">
+      <File Path="$PPRDIR/../../RTL/VPU_Top.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../RTL/VPU_Top.v"/>
-          <Attr Name="ImportTime" Val="1786276964"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
@@ -307,11 +271,8 @@
       </Config>
     </FileSet>
     <FileSet Name="sim_1" Type="SimulationSrcs" RelSrcDir="$PSRCDIR/sim_1" RelGenDir="$PGENDIR/sim_1">
-      <File Path="$PSRCDIR/sim_1/imports/TESTBENCH/tb_VPU_SPU8_integration.v">
+      <File Path="$PPRDIR/../../TESTBENCH/tb_VPU_SPU8_integration.v">
         <FileInfo>
-          <Attr Name="AutoDisabled" Val="1"/>
-          <Attr Name="ImportPath" Val="$PPRDIR/../../TESTBENCH/tb_VPU_SPU8_integration.v"/>
-          <Attr Name="ImportTime" Val="1786797574"/>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
@@ -319,9 +280,8 @@
       </File>
       <Config>
         <Option Name="DesignMode" Val="RTL"/>
-        <Option Name="TopModule" Val="VPU_Top"/>
+        <Option Name="TopModule" Val="tb_VPU_SPU8_integration"/>
         <Option Name="TopLib" Val="xil_defaultlib"/>
-        <Option Name="TopAutoSet" Val="TRUE"/>
         <Option Name="TransportPathDelay" Val="0"/>
         <Option Name="TransportIntDelay" Val="0"/>
         <Option Name="SelectedSimModel" Val="rtl"/>

@@ -447,7 +447,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>7b6119d0</spirit:value>
+            <spirit:value>9c759c83</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -466,7 +466,22 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>7b6119d0</spirit:value>
+            <spirit:value>9c759c83</spirit:value>
+          </spirit:parameter>
+        </spirit:parameters>
+      </spirit:view>
+      <spirit:view>
+        <spirit:name>xilinx_testbench</spirit:name>
+        <spirit:displayName>Test Bench</spirit:displayName>
+        <spirit:envIdentifier>:vivado.xilinx.com:simulation.testbench</spirit:envIdentifier>
+        <spirit:modelName>tb_VPU_SPU8_integration</spirit:modelName>
+        <spirit:fileSetRef>
+          <spirit:localName>xilinx_testbench_view_fileset</spirit:localName>
+        </spirit:fileSetRef>
+        <spirit:parameters>
+          <spirit:parameter>
+            <spirit:name>viewChecksum</spirit:name>
+            <spirit:value>2487f26b</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -1399,77 +1414,95 @@
         <spirit:userFileType>CELL_NAME_u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[0].u_mult_gen_0/mult_gen_0</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/AXI4_Mapping.v</spirit:name>
+        <spirit:name>src/AXI4_Mapping.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/Dual_Port_BRAM.v</spirit:name>
+        <spirit:name>src/Dual_Port_BRAM.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/MY_IP.v</spirit:name>
+        <spirit:name>src/MY_IP.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/Matrix_Vector_Multiplication.v</spirit:name>
+        <spirit:name>src/Matrix_Vector_Multiplication.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/PMAU_Full.v</spirit:name>
+        <spirit:name>src/PMAU_Full.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Controller.v</spirit:name>
+        <spirit:name>src/SPU_Controller.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Local_Memory.v</spirit:name>
+        <spirit:name>src/SPU_Local_Memory.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Q8_Scale_Accum.v</spirit:name>
+        <spirit:name>src/SPU_Q8_Scale_Accum.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Quantize_Q8_0.v</spirit:name>
+        <spirit:name>src/SPU_Quantize_Q8_0.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_RMSInv_Engine.v</spirit:name>
+        <spirit:name>src/SPU_RMSInv_Engine.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_RMSNorm.v</spirit:name>
+        <spirit:name>src/SPU_RMSNorm.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_RoPE.v</spirit:name>
+        <spirit:name>src/SPU_RoPE.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_SiLU_Mul.v</spirit:name>
+        <spirit:name>src/SPU_SiLU_Mul.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Softmax.v</spirit:name>
+        <spirit:name>src/SPU_Softmax.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Top.v</spirit:name>
+        <spirit:name>src/SPU_Top.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_VPU_Stream8.v</spirit:name>
+        <spirit:name>src/SPU_VPU_Stream8.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/VPU_Result_Requantizer.v</spirit:name>
+        <spirit:name>src/VPU_Result_Requantizer.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/VPU_Top.v</spirit:name>
+        <spirit:name>src/VPU_Top.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
         <spirit:userFileType>CHECKSUM_7c2ef73b</spirit:userFileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
     </spirit:fileSet>
     <spirit:fileSet>
@@ -1490,76 +1523,94 @@
         <spirit:userFileType>CELL_NAME_u_my_ip/u_axi4_mapping/u_gemv/u_pmau/GEN_MULT[0].u_mult_gen_0/mult_gen_0</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/AXI4_Mapping.v</spirit:name>
+        <spirit:name>src/AXI4_Mapping.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/Dual_Port_BRAM.v</spirit:name>
+        <spirit:name>src/Dual_Port_BRAM.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/MY_IP.v</spirit:name>
+        <spirit:name>src/MY_IP.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/Matrix_Vector_Multiplication.v</spirit:name>
+        <spirit:name>src/Matrix_Vector_Multiplication.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/PMAU_Full.v</spirit:name>
+        <spirit:name>src/PMAU_Full.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Controller.v</spirit:name>
+        <spirit:name>src/SPU_Controller.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Local_Memory.v</spirit:name>
+        <spirit:name>src/SPU_Local_Memory.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Q8_Scale_Accum.v</spirit:name>
+        <spirit:name>src/SPU_Q8_Scale_Accum.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Quantize_Q8_0.v</spirit:name>
+        <spirit:name>src/SPU_Quantize_Q8_0.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_RMSInv_Engine.v</spirit:name>
+        <spirit:name>src/SPU_RMSInv_Engine.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_RMSNorm.v</spirit:name>
+        <spirit:name>src/SPU_RMSNorm.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_RoPE.v</spirit:name>
+        <spirit:name>src/SPU_RoPE.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_SiLU_Mul.v</spirit:name>
+        <spirit:name>src/SPU_SiLU_Mul.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Softmax.v</spirit:name>
+        <spirit:name>src/SPU_Softmax.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_Top.v</spirit:name>
+        <spirit:name>src/SPU_Top.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/SPU_VPU_Stream8.v</spirit:name>
+        <spirit:name>src/SPU_VPU_Stream8.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/VPU_Result_Requantizer.v</spirit:name>
+        <spirit:name>src/VPU_Result_Requantizer.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>project_2.srcs/sources_1/imports/RTL/VPU_Top.v</spirit:name>
+        <spirit:name>src/VPU_Top.v</spirit:name>
         <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
     </spirit:fileSet>
     <spirit:fileSet>
@@ -1571,6 +1622,17 @@
           </xilinx:componentRef>
         </xilinx:subCoreRef>
       </spirit:vendorExtensions>
+    </spirit:fileSet>
+    <spirit:fileSet>
+      <spirit:name>xilinx_testbench_view_fileset</spirit:name>
+      <spirit:file>
+        <spirit:name>src/tb_VPU_SPU8_integration.v</spirit:name>
+        <spirit:fileType>verilogSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
+        <spirit:userFileType>USED_IN_implementation</spirit:userFileType>
+        <spirit:userFileType>USED_IN_simulation</spirit:userFileType>
+        <spirit:userFileType>USED_IN_synthesis</spirit:userFileType>
+      </spirit:file>
     </spirit:fileSet>
     <spirit:fileSet>
       <spirit:name>xilinx_xpgui_view_fileset</spirit:name>
@@ -1698,13 +1760,13 @@
         <xilinx:xpmLibrary>XPM_MEMORY</xilinx:xpmLibrary>
       </xilinx:xpmLibraries>
       <xilinx:coreRevision>2</xilinx:coreRevision>
-      <xilinx:coreCreationDateTime>2026-08-15T12:43:31Z</xilinx:coreCreationDateTime>
+      <xilinx:coreCreationDateTime>2026-08-22T05:33:14Z</xilinx:coreCreationDateTime>
     </xilinx:coreExtensions>
     <xilinx:packagingInfo>
       <xilinx:xilinxVersion>2022.2</xilinx:xilinxVersion>
       <xilinx:checksum xilinx:scope="busInterfaces" xilinx:value="cd624fc7"/>
       <xilinx:checksum xilinx:scope="memoryMaps" xilinx:value="05cf8784"/>
-      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="0ef8d47c"/>
+      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="ef83612c"/>
       <xilinx:checksum xilinx:scope="ports" xilinx:value="4d9f5675"/>
       <xilinx:checksum xilinx:scope="hdlParameters" xilinx:value="994a0ed7"/>
       <xilinx:checksum xilinx:scope="parameters" xilinx:value="685bb714"/>

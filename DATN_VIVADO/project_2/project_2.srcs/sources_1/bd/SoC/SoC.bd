@@ -11,25 +11,12 @@
       "validated": "true"
     },
     "design_tree": {
-      "VPU_Top_0": "",
       "zynq_ultra_ps_e_0": "",
+      "VPU_Top_0": "",
       "axi_smc": "",
       "rst_ps8_0_100M": ""
     },
     "components": {
-      "VPU_Top_0": {
-        "vlnv": "xilinx.com:user:VPU_Top:1.0",
-        "xci_name": "SoC_VPU_Top_0_0",
-        "xci_path": "ip\\SoC_VPU_Top_0_0\\SoC_VPU_Top_0_0.xci",
-        "inst_hier_path": "VPU_Top_0",
-        "interface_ports": {
-          "s00_axi": {
-            "vlnv": "xilinx.com:interface:aximm_rtl:1.0",
-            "mode": "Slave",
-            "memory_map_ref": "s00_axi"
-          }
-        }
-      },
       "zynq_ultra_ps_e_0": {
         "vlnv": "xilinx.com:ip:zynq_ultra_ps_e:3.4",
         "xci_name": "SoC_zynq_ultra_ps_e_0_0",
@@ -875,7 +862,7 @@
             },
             "parameters": {
               "master_id": {
-                "value": "1"
+                "value": "2"
               }
             }
           },
@@ -890,7 +877,7 @@
             },
             "parameters": {
               "master_id": {
-                "value": "2"
+                "value": "1"
               }
             }
           }
@@ -963,6 +950,19 @@
                 }
               }
             }
+          }
+        }
+      },
+      "VPU_Top_0": {
+        "vlnv": "xilinx.com:user:VPU_Top:1.0",
+        "xci_name": "SoC_VPU_Top_0_0",
+        "xci_path": "ip\\SoC_VPU_Top_0_0\\SoC_VPU_Top_0_0.xci",
+        "inst_hier_path": "VPU_Top_0",
+        "interface_ports": {
+          "s00_axi": {
+            "vlnv": "xilinx.com:interface:aximm_rtl:1.0",
+            "mode": "Slave",
+            "memory_map_ref": "s00_axi"
           }
         }
       },
