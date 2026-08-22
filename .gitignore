@@ -1,6 +1,17 @@
-# Vivado generated files
+# Vivado generated/heavy files - ignore when pushing
+*.dcb
+*.dcp
 *.wdb
 *.jou
+*.wdf
+
+.Xil/
+*.cache/
+*.gen/
+*.runs/
+*.sim/
+*.hw/
+*.ip_user_files/
 
 *.pb
 *.str
