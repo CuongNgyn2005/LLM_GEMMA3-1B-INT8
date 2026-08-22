@@ -26,8 +26,10 @@
  * current accumulation commits.  S_ACCUM accepts that next entry directly and
  * bypasses accum_next_w when it targets the same row, reducing the steady P2
  * start interval from five clocks to four without collapsing DSP stages.
- * Error completion is held while idle until a new start is accepted so one
- * bad lane cannot deadlock an x8 bundle waiting for coincident done pulses.
+ * Invalid entries traverse the same control latency as valid entries and pulse
+ * completion at the matching non-final/final boundary.  This keeps paired/x8
+ * lanes synchronized without leaving a stale completion asserted into the next
+ * command.  Invalid entries never update accumulator RAM or publish an output.
  *-----------------------------------------------------------------------------
  */
 
@@ -74,6 +76,7 @@ module SPU_Q8_Scale_Accum #(
     reg signed [31:0] raw_r;
     reg [ROW_ID_WIDTH-1:0] row_id_r;
     reg last_block_r;
+    reg pending_error_r;
 
     reg [10:0] act_scale_sig_r;
     reg [10:0] weight_scale_sig_r;
@@ -151,6 +154,7 @@ module SPU_Q8_Scale_Accum #(
             raw_r <= 32'sd0;
             row_id_r <= {ROW_ID_WIDTH{1'b0}};
             last_block_r <= 1'b0;
+            pending_error_r <= 1'b0;
             act_scale_sig_r <= 11'd0;
             weight_scale_sig_r <= 11'd0;
             act_scale_shift_r <= 6'd0;
@@ -172,109 +176,158 @@ module SPU_Q8_Scale_Accum #(
 
             case (state_r)
                 S_IDLE: begin
-                    // Keep an error completion visible until the producer has
-                    // a chance to retire the faulty lane. A later accepted
-                    // valid start clears the sticky error/done state.
-                    if (error)
-                        entry_done <= 1'b1;
-
                     if (start) begin
+                        last_block_r <= last_block;
                         if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
                             !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
+                            pending_error_r <= 1'b1;
                             error <= 1'b1;
                             error_code <= ERR_BAD_SCALE;
-                            entry_done <= 1'b1;
+                            state_r <= S_PRODUCT_MUL;
                         end else if (row_id >= MAX_ROWS) begin
+                            pending_error_r <= 1'b1;
                             error <= 1'b1;
                             error_code <= ERR_ROW_RANGE;
-                            entry_done <= 1'b1;
+                            state_r <= S_PRODUCT_MUL;
                         end else begin
                             raw_r <= raw_in;
                             row_id_r <= row_id;
-                            last_block_r <= last_block;
                             act_scale_sig_r <= fp16_q32_significand(act_scale_fp16);
                             weight_scale_sig_r <= fp16_q32_significand(weight_scale_fp16);
                             act_scale_shift_r <= fp16_q32_shift(act_scale_fp16);
                             weight_scale_shift_r <= fp16_q32_shift(weight_scale_fp16);
                             accum_prev_r <= clear_accum ?
                                             {ACC_WIDTH{1'b0}} : accum_mem[row_id];
+                            pending_error_r <= 1'b0;
                             error <= 1'b0;
                             error_code <= ERR_NONE;
-                            entry_done <= 1'b0;
                             state_r <= S_PRODUCT_MUL;
                         end
                     end
                 end
 
                 S_PRODUCT_MUL: begin
-                    product_scale_sig_r <= product_scale_sig_w;
-                    product_scale_shift_r <= product_scale_shift_w;
+                    if (!pending_error_r) begin
+                        product_scale_sig_r <= product_scale_sig_w;
+                        product_scale_shift_r <= product_scale_shift_w;
+                    end
                     state_r <= S_PRODUCT_ALIGN;
                 end
 
                 S_PRODUCT_ALIGN: begin
-                    product_scale_q32_r <= product_scale_aligned_w;
+                    if (!pending_error_r)
+                        product_scale_q32_r <= product_scale_aligned_w;
                     state_r <= S_RAW_MUL;
                 end
 
                 S_RAW_MUL: begin
-                    contribution_full_r <= contribution_mul_w;
-                    // A non-final block has no output payload to capture.  Its
-                    // contribution is fully registered here, so advertise that
-                    // the stream may present the next block during S_ACCUM.
-                    if (!last_block_r)
-                        entry_done <= 1'b1;
+                    if (pending_error_r) begin
+                        // Match the normal non-final completion cycle so an
+                        // invalid lane stays aligned with valid lanes in an x8 bundle.
+                        if (!last_block_r)
+                            entry_done <= 1'b1;
+                    end else begin
+                        contribution_full_r <= contribution_mul_w;
+                        // A non-final block has no output payload to capture.  Its
+                        // contribution is fully registered here, so advertise that
+                        // the stream may present the next block during S_ACCUM.
+                        if (!last_block_r)
+                            entry_done <= 1'b1;
+                    end
                     state_r <= S_ACCUM;
                 end
 
                 S_ACCUM: begin
-                    // Commit the current contribution first.  If the producer
-                    // presents the next non-final block on this same edge, the
-                    // same-row bypass below feeds it accum_next_w rather than
-                    // the pre-write RAM value.
-                    accum_mem[row_id_r] <= accum_next_w;
-
-                    if (last_block_r) begin
-                        entry_done <= 1'b1;
-                        out_valid <= 1'b1;
-                        out_row_id <= row_id_r;
-                        out_accum_q16 <= accum_next_w;
-                        state_r <= S_IDLE;
-                    end else if (start) begin
-                        if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
-                            !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
-                            error <= 1'b1;
-                            error_code <= ERR_BAD_SCALE;
+                    if (pending_error_r) begin
+                        // Failed entries retire without touching accumulator RAM.
+                        // A non-final failed entry may still receive the next
+                        // prefetched block on this edge, exactly like the valid path.
+                        if (last_block_r) begin
                             entry_done <= 1'b1;
                             state_r <= S_IDLE;
-                        end else if (row_id >= MAX_ROWS) begin
-                            error <= 1'b1;
-                            error_code <= ERR_ROW_RANGE;
-                            entry_done <= 1'b1;
-                            state_r <= S_IDLE;
-                        end else begin
-                            raw_r <= raw_in;
-                            row_id_r <= row_id;
+                        end else if (start) begin
                             last_block_r <= last_block;
-                            act_scale_sig_r <= fp16_q32_significand(act_scale_fp16);
-                            weight_scale_sig_r <= fp16_q32_significand(weight_scale_fp16);
-                            act_scale_shift_r <= fp16_q32_shift(act_scale_fp16);
-                            weight_scale_shift_r <= fp16_q32_shift(weight_scale_fp16);
-                            accum_prev_r <= clear_accum ?
-                                            {ACC_WIDTH{1'b0}} :
-                                            ((row_id == row_id_r) ? accum_next_w :
-                                                                    accum_mem[row_id]);
-                            error <= 1'b0;
-                            error_code <= ERR_NONE;
-                            state_r <= S_PRODUCT_MUL;
+                            if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
+                                !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
+                                pending_error_r <= 1'b1;
+                                error <= 1'b1;
+                                error_code <= ERR_BAD_SCALE;
+                                state_r <= S_PRODUCT_MUL;
+                            end else if (row_id >= MAX_ROWS) begin
+                                pending_error_r <= 1'b1;
+                                error <= 1'b1;
+                                error_code <= ERR_ROW_RANGE;
+                                state_r <= S_PRODUCT_MUL;
+                            end else begin
+                                raw_r <= raw_in;
+                                row_id_r <= row_id;
+                                act_scale_sig_r <= fp16_q32_significand(act_scale_fp16);
+                                weight_scale_sig_r <= fp16_q32_significand(weight_scale_fp16);
+                                act_scale_shift_r <= fp16_q32_shift(act_scale_fp16);
+                                weight_scale_shift_r <= fp16_q32_shift(weight_scale_fp16);
+                                // The failed entry made no commit, so there is
+                                // intentionally no same-row accum_next_w bypass here.
+                                accum_prev_r <= clear_accum ?
+                                                {ACC_WIDTH{1'b0}} : accum_mem[row_id];
+                                pending_error_r <= 1'b0;
+                                error <= 1'b0;
+                                error_code <= ERR_NONE;
+                                state_r <= S_PRODUCT_MUL;
+                            end
+                        end else begin
+                            state_r <= S_IDLE;
                         end
                     end else begin
-                        state_r <= S_IDLE;
+                        // Commit the current contribution first.  If the producer
+                        // presents the next non-final block on this same edge, the
+                        // same-row bypass below feeds it accum_next_w rather than
+                        // the pre-write RAM value.
+                        accum_mem[row_id_r] <= accum_next_w;
+
+                        if (last_block_r) begin
+                            entry_done <= 1'b1;
+                            out_valid <= 1'b1;
+                            out_row_id <= row_id_r;
+                            out_accum_q16 <= accum_next_w;
+                            state_r <= S_IDLE;
+                        end else if (start) begin
+                            last_block_r <= last_block;
+                            if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
+                                !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
+                                pending_error_r <= 1'b1;
+                                error <= 1'b1;
+                                error_code <= ERR_BAD_SCALE;
+                                state_r <= S_PRODUCT_MUL;
+                            end else if (row_id >= MAX_ROWS) begin
+                                pending_error_r <= 1'b1;
+                                error <= 1'b1;
+                                error_code <= ERR_ROW_RANGE;
+                                state_r <= S_PRODUCT_MUL;
+                            end else begin
+                                raw_r <= raw_in;
+                                row_id_r <= row_id;
+                                act_scale_sig_r <= fp16_q32_significand(act_scale_fp16);
+                                weight_scale_sig_r <= fp16_q32_significand(weight_scale_fp16);
+                                act_scale_shift_r <= fp16_q32_shift(act_scale_fp16);
+                                weight_scale_shift_r <= fp16_q32_shift(weight_scale_fp16);
+                                accum_prev_r <= clear_accum ?
+                                                {ACC_WIDTH{1'b0}} :
+                                                ((row_id == row_id_r) ? accum_next_w :
+                                                                        accum_mem[row_id]);
+                                pending_error_r <= 1'b0;
+                                error <= 1'b0;
+                                error_code <= ERR_NONE;
+                                state_r <= S_PRODUCT_MUL;
+                            end
+                        end else begin
+                            state_r <= S_IDLE;
+                        end
                     end
                 end
 
                 default: begin
                     state_r <= S_IDLE;
+                    pending_error_r <= 1'b0;
                 end
             endcase
         end
