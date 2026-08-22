@@ -8,13 +8,6 @@
 *.tar
 *.tar.gz
 
-.Xil/
-*.cache/
-*.hw/
-*.ip_user_files/
-*.runs/
-*.sim/
-*.gen/
 
 # Simulation outputs
 xsim.dir/
