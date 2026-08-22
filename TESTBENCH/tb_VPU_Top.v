@@ -785,10 +785,6 @@ module tb_VPU_Top;
         output [DATA_WIDTH-1:0] data;
         integer timeout;
         begin
-            // Do not let a response from a previous read be mistaken for
-            // this transaction's response.  Wait for the AXI read channel to
-            // become idle while accepting any already-present RVALID, then
-            // launch the new AR from a falling edge.
             @(negedge clk);
             rready = 1'b1;
             while (!arready)
@@ -825,10 +821,6 @@ module tb_VPU_Top;
                     arvalid = 1'b0;
                 end
                 if (arvalid && arready) begin
-                    // Keep ARVALID stable for the complete accepting rising
-                    // edge.  Deasserting it here races MY_IP's ar_fire
-                    // sampling block, which can otherwise lose the request
-                    // depending on simulator process ordering.
                     @(negedge clk);
                     arvalid = 1'b0;
                 end
@@ -857,11 +849,6 @@ module tb_VPU_Top;
             if (!rlast)
                 fail("Single-beat AXI read did not assert RLAST");
 
-            // Complete the response handshake on a full clock edge, then
-            // release RREADY from the following falling edge.  This avoids
-            // carrying a stale RVALID into the next AR transaction when the
-            // DUT and testbench schedule nonblocking assignments in the same
-            // active region.
             @(negedge clk);
             rready = 1'b1;
             @(posedge clk);
@@ -935,11 +922,6 @@ module tb_VPU_Top;
         end
     endtask
 
-    // Exercise the host-visible P2 drain shape: one full 4 KiB SPU_OUT
-    // transfer.  Each 128-bit beat is a distinct row record
-    // {q16_16_accum[79:16], row_id[15:0]}.  Deliberate RREADY stalls make
-    // data, response, and RLAST stability observable before every transfer
-    // phase that is held off by the consumer.
     task axi_read_spu_out_full_burst;
         integer beat;
         integer timeout;
@@ -955,11 +937,6 @@ module tb_VPU_Top;
             start_cycle = cycle_count;
             rlast_count = 0;
 
-            // A preceding single-beat read can leave RVALID asserted for one
-            // extra delta cycle when its task returns on the same edge as the
-            // DUT clears the response.  Drain that already-checked response
-            // before presenting the next AR, otherwise the AXI slave is
-            // correctly required to keep ARREADY low.
             @(negedge clk);
             rready = 1'b1;
             while (!arready)
@@ -983,9 +960,6 @@ module tb_VPU_Top;
             rready   = 1'b0;
 
             timeout = 0;
-            // Keep ARVALID stable until a complete, edge-aligned handshake.
-            // Sampling ARREADY after the active edge can withdraw ARVALID
-            // before the DUT samples it when delta-cycle ordering changes.
             while (!arready) begin
                 @(negedge clk);
                 timeout = timeout + 1;
@@ -1022,16 +996,10 @@ module tb_VPU_Top;
                 if (rdata[79:16] !== expected_accum)
                     fail("SPU_OUT full burst Q16 payload mismatch");
 
-                // Stall a rotating subset, including the final beat.  These
-                // choices exercise early and RLAST-adjacent backpressure
-                // without relying on simulator randomness.
                 if (((beat % 29) == 7) || (beat == 255)) begin
                     held_data = rdata;
                     held_resp = rresp;
                     held_last = rlast;
-                    // RVALID is sampled at the falling edge, then RREADY is
-                    // held low across two following rising edges.  The #1
-                    // sample is after DUT nonblocking updates.
                     rready = 1'b0;
                     repeat (2) begin
                         @(posedge clk);
@@ -1047,8 +1015,6 @@ module tb_VPU_Top;
                     @(negedge clk);
                 end
 
-                // Drive RREADY only from the falling edge so it is stable for
-                // the complete accepting rising edge.
                 rready = 1'b1;
                 @(posedge clk);
                 #1;
@@ -1132,8 +1098,6 @@ module tb_VPU_Top;
             else
                 pass_count = pass_count + 1;
 
-            // P3 mode is reset-off so the P2 packed-scale ABI remains the
-            // deployed default until a separately versioned host opts in.
             axi_read32(REG_P3_STREAM_MODE, rd32);
             if (rd32 !== 32'd0)
                 fail("P3 split-scale mode was not reset-off");
@@ -1186,10 +1150,6 @@ module tb_VPU_Top;
         end
     endtask
 
-    // Models the host's P2 admission boundary: a raw VPU self-test has
-    // already emitted VPU->SPU traffic, then the first scale-stream P2 job is
-    // allowed without a fabric reset only after the raw tail is final and the
-    // SPU explicitly reports no FIFO/accumulator/output-write ownership.
     task verify_selftest_stream_handoff_ready;
         reg [31:0] count;
         reg [31:0] done;
@@ -1231,9 +1191,6 @@ module tb_VPU_Top;
         end
     endtask
 
-    // The host observes this register immediately after fpga_init() and after
-    // a PL reset.  Verify that reset does not leave an apparent FIFO/scale
-    // owner that would make the first P2 tile unsafe to admit.
     task verify_reset_stream_quiescence;
         reg [31:0] status;
         begin
@@ -1532,22 +1489,42 @@ module tb_VPU_Top;
             else
                 pass_count = pass_count + 1;
 
-            for (row = 0; row < rows; row = row + 1) begin
-                for (block_id = 0; block_id < group_blocks; block_id = block_id + 1) begin
-                    linear = row * group_blocks + block_id;
-                    word_idx = linear / 4;
-                    lane_idx = linear % 4;
-                    axi_read(RESULT_BASE + word_idx * 16, rd_word);
-                    got = rd_word[32*lane_idx +: 32];
-                    expected = golden_q8_block(row, block_id);
-                    if (got !== expected) begin
-                        $display("[TB][FAIL] packed row=%0d block=%0d got=%0d expected=%0d",
-                                 row, block_id, got, expected);
-                        fail_count = fail_count + 1;
-                    end else begin
-                        $display("[TB][PASS] packed row=%0d block=%0d result=%0d",
-                                 row, block_id, got);
+            if (case_id >= 97) begin
+                // P2 x8 is stream-only: raw blocks are not mirrored through
+                // RESULT_BASE. Verify every architectural row in SPU_OUT.
+                for (row = 0; row < rows; row = row + 1) begin
+                    expected_accum =
+                        $signed(golden_q8_range(row, 0, group_blocks)) *
+                        SPU_TEST_Q16_SCALE_PRODUCT;
+                    axi_read(SPU_OUT_BASE + row * 16, rd_word);
+                    if (rd_word[15:0] !== row[15:0])
+                        fail("P2 SPU_OUT row id mismatch");
+                    else
                         pass_count = pass_count + 1;
+                    if ($signed(rd_word[79:16]) !== expected_accum)
+                        fail("P2 SPU_OUT scaled accumulator mismatch");
+                    else
+                        pass_count = pass_count + 1;
+                end
+            end else begin
+                // Legacy packed-Q8 modes retain the host-visible raw Result BRAM.
+                for (row = 0; row < rows; row = row + 1) begin
+                    for (block_id = 0; block_id < group_blocks; block_id = block_id + 1) begin
+                        linear = row * group_blocks + block_id;
+                        word_idx = linear / 4;
+                        lane_idx = linear % 4;
+                        axi_read(RESULT_BASE + word_idx * 16, rd_word);
+                        got = rd_word[32*lane_idx +: 32];
+                        expected = golden_q8_block(row, block_id);
+                        if (got !== expected) begin
+                            $display("[TB][FAIL] packed row=%0d block=%0d got=%0d expected=%0d",
+                                     row, block_id, got, expected);
+                            fail_count = fail_count + 1;
+                        end else begin
+                            $display("[TB][PASS] packed row=%0d block=%0d result=%0d",
+                                     row, block_id, got);
+                            pass_count = pass_count + 1;
+                        end
                     end
                 end
             end
@@ -1744,13 +1721,6 @@ module tb_VPU_Top;
         end
     endtask
 
-    // The production RTL accepts arbitrary SPU backpressure.  The previous
-    // pseudo-random stall generator is intentionally opportunistic, so a
-    // faster VPU can complete every raw transfer between its random windows
-    // and leave the root test with unexercised hold behavior.  This focused
-    // system-level case makes one boundary stall deterministic, verifies the
-    // VPU token-hold assertion above, then releases the real SPU path to
-    // complete the same job normally.
     task run_forced_stream_stall_case;
         integer beat;
         integer scale_word_idx;
@@ -1839,8 +1809,6 @@ module tb_VPU_Top;
         end
     endtask
 
-    // Protocol assertion: a VPU raw token must not change while the SPU FIFO
-    // backpressures it.  The DUT test parameter creates pseudo-random stalls.
     always @(posedge clk) begin
         if (!resetn) begin
             stream_hold_valid <= 1'b0;
@@ -1879,11 +1847,6 @@ module tb_VPU_Top;
         end
     end
 
-    // Hold the VPU->SPU boundary while the other bank is filled.  This makes
-    // the observation decisive: any active-bank/progress/result/stream change
-    // is caused by the inactive-bank AXI traffic, not by normal retirement.
-    // The 64 Q8-block (128 AXI-beat) input is the largest legal tile width;
-    // each weight image is deliberately written in two halves.
     task run_live_preload_isolation_case;
         integer beat;
         integer row;
@@ -1921,9 +1884,6 @@ module tb_VPU_Top;
             $display("[TB] LIVE PRELOAD CASE: active bank isolation, PING->PONG->PING");
             init_case_data(61, 8, MAX_TEST_COLS);
 
-            // Scale metadata is shared SPU storage, so establish it before
-            // either live preload.  There must be no SPU_PARAM/OUT write once
-            // the first VPU job has started.
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
             axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
             axi_write(REG_ROWS, word32(8), 16'h000f);
@@ -1950,17 +1910,9 @@ module tb_VPU_Top;
             axi_read32(REG_SPU_STREAM_OUT, stream_out_before);
             axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
 
-            // From here until each active job completes, the only AXI control
-            // write allowed by the host contract is REG_BANK.  Keep ready live
-            // so normal VPU/SPU retirement must make observable progress.
             axi_read(REG_BANK_STAT, rd_word); saved_bank_stat = rd_word[31:0];
             axi_read32(REG_ACTIVE_JOB, saved_active_job);
             axi_read(REG_PROGRESS, rd_word); saved_progress = rd_word[31:0];
-            // Use the descriptor values written immediately above as the
-            // immutable reference.  Reading every register here consumed
-            // enough cycles for the new two-row engine to finish an 8-row
-            // job before preload began, turning the overlap assertion into a
-            // testbench race instead of an ownership check.
             saved_rows         = 32'd8;
             saved_cols         = MAX_TEST_COLS;
             saved_col_beats    = MAX_COL_BEATS;
@@ -1975,8 +1927,6 @@ module tb_VPU_Top;
             saved_token_id     = 32'h0000_004c;
             saved_desc_flags   = 32'h0000_0001;
 
-            // PING active: preload PONG with a full ACT image and a split
-            // 8x128-beat WEIGHT image.  Do not touch SPU_PARAM or SPU_OUT.
             axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
             preload_compute_write_overlap = 0;
             preload_busy_violation = 0;
@@ -2014,11 +1964,6 @@ module tb_VPU_Top;
             axi_read32(REG_GROUP_BLOCKS, rd_word[31:0]); if (rd_word[31:0] !== saved_group_blocks) fail("PONG preload changed group_blocks");
             axi_read32(REG_TOKEN_ID, rd_word[31:0]); if (rd_word[31:0] !== saved_token_id) fail("PONG preload changed token_id");
             axi_read32(REG_DESC_FLAGS, rd_word[31:0]); if (rd_word[31:0] !== saved_desc_flags) fail("PONG preload changed desc_flags");
-            // `core_busy` staying asserted for the entire preload interval
-            // plus forward progress is the protocol-level overlap proof.  Do
-            // not require a read-enable pulse and an AXI decode pulse to land
-            // on the exact same clock; their independent pipelines can be
-            // phase-aligned without changing the overlap interval.
             if (preload_compute_write_overlap != 0) pass_count = pass_count + 1;
             if (preload_busy_violation != 0) fail("PING was not busy throughout PONG preload"); else pass_count = pass_count + 1;
             timeout = 0; rd_word = 0;
@@ -2038,14 +1983,11 @@ module tb_VPU_Top;
             axi_read(SPU_OUT_BASE + 7*16, rd_word);
             if ((rd_word[15:0] !== 16'd7) || (rd_word[79:16] !== expected_accum)) fail("PING SPU_OUT Q16 mismatch"); else pass_count = pass_count + 1;
 
-            // Start PONG without re-writing ACT, WEIGHT, SPU_PARAM, or SPU_OUT.
             axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
             axi_read(REG_BANK_STAT, rd_word); saved_bank_stat = rd_word[31:0];
             axi_read32(REG_ACTIVE_JOB, saved_active_job);
             axi_read(REG_PROGRESS, rd_word); saved_progress = rd_word[31:0];
 
-            // PONG active: repeat the inverse preload into PING, again split
-            // at the weight half boundary, then launch PING without a rewrite.
             axi_write(REG_BANK, word32(32'h0000_0002), 16'h000f);
             preload_compute_write_overlap = 0;
             preload_busy_violation = 0;
@@ -2096,8 +2038,6 @@ module tb_VPU_Top;
             expected_accum = $signed(golden_q8_range(7, 0, 64)) * SPU_TEST_Q16_SCALE_PRODUCT;
             axi_read(SPU_OUT_BASE + 7*16, rd_word);
             if ((rd_word[15:0] !== 16'd7) || (rd_word[79:16] !== expected_accum)) fail("PONG SPU_OUT Q16 mismatch"); else pass_count = pass_count + 1;
-            // PONG was launched solely from the first inactive-bank preload.
-            // Check its complete packed result image before selecting PING.
             axi_write(REG_BANK, word32(32'h0000_0003), 16'h000f);
             for (row = 0; row < 8; row = row + 1)
                 for (block_id = 0; block_id < 64; block_id = block_id + 1) begin
@@ -2106,7 +2046,6 @@ module tb_VPU_Top;
                     expected = golden_q8_block(row, block_id);
                     if (got !== expected) fail("preloaded PONG packed result mismatch"); else pass_count = pass_count + 1;
                 end
-            // Restore the exact bank selector programmed by the live PONG->PING preload.
             axi_write(REG_BANK, word32(32'h0000_0002), 16'h000f);
             axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
             timeout = 0; rd_word = 0;
@@ -2120,9 +2059,6 @@ module tb_VPU_Top;
                 if (timeout > 200000) begin fail("re-preloaded PING SPU stream did not quiesce"); rd_word = 32'h0000_001f; end
             end
 
-            // The final PING result comes from its second preload, not a
-            // rewrite after launch.  Sample every block to cover the full
-            // 128-beat/split-weight image.
             init_case_data(63, 8, MAX_TEST_COLS);
             axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
             for (row = 0; row < 8; row = row + 1)
@@ -2142,9 +2078,6 @@ module tb_VPU_Top;
             axi_read32(REG_SPU_STREAM_OUT, rd_word[31:0]);
             if (rd_word[31:0] !== (stream_out_before + 24)) fail("live preload stream output count mismatch"); else pass_count = pass_count + 1;
 
-            // The three launches and their SPU drain are complete above.
-            // Re-establish the suite's reset baseline before unrelated legacy
-            // cases so this focused ownership test cannot retain MMIO state.
             resetn = 1'b0;
             repeat (4) @(posedge clk);
             resetn = 1'b1;
@@ -2164,11 +2097,9 @@ module tb_VPU_Top;
         reg [DATA_WIDTH-1:0] rd_word;
         reg signed [31:0] got;
         reg signed [31:0] expected;
+        reg signed [63:0] expected_accum;
         begin
             $display("[TB] P2 WEIGHT PORT OWNERSHIP: inactive A staging and active rejection");
-            // 32 Q8 blocks keep S_RUN live long enough for both AXI write
-            // pipelines to reach the weight leaves while paired reads are
-            // active; a one-block job can retire before that observation.
             init_case_data(131, 4, 1024);
 
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
@@ -2178,8 +2109,6 @@ module tb_VPU_Top;
             axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
             axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8 | VPU_MODE_P2_TWO_ROW), 16'h000f);
 
-            // Preload both banks before the paired launch.  Bank 1 is then
-            // touched once while bank 0 is actively reading both parity leaves.
             axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
             for (beat = 0; beat < 64; beat = beat + 1)
                 axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
@@ -2206,18 +2135,23 @@ module tb_VPU_Top;
                 end
             end
 
+            // Freeze P2 retirement at the actual stream boundary so the
+            // ownership checks cannot race a faster x8 implementation.
+            force dut.u_my_ip.u_axi4_mapping.core_spu_raw_ready = 1'b0;
+            timeout = 0;
+            while (!dut.u_my_ip.u_axi4_mapping.core_spu_raw_valid &&
+                   dut.u_my_ip.u_axi4_mapping.core_busy && (timeout < 10000)) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+            end
+            if (!dut.u_my_ip.u_axi4_mapping.core_spu_raw_valid)
+                fail("paired ownership case never reached deterministic stream stall");
+
             axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
             pair_inactive_weight_a_write_observed = 0;
             pair_weight_port_watch_enable = 1'b1;
-            // One inactive-bank write proves the A-port route while the
-            // bank-0 job is live.  Do not spend an entire row-image transfer
-            // here: x8 issue can complete that small job before the following
-            // active-bank rejection checks would reach the core.
             axi_write(WEIGHT_BASE + pair_weight_word_index(0, 64, 0) * 16,
                       {DATA_WIDTH{1'b0}}, 16'hffff);
-            // The write crosses AXI decode, the local write register, and the
-            // 14-stage stride decoder.  Wait for the observable A-port pulse
-            // instead of coupling this check to a fixed pipeline latency.
             timeout = 0;
             while ((pair_inactive_weight_a_write_observed == 0) &&
                    dut.u_my_ip.u_axi4_mapping.core_busy && (timeout < 80)) begin
@@ -2230,10 +2164,6 @@ module tb_VPU_Top;
             else
                 pass_count = pass_count + 1;
 
-            // Select the active bank and attempt distinct ACT and WEIGHT
-            // writes.  Each AXI response remains protocol-compatible, but
-            // REG_STATUS.error must expose the local fail-closed rejection;
-            // the completed result must remain its pre-write golden value.
             axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
             axi_write(ACT_BASE + 16, 128'ha5a5_a5a5_a5a5_a5a5_a5a5_a5a5_a5a5_a5a5, 16'hffff);
             repeat (4) @(posedge clk);
@@ -2243,8 +2173,6 @@ module tb_VPU_Top;
             else
                 pass_count = pass_count + 1;
 
-            // Clear only the sticky status bit while compute remains live so
-            // the following WEIGHT rejection is independently observable.
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
             repeat (4) @(posedge clk);
             axi_read(REG_STATUS, rd_word);
@@ -2261,6 +2189,8 @@ module tb_VPU_Top;
                 fail("paired active-bank weight write was not visibly rejected");
             else
                 pass_count = pass_count + 1;
+
+            release dut.u_my_ip.u_axi4_mapping.core_spu_raw_ready;
 
             timeout = 0;
             rd_word = {DATA_WIDTH{1'b0}};
@@ -2283,26 +2213,24 @@ module tb_VPU_Top;
                 end
             end
 
-            axi_read(RESULT_BASE, rd_word);
-            got = rd_word[31:0];
-            expected = golden_q8_block(0, 0);
-            if (got !== expected)
-                fail("paired active-bank rejected write changed raw result");
-            else
-                pass_count = pass_count + 1;
+            // P2 x8 architectural results live in SPU_OUT, not RESULT_BASE.
+            for (row = 0; row < 4; row = row + 1) begin
+                expected_accum =
+                    $signed(golden_q8_range(row, 0, 32)) *
+                    SPU_TEST_Q16_SCALE_PRODUCT;
+                axi_read(SPU_OUT_BASE + row * 16, rd_word);
+                if ((rd_word[15:0] !== row[15:0]) ||
+                    ($signed(rd_word[79:16]) !== expected_accum))
+                    fail("paired active-bank SPU_OUT result mismatch");
+                else
+                    pass_count = pass_count + 1;
+            end
 
-            // The live-ownership checks above are complete.  Fill the full
-            // bank-1 row after bank 0 retires so the next launch separately
-            // proves persistence of the staged image.
             axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
             for (beat = 0; beat < 64; beat = beat + 1)
                 axi_write(WEIGHT_BASE + pair_weight_word_index(0, 64, beat) * 16,
                           {DATA_WIDTH{1'b0}}, 16'hffff);
 
-            // A second paired launch from the staged bank must expose the
-            // altered row 0 and preserve the golden raw INT32 image for rows
-            // 1..3.  This proves the full inactive staging image was retained
-            // and did not disturb the active compute bank.
             axi_write(REG_BANK, word32(32'h0000_0003), 16'h000f);
             axi_write(REG_JOB_ID, word32(32'h0000_0132), 16'h000f);
             axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
@@ -2320,19 +2248,28 @@ module tb_VPU_Top;
                     rd_word[0] = 1'b1;
                 end
             end
-            for (row = 0; row < 4; row = row + 1)
-                for (block_id = 0; block_id < 32; block_id = block_id + 1) begin
-                    linear = row * 32 + block_id;
-                    word_idx = linear / 4;
-                    lane_idx = linear % 4;
-                    axi_read(RESULT_BASE + word_idx * 16, rd_word);
-                    got = rd_word[32*lane_idx +: 32];
-                    expected = (row == 0) ? 32'sd0 : golden_q8_block(row, block_id);
-                    if (got !== expected)
-                        fail("paired staged-bank altered raw INT32 result mismatch");
-                    else
-                        pass_count = pass_count + 1;
+            timeout = 0;
+            rd_word = 32'd0;
+            while (rd_word[4:0] !== 5'b1_1111) begin
+                axi_read32(REG_SPU_STREAM_STATUS, rd_word[31:0]);
+                timeout = timeout + 1;
+                if (timeout > 100000) begin
+                    fail("paired staged-bank stream did not quiesce");
+                    rd_word = 32'h0000_001f;
                 end
+            end
+
+            for (row = 0; row < 4; row = row + 1) begin
+                expected_accum = (row == 0) ? 64'sd0 :
+                    ($signed(golden_q8_range(row, 0, 32)) *
+                     SPU_TEST_Q16_SCALE_PRODUCT);
+                axi_read(SPU_OUT_BASE + row * 16, rd_word);
+                if ((rd_word[15:0] !== row[15:0]) ||
+                    ($signed(rd_word[79:16]) !== expected_accum))
+                    fail("paired staged-bank SPU_OUT result mismatch");
+                else
+                    pass_count = pass_count + 1;
+            end
 
             resetn = 1'b0;
             repeat (4) @(posedge clk);
@@ -2501,12 +2438,6 @@ module tb_VPU_Top;
         end
     endtask
 
-    // P2 descriptor commits are a host-visible ownership contract.  The host
-    // selects the same bank for input fill and result drain, then requires an
-    // exact readback before issuing the following ACT DMA transfer.  Check both
-    // slot encodings: bank 0 DMA_FILLING is bits [3:0] = 2, while bank 1 is
-    // bits [7:4] = 2.  REG_BANK and REG_BANK_STAT carry the duplicated bank
-    // selection in bits [1:0].
     task write_and_verify_dma_filling_descriptor;
         input [31:0] bank_bits;
         input [31:0] expected_slot_state;
@@ -2595,9 +2526,6 @@ module tb_VPU_Top;
         end
     endtask
 
-    // A 36-q8-block activation is exactly 72 128-bit beats.  This is a
-    // black-box check: the only activation load is the DMA-shaped burst above;
-    // successful packed results prove the accepted burst reached compute RAM.
     task run_act_burst_compute_case;
         integer beat;
         integer block_id;
@@ -2619,9 +2547,6 @@ module tb_VPU_Top;
             axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
             axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8), 16'h000f);
 
-            // This exact bank-0 DMA_FILLING descriptor must be committed and
-            // verified immediately before the 72-beat production-shaped ACT
-            // burst.  Keep the 36-block/128-beat boundary coverage below.
             write_and_verify_dma_filling_descriptor(
                 32'h0000_0000, 32'h0000_0002, 32'h0000_d072,
                 32'h5a00_0072, 32'h0000_0080, 32'h0000_0007,
@@ -2667,11 +2592,6 @@ module tb_VPU_Top;
                 end
             end
 
-            // MAX_COL_BEATS is 128.  Do not leave the AWLEN=127 transfer as
-            // a protocol-only test: every beat must influence an observable
-            // result.  With one 2,048-element row, each checked q8 block
-            // consumes exactly two consecutive ACT beats; checking all 64
-            // blocks therefore makes all 128 burst payload beats observable.
             init_case_data(31, 1, 64 * 32);
             $display("[TB] ACT BURST BOUNDARY COMPUTE: 64 q8 blocks / 128 beats");
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
@@ -2729,11 +2649,6 @@ module tb_VPU_Top;
         end
     endtask
 
-    // Protocol-3 is deliberately opt-in.  This is a true AXI/VPU/SPU path:
-    // paired VPU raw results consume separate immutable PARAM weight scales
-    // and SCRATCH activation scales.  Bank0 holds a two-row pair; bank1
-    // exercises the odd tail.  The forced done pulse on bank0 creates the
-    // drained-before-done interval in which a mode write must be rejected.
     task run_p3_axi_split_scale_case;
         integer beat;
         integer timeout;
@@ -2751,8 +2666,6 @@ module tb_VPU_Top;
             else
                 pass_count = pass_count + 1;
 
-            // Bank0: one two-row paired VPU transaction with scale=1.0 for
-            // both rows and its single activation block.
             init_case_data(135, 2, 32);
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
             axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
@@ -2768,8 +2681,6 @@ module tb_VPU_Top;
             axi_write(SPU_PARAM_BASE, 128'h0000000000000000000000003c003c00, 16'hffff);
             axi_write(SPU_SCRATCH_BASE, 128'h00000000000000000000000000003c00, 16'hffff);
 
-            // Hold the VPU end marker only; raw valid/data remain the actual
-            // paired Matrix_Vector_Multiplication output.
             force dut.u_my_ip.u_axi4_mapping.core_spu_raw_done = 1'b0;
             axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
             timeout = 0;
@@ -2792,9 +2703,6 @@ module tb_VPU_Top;
             else
                 pass_count = pass_count + 1;
 
-            // The bank is drained but no VPU end-of-stream has been observed.
-            // The AXI mode register must remain P3 to avoid stranding the
-            // lock or mixing P2 and P3 scale formats.
             axi_write32(REG_P3_STREAM_MODE, 32'h0000_0000, 4'hf);
             axi_read32(REG_P3_STREAM_MODE, rd32);
             if (rd32[0] !== 1'b1)
@@ -2827,9 +2735,6 @@ module tb_VPU_Top;
                     pass_count = pass_count + 1;
             end
 
-            // Bank1: one real odd-tail raw result.  Word 2048 is the first
-            // dense P3 scale word in the second half of each 4096-word
-            // PARAM/SCRATCH window; no address map or aperture changes.
             init_case_data(136, 1, 32);
             axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
             axi_write(REG_BANK, word32(32'h0000_0001), 16'h000f);
@@ -2925,29 +2830,17 @@ module tb_VPU_Top;
         run_live_preload_isolation_case();
         run_pingpong_case();
         run_descriptor_commit_case();
-        // Fill every SPU_OUT word through the canonical VPU->SPU Q16 path,
-        // then drain it with the exact 4 KiB host DMA read shape.
         run_group_case(7, 256, 1);
         axi_read_spu_out_full_burst();
-        // Protocol-2 pair-interleaved coverage: C=2/4/64/72/128, odd padded
-        // tails, maximum row counts, both banks, and unequal-stride preload.
-        // stage_pair_weight_image emits the required zero companion word for
-        // every odd tail; the P2 result checks prove that no lane-1 result is
-        // emitted for that padding row.
         run_group_case(97, 1, 1);
         run_group_case(98, 2, 2);
         run_group_case(99, 3, 32);
-        // Four distinct logical rows force one 16x4 P2 issue group.  The
-        // existing randomized SPU ready generator must accept rows 0/1 before
-        // rows 2/3; run_group_case checks every raw Result lane and stream row.
         run_group_case(100, 4, 2);
         run_forced_stream_stall_case();
         run_pair_weight_port_ownership_case();
         run_group_case(132, 255, 36);
         run_group_case(133, 256, 64);
         run_p3_axi_split_scale_case();
-        // P3 is opt-in only; prove the retained P2 packed-scale path works
-        // again after P3 mode is released.
         run_group_case(137, 1, 1);
         run_act_burst_compute_case();
 
