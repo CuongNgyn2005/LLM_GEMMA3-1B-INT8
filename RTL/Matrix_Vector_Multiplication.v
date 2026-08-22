@@ -38,7 +38,9 @@
  * when compute_mode[1] is set; across split K-group launches, compute_mode[2]
  * clears the on-chip row accumulator for the first group and compute_mode[3]
  * emits the final requantized INT8 result for the last group.  Sixteen INT8
- * results are packed into each 128-bit Result BRAM word.
+ * results are packed into each 128-bit Result BRAM word.  The deployed P2 x8
+ * raw path is stream-only: raw sums are delivered directly to SPU and do not
+ * need a duplicate Result-BRAM retirement before the scheduler advances.
  *-----------------------------------------------------------------------------
  */
 
@@ -370,8 +372,8 @@ module Matrix_Vector_Multiplication #(
     reg signed [ACC_WIDTH-1:0] result_write_i32_r;
     reg result_write_is_i8_r;
     reg pair_mode_r;
-    // P2 four-row issue captures all raw results before serializing Result BRAM
-    // writes and presenting the two existing two-row stream packets.
+    // P2 x8 issue captures all raw results before stream retirement. Legacy
+    // raw modes continue serializing Result BRAM writes for compatibility.
     reg signed [ACC_WIDTH-1:0] result_row1_data_r;
     reg signed [ACC_WIDTH-1:0] result_row2_data_r;
     reg signed [ACC_WIDTH-1:0] result_row3_data_r;
@@ -603,14 +605,17 @@ module Matrix_Vector_Multiplication #(
         result_i8_mode_r ? feed_group_last_r : feed_last_r;
     wire weight_compute_final_clear = pmau_input_fire && wait_after_feed;
 
-    // BRAM output data is delayed relative to the address request.  The d/q/x
-    // valid pipeline keeps activation data, selected weight shard data, and
-    // sideband last flags aligned before a beat is presented to PMAU.
-    // Do not let the PMAU ready/valid cone drive the BRAM capture enables.
-    // Refill only after the feed register is observed empty; this inserts a
-    // conservative bubble between beats but keeps the read data ordered and
-    // removes the row-dependent PMAU control path from the data-register CE.
-    wire feed_slot_open = !feed_valid_r;
+    // BRAM/URAM outputs have fixed latency and cannot be backpressured after a
+    // read is launched.  Legacy modes therefore retain the conservative
+    // empty-pipeline rule below.  P2 raw x8 is different: RAW_BURST_MAX bounds
+    // retirement to four blocks while every PMAU reserves eight result slots.
+    // Because activation_last and weight_last are identical, all eight active
+    // PMAUs are guaranteed to accept both beats of each bounded block.  That
+    // makes consume+refill on one edge safe for this P2-only fast path.
+    wire p2_read_fast_safe = raw_burst_mode &&
+                             (RESULT_FIFO_DEPTH >= RAW_BURST_MAX);
+    wire feed_slot_open = !feed_valid_r ||
+                          (p2_read_fast_safe && pmau_input_fire);
     wire consume_read_x = read_valid_x_r && feed_slot_open;
     wire read_x_slot_open = (!read_valid_x_r) || consume_read_x;
     wire shift_q_to_x = read_valid_q_r && read_x_slot_open;
@@ -643,16 +648,19 @@ module Matrix_Vector_Multiplication #(
     wire [15:0] issue_read_limit =
         (!result_i8_mode_r && group_mode_r) ? raw_group_issue_limit :
                                               active_col_beats_r;
-    wire can_issue_read =
+    wire p2_can_issue_read =
+        (state_r == S_RUN) &&
+        read_req_slot_open && read_d_slot_open && read_q_slot_open &&
+        read_x_slot_open && feed_slot_open &&
+        (read_beat_idx_r < issue_read_limit);
+    wire legacy_can_issue_read =
         (state_r == S_RUN) &&
         read_req_slot_open &&
-        // Memory read data has no independent response FIFO.  Do not launch
-        // a following address until the prior response has been consumed by
-        // PMAU; otherwise a stalled x/feed stage lets the synchronous BRAM
-        // output advance past its matching read metadata.
         !read_req_valid_r && !read_valid_d_r && !read_valid_q_r &&
         !read_valid_x_r && !feed_valid_r &&
         (read_beat_idx_r < issue_read_limit);
+    wire can_issue_read = p2_read_fast_safe ? p2_can_issue_read :
+                                               legacy_can_issue_read;
     wire issue_read_last =
         result_i8_mode_r ? (read_beat_idx_r == (active_col_beats_r - 16'd1)) :
         group_mode_r ? (read_beat_idx_r[0] == 1'b1) :
@@ -1781,9 +1789,8 @@ module Matrix_Vector_Multiplication #(
                         // A raw P2 x8 block is two 128-bit beats. PMAU_Full has
                         // an 8-entry result FIFO, so keep up to four completed
                         // blocks in flight before switching to ordered retire.
-                        // The read pipeline is flushed at each block boundary;
-                        // this changes block-level scheduling only and leaves the
-                        // existing BRAM/feed timing contract untouched.
+                        // The read pipeline is still flushed at each block
+                        // boundary in this conservative first optimization.
                         feed_valid_r     <= 1'b0;
                         compute_rd_en    <= 1'b0;
                         read_req_valid_r <= 1'b0;
@@ -1833,7 +1840,19 @@ module Matrix_Vector_Multiplication #(
                                      (!pair_lane5_valid || (quad5_result_value_index < MAX_RESULT_VALUES_32)) &&
                                      (!pair_lane6_valid || (quad6_result_value_index < MAX_RESULT_VALUES_32)) &&
                                      (!pair_lane7_valid || (quad7_result_value_index < MAX_RESULT_VALUES_32))) begin
-                            result_write_pending_r <= 1'b1;
+                            // P2 x8 raw output is consumed by SPU_VPU_Stream8;
+                            // avoid duplicating those eight values through the
+                            // single Result-BRAM write port. Other raw modes
+                            // preserve the legacy Result-BRAM ABI.
+                            if (raw_burst_mode) begin
+                                result_write_pending_r <= 1'b0;
+                                result_writes_done_r    <= 1'b1;
+                                spu_raw_valid           <= 1'b1;
+                            end else begin
+                                result_write_pending_r <= 1'b1;
+                                result_writes_done_r    <= 1'b0;
+                                spu_raw_valid           <= 1'b0;
+                            end
                             result_write_addr_r <= result_wr_addr;
                             result_write_addr_bank_r[active_bank_r] <= result_wr_addr;
                             result_write_lane_r <= result_wr_lane;
@@ -1855,10 +1874,8 @@ module Matrix_Vector_Multiplication #(
                             result_row6_lane_r <= {{(RESULT_I8_LANE_SHIFT-RESULT_LANE_SHIFT){1'b0}},quad6_result_wr_lane_i32};
                             result_row7_lane_r <= {{(RESULT_I8_LANE_SHIFT-RESULT_LANE_SHIFT){1'b0}},quad7_result_wr_lane_i32};
                             result_write_slot_r <= 3'd0;
-                            result_writes_done_r <= 1'b0;
                             raw_bundle_accepted_r <= 1'b0;
 
-                            spu_raw_valid <= 1'b0;
                             spu_raw_data <= $signed(pmau_result_data);
                             spu_raw_row <= row_idx_r;
                             spu_raw_block <= block_idx_r;
@@ -1916,7 +1933,8 @@ module Matrix_Vector_Multiplication #(
                         spu_raw_lane_valid <= 8'd0;
                         raw_bundle_accepted_r <= 1'b1;
                     end
-                    if (result_writes_done_r && raw_bundle_accepted_r) begin
+                    if (result_writes_done_r &&
+                        (raw_bundle_accepted_r || (spu_raw_valid && spu_raw_ready))) begin
                         if (raw_burst_mode) begin
                             if ((raw_burst_retired_r + 3'd1) < raw_burst_blocks_r) begin
                                 // More results from this issued burst are already
@@ -2061,10 +2079,10 @@ module Matrix_Vector_Multiplication #(
                 end
 
                 S_DRAIN_RESULT: begin
-                    // On entry, result_write_pending_r was set by either raw
-                    // result capture or S_REQUANT_RESULT. Result BRAM consumes
-                    // it on this edge; asserting done here guarantees software
-                    // observes the completed payload after the write commits.
+                    // Any required Result-BRAM write has committed before this
+                    // state. P2 raw stream-only mode intentionally bypasses the
+                    // redundant raw Result-BRAM writes and arrives here after
+                    // the final SPU bundle is accepted.
                     feed_valid_r <= 1'b0;
                     done_r       <= 1'b1;
                     done_bank_r  <= active_bank_r;
