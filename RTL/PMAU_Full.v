@@ -167,20 +167,19 @@ module PMAU_Full #(
         fifo_count + inflight_result_count;
 
     wire both_inputs_valid = activation_valid && weight_valid;
-    wire incoming_pair_last = both_inputs_valid && activation_last && weight_last;
-    wire incoming_last_match = (!both_inputs_valid) || (activation_last == weight_last);
-    wire can_accept_pair =
-        incoming_last_match &&
-        ((!incoming_pair_last) ||
-         (reserved_result_slots < FIFO_DEPTH_COUNT));
+    wire incoming_last_match = (activation_last == weight_last);
 
     assign input_ready = (!activation_last) ||
                          (reserved_result_slots < FIFO_DEPTH_COUNT);
 
-    assign activation_ready = can_accept_pair && weight_valid;
-    assign weight_ready     = can_accept_pair && activation_valid;
+    // Ready is deliberately independent of the opposite valid.  GEMV presents
+    // activation/weight together, while input_fire below still requires both
+    // valids and matching last flags.  This removes the row-lane valid mask
+    // from the PMAU-ready feedback path without changing beat acceptance.
+    assign activation_ready = input_ready && incoming_last_match;
+    assign weight_ready     = input_ready && incoming_last_match;
 
-    wire input_fire = both_inputs_valid && can_accept_pair;
+    wire input_fire = both_inputs_valid && input_ready && incoming_last_match;
     wire accepted_row_end = input_fire && activation_last && weight_last;
 
     // A beat is accepted only when activation and weight arrive together and
