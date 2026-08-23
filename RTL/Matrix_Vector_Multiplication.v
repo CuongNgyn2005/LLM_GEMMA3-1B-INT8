@@ -468,12 +468,30 @@ module Matrix_Vector_Multiplication #(
         ((mm_wr_region == REGION_ACT) || (mm_wr_region == REGION_WEIGHT));
     wire pair_active_write_block = pair_compute_ownership &&
         ((mm_wr_region == REGION_ACT) || (mm_wr_region == REGION_WEIGHT));
-    wire weight_write_pipeline_busy =
-        (mm_wr_en && (mm_wr_region == REGION_WEIGHT)) ||
-        (wr_pipe_en_r && (wr_pipe_region_r == REGION_WEIGHT)) ||
-        (|weight_div_valid_r) || weight_map_delta_valid_r ||
-        weight_map_base_valid_r || weight_map_valid_r ||
-        (|weight_leaf_stage_valid_r);
+    wire [WEIGHT_DIV_STAGES-1:0] active_bank_weight_div_valid;
+    genvar active_bank_div_stage;
+    generate
+        for (active_bank_div_stage = 0;
+             active_bank_div_stage < WEIGHT_DIV_STAGES;
+             active_bank_div_stage = active_bank_div_stage + 1) begin : GEN_ACTIVE_BANK_WEIGHT_DIV_VALID
+            assign active_bank_weight_div_valid[active_bank_div_stage] =
+                weight_div_valid_r[active_bank_div_stage] &&
+                (weight_div_bank_r[active_bank_div_stage] == active_bank_r);
+        end
+    endgenerate
+
+    wire active_bank_weight_write_pipeline_busy =
+        (mm_wr_en && (mm_wr_region == REGION_WEIGHT) &&
+         (cfg_wr_bank == active_bank_r)) ||
+        (wr_pipe_en_r && (wr_pipe_region_r == REGION_WEIGHT) &&
+         (wr_pipe_bank_r == active_bank_r)) ||
+        (|active_bank_weight_div_valid) ||
+        (weight_map_delta_valid_r &&
+         (weight_map_delta_bank_r == active_bank_r)) ||
+        (weight_map_base_valid_r &&
+         (weight_map_base_bank_r == active_bank_r)) ||
+        (weight_map_valid_r && (weight_map_bank_r == active_bank_r)) ||
+        weight_leaf_stage_valid_r[active_bank_r];
 
     wire pmau_activation_ready;
     wire pmau_weight_ready;
@@ -1561,7 +1579,7 @@ module Matrix_Vector_Multiplication #(
                         done_bank_r <= active_bank_r;
                         done_job_id_r <= active_job_id_r;
                         state_r <= S_ERROR;
-                    end else if (!weight_write_pipeline_busy) begin
+                    end else if (!active_bank_weight_write_pipeline_busy) begin
                         raw_group_offset_r[0] <= 32'd0;
                         raw_group_offset_r[1] <= {16'd0,group_blocks_r};
                         raw_group_offset_r[2] <= ({16'd0,group_blocks_r} << 1);

@@ -2248,7 +2248,20 @@ module tb_VPU_Top;
 
             axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
             axi_write(REG_JOB_ID, word32(32'h0000_0131), 16'h000f);
+
+            // Model a still-draining write to the inactive bank at job start.
+            // Compute bank 0 is physically isolated from this bank-1 stage, so
+            // validation must not serialize behind it.
+            force dut.u_my_ip.u_axi4_mapping.u_gemv.weight_map_valid_r = 1'b1;
+            force dut.u_my_ip.u_axi4_mapping.u_gemv.weight_map_bank_r = 1'b1;
             axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            repeat (4) @(posedge clk);
+            if (dut.u_my_ip.u_axi4_mapping.u_gemv.state_r == 4'd5)
+                fail("inactive-bank weight drain blocked active-bank validation");
+            else
+                pass_count = pass_count + 1;
+            release dut.u_my_ip.u_axi4_mapping.u_gemv.weight_map_valid_r;
+            release dut.u_my_ip.u_axi4_mapping.u_gemv.weight_map_bank_r;
             timeout = 0;
             while (!dut.u_my_ip.u_axi4_mapping.core_busy) begin
                 @(posedge clk);
