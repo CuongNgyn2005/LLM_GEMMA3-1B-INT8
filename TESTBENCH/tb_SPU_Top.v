@@ -587,6 +587,41 @@ module tb_SPU_Top;
         end
     endtask
 
+    task run_stream_soft_reset_abort_case;
+        begin
+            $display("[TB] VPU stream soft-reset aborts in-flight Q8 accumulator");
+            mm_write(REGION_PARAM, 0,
+                     {96'd0, 16'h3c00, 16'h3c00});
+            stream_push_entry(32'sd17, 16'd0, 16'd0, 16'd2,
+                              1'b0, 1'b1, 32'h0000_aa01, 1'b0);
+            timeout = 0;
+            while (!dut.stream_accum_busy) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("soft-reset test did not observe accumulator busy");
+                    timeout = 0;
+                end
+            end
+
+            @(negedge clk);
+            spu_soft_reset = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            spu_soft_reset = 1'b0;
+            #1;
+
+            if (dut.stream_accum_busy || dut.stream_accum_pair_busy)
+                fail("SPU soft reset left a Q8 stream accumulator in flight");
+            else
+                pass_count = pass_count + 1;
+            if (vpu_stream_status[4] !== 1'b1)
+                fail("SPU soft reset did not restore true stream quiescence");
+            else
+                pass_count = pass_count + 1;
+        end
+    endtask
+
     task run_vpu_stream_pair_case;
         reg [DATA_WIDTH-1:0] out0, out1;
         reg [31:0] count_before, out_before, err_before;
@@ -1388,6 +1423,7 @@ module tb_SPU_Top;
         run_scale_accum_case();
         run_scale_accum_bad_scale_case();
         run_scale_accum_row_range_case();
+        run_stream_soft_reset_abort_case();
         run_vpu_stream_scale_metadata_case();
         run_vpu_stream_pair_case();
         run_vpu_stream_p3_split_scale_case();

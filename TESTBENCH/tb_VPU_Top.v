@@ -478,6 +478,54 @@ module tb_VPU_Top;
         end
     endfunction
 
+    function [15:0] nonuniform_weight_scale_fp16;
+        input integer linear;
+        begin
+            case (linear % 8)
+                0: nonuniform_weight_scale_fp16 = 16'h3c00; // 1.0
+                1: nonuniform_weight_scale_fp16 = 16'h3800; // 0.5
+                2: nonuniform_weight_scale_fp16 = 16'h3400; // 0.25
+                3: nonuniform_weight_scale_fp16 = 16'h3000; // 0.125
+                4: nonuniform_weight_scale_fp16 = 16'h2c00; // 0.0625
+                5: nonuniform_weight_scale_fp16 = 16'h2800; // 0.03125
+                6: nonuniform_weight_scale_fp16 = 16'h2400; // 0.015625
+                default: nonuniform_weight_scale_fp16 = 16'h2000; // 0.0078125
+            endcase
+        end
+    endfunction
+
+    function signed [63:0] nonuniform_scale_q16;
+        input integer linear;
+        begin
+            case (linear % 8)
+                0: nonuniform_scale_q16 = 64'sd65536;
+                1: nonuniform_scale_q16 = 64'sd32768;
+                2: nonuniform_scale_q16 = 64'sd16384;
+                3: nonuniform_scale_q16 = 64'sd8192;
+                4: nonuniform_scale_q16 = 64'sd4096;
+                5: nonuniform_scale_q16 = 64'sd2048;
+                6: nonuniform_scale_q16 = 64'sd1024;
+                default: nonuniform_scale_q16 = 64'sd512;
+            endcase
+        end
+    endfunction
+
+    function [DATA_WIDTH-1:0] pack_nonuniform_scale_word;
+        input integer entries;
+        input integer word_idx;
+        integer lane;
+        integer linear;
+        begin
+            pack_nonuniform_scale_word = {DATA_WIDTH{1'b0}};
+            for (lane = 0; lane < 4; lane = lane + 1) begin
+                linear = word_idx * 4 + lane;
+                if (linear < entries)
+                    pack_nonuniform_scale_word[32*lane +: 32] =
+                        {nonuniform_weight_scale_fp16(linear), 16'h3c00};
+            end
+        end
+    endfunction
+
     function signed [7:0] requant_i8;
         input signed [31:0] value;
         input integer shift;
@@ -1530,6 +1578,82 @@ module tb_VPU_Top;
             end
 
             $display("[TB] GROUP CASE %0d compute+poll cycles=%0d", case_id, done_cycle - start_cycle);
+        end
+    endtask
+
+    task run_p2_nonuniform_scale_case;
+        localparam integer ROWS = 17;
+        localparam integer BLOCKS = 5;
+        integer beat;
+        integer row;
+        integer block_id;
+        integer scale_word_idx;
+        integer timeout;
+        integer linear;
+        reg [DATA_WIDTH-1:0] rd_word;
+        reg signed [63:0] expected_accum;
+        begin
+            init_case_data(141, ROWS, BLOCKS * 32);
+            $display("[TB] P2 NONUNIFORM SCALE CASE: distinct row/block scale entries");
+
+            axi_write(REG_CTRL, word32(32'h0000_0002), 16'h000f);
+            axi_write(REG_BANK, word32(32'h0000_0000), 16'h000f);
+            axi_write(REG_JOB_ID, word32(32'h0000_e141), 16'h000f);
+            axi_write(REG_ROWS, word32(ROWS), 16'h000f);
+            axi_write(REG_COLS, word32(BLOCKS * 32), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(BLOCKS * 2), 16'h000f);
+            axi_write(REG_SCALE, word32(32'h0000_3c00), 16'h000f);
+            axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8 |
+                                       VPU_MODE_P2_TWO_ROW), 16'h000f);
+
+            for (beat = 0; beat < current_col_beats; beat = beat + 1)
+                axi_write(ACT_BASE + beat * 16, pack_activation(beat), 16'hffff);
+            stage_pair_weight_image(ROWS, current_col_beats);
+            for (scale_word_idx = 0;
+                 scale_word_idx < ((ROWS * BLOCKS + 3) / 4);
+                 scale_word_idx = scale_word_idx + 1)
+                axi_write(SPU_PARAM_BASE + scale_word_idx * 16,
+                          pack_nonuniform_scale_word(ROWS * BLOCKS,
+                                                     scale_word_idx),
+                          16'hffff);
+
+            axi_write(REG_CTRL, word32(32'h0000_0001), 16'h000f);
+            timeout = 0;
+            rd_word = {DATA_WIDTH{1'b0}};
+            while (rd_word[0] !== 1'b1) begin
+                axi_read(REG_STATUS, rd_word);
+                timeout = timeout + 1;
+                if (rd_word[2]) begin
+                    fail("P2 nonuniform-scale core reported configuration error");
+                    rd_word[0] = 1'b1;
+                end
+                if (timeout > 100000) begin
+                    fail("P2 nonuniform-scale core did not finish");
+                    rd_word[0] = 1'b1;
+                end
+            end
+
+            for (row = 0; row < ROWS; row = row + 1) begin
+                expected_accum = 64'sd0;
+                for (block_id = 0; block_id < BLOCKS; block_id = block_id + 1) begin
+                    linear = row * BLOCKS + block_id;
+                    expected_accum = expected_accum +
+                        $signed(golden_q8_block(row, block_id)) *
+                        nonuniform_scale_q16(linear);
+                end
+                axi_read(SPU_OUT_BASE + row * 16, rd_word);
+                if (rd_word[15:0] !== row[15:0])
+                    fail("P2 nonuniform-scale SPU_OUT row id mismatch");
+                else
+                    pass_count = pass_count + 1;
+                if ($signed(rd_word[79:16]) !== expected_accum) begin
+                    $display("[TB][FAIL] P2 nonuniform scale row=%0d got=%0d expected=%0d",
+                             row, $signed(rd_word[79:16]), expected_accum);
+                    fail_count = fail_count + 1;
+                end else begin
+                    pass_count = pass_count + 1;
+                end
+            end
         end
     endtask
 
@@ -2836,6 +2960,7 @@ module tb_VPU_Top;
         run_group_case(98, 2, 2);
         run_group_case(99, 3, 32);
         run_group_case(100, 4, 2);
+        run_p2_nonuniform_scale_case();
         run_forced_stream_stall_case();
         run_pair_weight_port_ownership_case();
         run_group_case(132, 255, 36);
