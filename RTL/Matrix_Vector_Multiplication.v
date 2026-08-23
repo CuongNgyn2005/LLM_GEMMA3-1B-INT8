@@ -175,9 +175,9 @@ module Matrix_Vector_Multiplication #(
     localparam [15:0] MAX_ROWS_16           = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16      = MAX_COL_BEATS;
     localparam [15:0] Q8_BLOCK_BEATS_16     = 16'd2;
-    // P2 raw x8 uses a four-result sliding credit window.  Four remains
-    // deliberately below PMAU_Full's 8-entry result FIFO depth so each lane
-    // keeps deterministic reservation headroom under SPU backpressure.
+    // Raw P2 x8 mode may issue several Q8 blocks before retiring
+    // results. Four is deliberately below PMAU_Full's 8-entry result
+    // FIFO depth so every PMAU has deterministic reservation headroom.
     localparam [2:0]  RAW_BURST_MAX          = 3'd4;
     localparam [SCALE_WIDTH-1:0] FP16_ONE    = 16'h3c00;
     localparam [31:0] MAX_ROWS_32           = MAX_ROWS;
@@ -514,23 +514,14 @@ module Matrix_Vector_Multiplication #(
                                   (!pair_lane5_valid || pmau6_result_valid) &&
                                   (!pair_lane6_valid || pmau7_result_valid) &&
                                   (!pair_lane7_valid || pmau8_result_valid);
-    // In production P2 x8 mode, PMAU results may retire while S_RUN continues.
-    // The registered Matrix->SPU output token is the only additional storage;
-    // do not create a combinational SPU-ready path back into the PMAU FIFOs.
-    wire raw_result_pop_window = raw_burst_mode &&
-                                 ((state_r == S_RUN) || (state_r == S_WAIT_RESULT)) &&
-                                 (block_idx_r < group_blocks_r) &&
-                                 !spu_raw_valid;
-    wire pmau_result_ready = pmau_all_results_valid &&
-                             (raw_result_pop_window ||
-                              (!raw_burst_mode && (state_r == S_WAIT_RESULT)));
-    wire pmau2_result_ready = pmau_result_ready;
-    wire pmau3_result_ready = pmau_result_ready;
-    wire pmau4_result_ready = pmau_result_ready;
-    wire pmau5_result_ready = pmau_result_ready;
-    wire pmau6_result_ready = pmau_result_ready;
-    wire pmau7_result_ready = pmau_result_ready;
-    wire pmau8_result_ready = pmau_result_ready;
+    wire pmau_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau2_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau3_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau4_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau5_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau6_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau7_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire pmau8_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
     wire pair_issue_grant = pmau_input_ready &&
                             (!pair_lane1_valid || pmau2_input_ready) &&
                             (!pair_lane2_valid || pmau3_input_ready) &&
@@ -552,13 +543,14 @@ module Matrix_Vector_Multiplication #(
     wire pmau_result_fire = pmau_result_valid && pmau_result_ready;
     wire wait_after_feed =
         result_i8_mode_r ? feed_group_last_r : feed_last_r;
-    // The four-result limit is now a sliding credit window rather than a hard
-    // compute/drain burst boundary.  Keep reading the current row group as
-    // block_idx_r advances with PMAU pops; flush only after the final Q8 block.
+    // In P2 raw x8 mode a block boundary is not necessarily a scheduler
+    // boundary. Keep the local-memory stream alive until the bounded four-block
+    // reservation is complete, then clear the read enables once before retire.
     wire p2_block_end_fire = raw_burst_mode && pmau_input_fire && feed_last_r;
     wire p2_burst_continue =
         p2_block_end_fire &&
-        ((issue_block_idx_r + 16'd1) < group_blocks_r);
+        ((issue_block_idx_r + 16'd1) < group_blocks_r) &&
+        (raw_burst_blocks_r < (RAW_BURST_MAX - 3'd1));
     wire p2_burst_end_fire = p2_block_end_fire && !p2_burst_continue;
     wire legacy_compute_final_clear =
         (!raw_burst_mode) && pmau_input_fire && wait_after_feed;
@@ -593,9 +585,9 @@ module Matrix_Vector_Multiplication #(
         raw_burst_mode ? issue_block_idx_r : block_idx_r;
     wire [15:0] raw_group_issue_limit =
         {raw_issue_block_idx[14:0], 1'b0} + Q8_BLOCK_BEATS_16;
-    // block_idx_r is the next PMAU result to pop.  Issuing at most four blocks
-    // beyond it bounds PMAU FIFO/inflight occupancy even if SPU stops entirely;
-    // each successful pop slides this window forward by one block.
+    // During a P2 burst block_idx_r is the oldest unretired block and remains
+    // stable while reads issue. One limit therefore covers the complete
+    // <=RAW_BURST_MAX reservation window without issuing a fifth result.
     wire [15:0] raw_p2_candidate_end_block =
         block_idx_r + {13'd0, RAW_BURST_MAX};
     wire [15:0] raw_p2_end_block =
@@ -964,7 +956,7 @@ module Matrix_Vector_Multiplication #(
             weight_map_local_addr_r <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
             weight_map_bank_r <= 1'b0;
             weight_map_data_r <= {AXI_DATA_WIDTH{1'b0}};
-            weight_map_strb_r <= {(AXI_DATA_WIDTH/8)-1{1'b0}};
+            weight_map_strb_r <= {(AXI_DATA_WIDTH/8){1'b0}};
         end else begin
             weight_map_valid_r <= weight_map_base_valid_r;
             if (weight_map_base_valid_r) begin
@@ -1594,54 +1586,6 @@ module Matrix_Vector_Multiplication #(
                 end
 
                 S_RUN: begin
-                    // The one-entry registered raw token decouples PMAU FIFO
-                    // retirement from SPU backpressure.  A token is cleared only
-                    // after SPU accepts it; the next PMAU result may pop on a
-                    // later cycle without introducing SPU ready into PMAU ready.
-                    if (raw_burst_mode && spu_raw_valid && spu_raw_ready) begin
-                        spu_raw_valid <= 1'b0;
-                        spu_raw_pair_valid <= 1'b0;
-                        spu_raw_lane_valid <= 8'd0;
-                    end
-
-                    // Pop the oldest x8 PMAU result while compute continues.
-                    // block_idx_r/raw_lane_result_index_r are retirement-side
-                    // metadata; issue_block_idx_r independently tracks compute.
-                    if (raw_burst_mode && pmau_result_fire) begin
-                        spu_raw_valid <= 1'b1;
-                        spu_raw_data <= $signed(pmau_result_data);
-                        spu_raw_row <= row_idx_r;
-                        spu_raw_block <= block_idx_r;
-                        spu_raw_group_blocks <= group_blocks_r;
-                        spu_raw_last_block <= ((block_idx_r + 16'd1) >= group_blocks_r);
-                        spu_raw_clear_accum <= (block_idx_r == 16'd0);
-                        spu_raw_job_id <= active_job_id_r;
-                        spu_raw_bank <= active_bank_r;
-                        spu_raw_scale_index <= result_value_index;
-                        spu_raw_pair_valid <= pair_lane1_valid;
-                        spu_raw_pair_data <= $signed(pmau2_result_data);
-                        spu_raw_pair_row <= row_idx_r + 16'd1;
-                        spu_raw_pair_block <= block_idx_r;
-                        spu_raw_pair_group_blocks <= group_blocks_r;
-                        spu_raw_pair_last_block <= ((block_idx_r + 16'd1) >= group_blocks_r);
-                        spu_raw_pair_clear_accum <= (block_idx_r == 16'd0);
-                        spu_raw_pair_job_id <= active_job_id_r;
-                        spu_raw_pair_bank <= active_bank_r;
-                        spu_raw_pair_scale_index <= pair_result_value_index;
-                        spu_raw_lane_valid <= {pair_lane7_valid,pair_lane6_valid,pair_lane5_valid,pair_lane4_valid,
-                                               pair_lane3_valid,pair_lane2_valid,pair_lane1_valid,1'b1};
-                        spu_raw_lane_data <= {pmau8_result_data,pmau7_result_data,pmau6_result_data,pmau5_result_data,
-                                              pmau4_result_data,pmau3_result_data,pmau2_result_data,pmau_result_data};
-                        spu_raw_lane_row <= {row_idx_r+16'd7,row_idx_r+16'd6,row_idx_r+16'd5,row_idx_r+16'd4,
-                                             row_idx_r+16'd3,row_idx_r+16'd2,row_idx_r+16'd1,row_idx_r};
-                        spu_raw_lane_scale_index <= {quad7_result_value_index,quad6_result_value_index,quad5_result_value_index,
-                                                     quad4_result_value_index,quad3_result_value_index,quad2_result_value_index,
-                                                     pair_result_value_index,result_value_index};
-                        block_idx_r <= block_idx_r + 16'd1;
-                        for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
-                            raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
-                    end
-
                     if (pmau_input_fire)
                         feed_valid_r <= 1'b0;
 
@@ -1731,21 +1675,24 @@ module Matrix_Vector_Multiplication #(
                     if (pmau_input_fire && wait_after_feed) begin
                         if (raw_burst_mode) begin
                             if (p2_burst_continue) begin
-                                // No hard four-block stop: retirement advances
-                                // block_idx_r, which slides issue_read_limit.
-                                issue_block_idx_r <= issue_block_idx_r + 16'd1;
-                                state_r <= S_RUN;
+                                // Preserve req/d/q/x/feed at intermediate Q8
+                                // boundaries so the next block arrives without
+                                // a local-memory refill bubble.
+                                issue_block_idx_r  <= issue_block_idx_r + 16'd1;
+                                raw_burst_blocks_r <= raw_burst_blocks_r + 3'd1;
+                                state_r            <= S_RUN;
                             end else begin
-                                // Only the final Q8 block in this row group
-                                // flushes the local-memory pipeline. Remaining
-                                // PMAU results drain in S_WAIT_RESULT.
+                                // The fourth (or final short-burst) block is the
+                                // only P2 boundary that flushes before retire.
                                 feed_valid_r     <= 1'b0;
                                 compute_rd_en    <= 1'b0;
                                 read_req_valid_r <= 1'b0;
                                 read_valid_d_r   <= 1'b0;
                                 read_valid_q_r   <= 1'b0;
                                 read_valid_x_r   <= 1'b0;
-                                state_r          <= S_WAIT_RESULT;
+                                raw_burst_blocks_r  <= raw_burst_blocks_r + 3'd1;
+                                raw_burst_retired_r <= 3'd0;
+                                state_r             <= S_WAIT_RESULT;
                             end
                         end else begin
                             feed_valid_r     <= 1'b0;
@@ -1761,71 +1708,7 @@ module Matrix_Vector_Multiplication #(
 
                 S_WAIT_RESULT: begin
                     feed_valid_r <= 1'b0;
-                    if (raw_burst_mode) begin
-                        if (spu_raw_valid && spu_raw_ready) begin
-                            spu_raw_valid <= 1'b0;
-                            spu_raw_pair_valid <= 1'b0;
-                            spu_raw_lane_valid <= 8'd0;
-                        end
-
-                        if (pmau_result_fire) begin
-                            spu_raw_valid <= 1'b1;
-                            spu_raw_data <= $signed(pmau_result_data);
-                            spu_raw_row <= row_idx_r;
-                            spu_raw_block <= block_idx_r;
-                            spu_raw_group_blocks <= group_blocks_r;
-                            spu_raw_last_block <= ((block_idx_r + 16'd1) >= group_blocks_r);
-                            spu_raw_clear_accum <= (block_idx_r == 16'd0);
-                            spu_raw_job_id <= active_job_id_r;
-                            spu_raw_bank <= active_bank_r;
-                            spu_raw_scale_index <= result_value_index;
-                            spu_raw_pair_valid <= pair_lane1_valid;
-                            spu_raw_pair_data <= $signed(pmau2_result_data);
-                            spu_raw_pair_row <= row_idx_r + 16'd1;
-                            spu_raw_pair_block <= block_idx_r;
-                            spu_raw_pair_group_blocks <= group_blocks_r;
-                            spu_raw_pair_last_block <= ((block_idx_r + 16'd1) >= group_blocks_r);
-                            spu_raw_pair_clear_accum <= (block_idx_r == 16'd0);
-                            spu_raw_pair_job_id <= active_job_id_r;
-                            spu_raw_pair_bank <= active_bank_r;
-                            spu_raw_pair_scale_index <= pair_result_value_index;
-                            spu_raw_lane_valid <= {pair_lane7_valid,pair_lane6_valid,pair_lane5_valid,pair_lane4_valid,
-                                                   pair_lane3_valid,pair_lane2_valid,pair_lane1_valid,1'b1};
-                            spu_raw_lane_data <= {pmau8_result_data,pmau7_result_data,pmau6_result_data,pmau5_result_data,
-                                                  pmau4_result_data,pmau3_result_data,pmau2_result_data,pmau_result_data};
-                            spu_raw_lane_row <= {row_idx_r+16'd7,row_idx_r+16'd6,row_idx_r+16'd5,row_idx_r+16'd4,
-                                                 row_idx_r+16'd3,row_idx_r+16'd2,row_idx_r+16'd1,row_idx_r};
-                            spu_raw_lane_scale_index <= {quad7_result_value_index,quad6_result_value_index,quad5_result_value_index,
-                                                         quad4_result_value_index,quad3_result_value_index,quad2_result_value_index,
-                                                         pair_result_value_index,result_value_index};
-                            block_idx_r <= block_idx_r + 16'd1;
-                            for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
-                                raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
-                        end
-
-                        // block_idx_r == group_blocks_r means every PMAU result
-                        // has left the lane FIFOs. Do not cross rows until the
-                        // final registered Matrix->SPU token is accepted too.
-                        if ((block_idx_r >= group_blocks_r) &&
-                            (!spu_raw_valid || (spu_raw_valid && spu_raw_ready))) begin
-                            issue_block_idx_r <= 16'd0;
-                            block_idx_r       <= 16'd0;
-                            raw_burst_blocks_r <= 3'd0;
-                            raw_burst_retired_r <= 3'd0;
-                            if ((row_idx_r + 16'd8) >= active_rows_r) begin
-                                state_r <= S_DRAIN_RESULT;
-                            end else begin
-                                row_idx_r <= row_idx_r + 16'd8;
-                                read_beat_idx_r <= 16'd0;
-                                result_row_base_r <= result_row_base_r + raw_row_base_advance_r;
-                                for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
-                                    raw_lane_result_index_r[fsm_bank_i] <=
-                                        result_row_base_r + raw_row_base_advance_r + raw_group_offset_r[fsm_bank_i];
-                                weight_row_base_r <= weight_row_base_r + active_col_beats_r;
-                                state_r <= S_RUN;
-                            end
-                        end
-                    end else if (pmau_result_fire) begin
+                    if (pmau_result_fire) begin
                         if (result_i8_mode_r) begin
                             result_accum_rd_en_r <= 1'b1;
                             result_accum_rd_addr_r <= row_idx_r;
@@ -1844,9 +1727,15 @@ module Matrix_Vector_Multiplication #(
                                      (!pair_lane5_valid || (quad5_result_value_index < MAX_RESULT_VALUES_32)) &&
                                      (!pair_lane6_valid || (quad6_result_value_index < MAX_RESULT_VALUES_32)) &&
                                      (!pair_lane7_valid || (quad7_result_value_index < MAX_RESULT_VALUES_32))) begin
-                            result_write_pending_r <= 1'b1;
-                            result_writes_done_r    <= 1'b0;
-                            spu_raw_valid           <= 1'b0;
+                            if (raw_burst_mode) begin
+                                result_write_pending_r <= 1'b0;
+                                result_writes_done_r    <= 1'b1;
+                                spu_raw_valid           <= 1'b1;
+                            end else begin
+                                result_write_pending_r <= 1'b1;
+                                result_writes_done_r    <= 1'b0;
+                                spu_raw_valid           <= 1'b0;
+                            end
                             result_write_addr_r <= result_wr_addr;
                             result_write_addr_bank_r[active_bank_r] <= result_wr_addr;
                             result_write_lane_r <= result_wr_lane;
@@ -1930,9 +1819,39 @@ module Matrix_Vector_Multiplication #(
                     if (result_writes_done_r &&
                         (raw_bundle_accepted_r || (spu_raw_valid && spu_raw_ready))) begin
                         if (raw_burst_mode) begin
-                            // Unreachable for the production sliding P2 path;
-                            // retained only as a defensive legacy fallback.
-                            state_r <= S_WAIT_RESULT;
+                            if ((raw_burst_retired_r + 3'd1) < raw_burst_blocks_r) begin
+                                raw_burst_retired_r <= raw_burst_retired_r + 3'd1;
+                                block_idx_r         <= block_idx_r + 16'd1;
+                                for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                                    raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
+                                state_r             <= S_WAIT_RESULT;
+                            end else begin
+                                raw_burst_blocks_r  <= 3'd0;
+                                raw_burst_retired_r <= 3'd0;
+                                if ((issue_block_idx_r + 16'd1) < group_blocks_r) begin
+                                    issue_block_idx_r <= issue_block_idx_r + 16'd1;
+                                    block_idx_r       <= block_idx_r + 16'd1;
+                                    for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                                        raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
+                                    state_r           <= S_RUN;
+                                end else begin
+                                    issue_block_idx_r <= 16'd0;
+                                    block_idx_r       <= 16'd0;
+                                    if ((row_idx_r + (pair_mode_r ? 16'd8 : 16'd1)) >= active_rows_r) begin
+                                        state_r <= S_DRAIN_RESULT;
+                                    end else begin
+                                        row_idx_r <= row_idx_r + (pair_mode_r ? 16'd8 : 16'd1);
+                                        read_beat_idx_r <= 16'd0;
+                                        result_row_base_r <= result_row_base_r + raw_row_base_advance_r;
+                                        for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                                            raw_lane_result_index_r[fsm_bank_i] <=
+                                                result_row_base_r + raw_row_base_advance_r + raw_group_offset_r[fsm_bank_i];
+                                        if (pair_mode_r || (row_idx_r[2:0] == 3'd7))
+                                            weight_row_base_r <= weight_row_base_r + active_col_beats_r;
+                                        state_r <= S_RUN;
+                                    end
+                                end
+                            end
                         end else begin
                             if ((block_idx_r + 16'd1) < group_blocks_r) begin
                                 block_idx_r <= block_idx_r + 16'd1;
