@@ -7,6 +7,15 @@
  * P2 bundles first enter a four-entry FIFO, then one look-ahead slot pipelines
  * the four PARAM read pairs. The synchronous BRAM return tags advance while
  * the next pair is issued, so after fill one scale pair is launched per clock.
+ * Each P2 lane also keeps the last full 128-bit PARAM word it fetched. Because
+ * four consecutive P2 scale entries share one PARAM word, a following bundle
+ * from the same job can select another 32-bit entry from that registered word
+ * without issuing another BRAM read. A bundle takes the fast path only when
+ * every valid lane hits both job_id and word index; otherwise the original
+ * registered two-port read pipeline is used unchanged. The cache is cleared on
+ * reset/soft-reset and never participates in P3, so it cannot change P3 memory
+ * ownership or turn a P2 miss into speculative scale data.
+ *
  * A ready look-ahead bundle can start the eight accumulators on the same edge
  * that it becomes the active bundle. If another FIFO entry exists, the
  * look-ahead slot is replaced on that handoff edge. P3 retains its original
@@ -208,6 +217,14 @@ module SPU_VPU_Stream8 #(
     reg [2:0] read_unused_prefetch_rsp_scratch_lane_r;
     reg prefetch_rsp_last_r;
 
+    // Per-lane P2 scale-word cache.  Tagging with job_id as well as the word
+    // index prevents a later job that rewrites SPU_PARAM from consuming a word
+    // retained by an earlier job.
+    reg [7:0] p2_scale_cache_valid_r;
+    reg [31:0] p2_scale_cache_job_r [0:7];
+    reg [31:0] p2_scale_cache_word_index_r [0:7];
+    reg [AXI_DATA_WIDTH-1:0] p2_scale_cache_word_r [0:7];
+
     reg [2:0] fifo_count_r;
     reg [1:0] fifo_wr_ptr_r;
     reg [1:0] fifo_rd_ptr_r;
@@ -274,6 +291,24 @@ module SPU_VPU_Stream8 #(
             ((WORD_DEPTH < 2) || ((WORD_DEPTH & 1) != 0) ||
              ((vpu_block >> 3) >= P3_BANK_WORD_DEPTH)))
             bundle_index_ok = 1'b0;
+    end
+
+    // Fast-path qualification is all-or-nothing for the FIFO head.  This keeps
+    // the miss path exactly the old four-pair protocol and avoids mixing cached
+    // and live BRAM data inside one x8 atomic bundle.
+    integer ci;
+    reg fifo_head_scale_cache_hit;
+    always @* begin
+        fifo_head_scale_cache_hit = (fifo_count_r != 3'd0) &&
+                                    (fifo_lane_valid[fifo_rd_ptr_r] != 8'd0);
+        for (ci = 0; ci < 8; ci = ci + 1) begin
+            if (fifo_lane_valid[fifo_rd_ptr_r][ci] &&
+                (!p2_scale_cache_valid_r[ci] ||
+                 (p2_scale_cache_job_r[ci] != fifo_job_id[fifo_rd_ptr_r]) ||
+                 (p2_scale_cache_word_index_r[ci] !=
+                  fifo_scale_word_index[fifo_rd_ptr_r][32*ci +: 32])))
+                fifo_head_scale_cache_hit = 1'b0;
+        end
     end
 
     wire bank_mismatch = split_scale_enable && p3_bank_lock_valid &&
@@ -441,6 +476,7 @@ module SPU_VPU_Stream8 #(
             read_unused_prefetch_rsp_scratch_valid_r <= 1'b0;
             read_unused_prefetch_rsp_scratch_lane_r <= 3'd0;
             prefetch_rsp_last_r <= 1'b0;
+            p2_scale_cache_valid_r <= 8'd0;
             mem0_en <= 1'b0; mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
             mem0_index <= 32'd0; mem0_wdata <= {AXI_DATA_WIDTH{1'b0}};
             mem0_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
@@ -459,6 +495,9 @@ module SPU_VPU_Stream8 #(
                 prefetch_scale_lane_r[i] <= 3'd0;
                 prefetch_act_scale_r[i] <= 16'd0;
                 prefetch_weight_scale_r[i] <= 16'd0;
+                p2_scale_cache_job_r[i] <= 32'd0;
+                p2_scale_cache_word_index_r[i] <= 32'd0;
+                p2_scale_cache_word_r[i] <= {AXI_DATA_WIDTH{1'b0}};
             end
             for (fi = 0; fi < 4; fi = fi + 1) begin
                 fifo_lane_valid[fi] <= 8'd0;
@@ -548,26 +587,53 @@ module SPU_VPU_Stream8 #(
                 prefetch_job_id_r <= fifo_job_id[fifo_rd_ptr_r];
                 prefetch_bank_r <= fifo_bank[fifo_rd_ptr_r];
                 prefetch_pair_idx_r <= 2'd0;
-                prefetch_req_valid_r <= 1'b1;
-                prefetch_req_lane0_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][0];
-                prefetch_req_lane1_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][1];
-                prefetch_req_lane0_dest_r <= 3'd0;
-                prefetch_req_lane1_dest_r <= 3'd1;
-                prefetch_req_lane0_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
-                prefetch_req_lane1_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
-                prefetch_req_lane0_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][2:0];
-                prefetch_req_lane1_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][5:3];
-                prefetch_req_last_r <= 1'b0;
-                prefetch_rsp_valid_r <= 1'b0;
-                prefetch_rsp_last_r <= 1'b0;
-                mem0_en <= fifo_lane_valid[fifo_rd_ptr_r][0];
-                mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
-                mem0_index <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
-                mem1_en <= fifo_lane_valid[fifo_rd_ptr_r][1];
-                mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
-                mem1_index <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
-                mem3_scratch_en <= 1'b0; mem3_scratch_index <= 32'd0;
-                prefetch_state_r <= PF_READ;
+
+                if (fifo_head_scale_cache_hit) begin
+                    // Registered-word hit: select the requested 32-bit scale
+                    // entry directly.  No PARAM RAM command is issued.
+                    for (i = 0; i < 8; i = i + 1) begin
+                        if (fifo_lane_valid[fifo_rd_ptr_r][i]) begin
+                            prefetch_act_scale_r[i] <=
+                                p2_scale_cache_word_r[i]
+                                    [32*fifo_scale_lane[fifo_rd_ptr_r][3*i +: 3] +: 16];
+                            prefetch_weight_scale_r[i] <=
+                                p2_scale_cache_word_r[i]
+                                    [32*fifo_scale_lane[fifo_rd_ptr_r][3*i +: 3]+16 +: 16];
+                        end
+                    end
+                    prefetch_req_valid_r <= 1'b0;
+                    prefetch_req_lane0_valid_r <= 1'b0;
+                    prefetch_req_lane1_valid_r <= 1'b0;
+                    prefetch_req_last_r <= 1'b0;
+                    prefetch_rsp_valid_r <= 1'b0;
+                    prefetch_rsp_lane0_valid_r <= 1'b0;
+                    prefetch_rsp_lane1_valid_r <= 1'b0;
+                    prefetch_rsp_last_r <= 1'b0;
+                    prefetch_state_r <= PF_READY;
+                end else begin
+                    // Cache miss: preserve the original registered two-port
+                    // prefetch sequence exactly.
+                    prefetch_req_valid_r <= 1'b1;
+                    prefetch_req_lane0_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][0];
+                    prefetch_req_lane1_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][1];
+                    prefetch_req_lane0_dest_r <= 3'd0;
+                    prefetch_req_lane1_dest_r <= 3'd1;
+                    prefetch_req_lane0_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
+                    prefetch_req_lane1_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
+                    prefetch_req_lane0_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][2:0];
+                    prefetch_req_lane1_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][5:3];
+                    prefetch_req_last_r <= 1'b0;
+                    prefetch_rsp_valid_r <= 1'b0;
+                    prefetch_rsp_last_r <= 1'b0;
+                    mem0_en <= fifo_lane_valid[fifo_rd_ptr_r][0];
+                    mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+                    mem0_index <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
+                    mem1_en <= fifo_lane_valid[fifo_rd_ptr_r][1];
+                    mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+                    mem1_index <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
+                    mem3_scratch_en <= 1'b0; mem3_scratch_index <= 32'd0;
+                    prefetch_state_r <= PF_READ;
+                end
             end
 
             if (!split_scale_enable) begin
@@ -579,12 +645,24 @@ module SPU_VPU_Stream8 #(
                                     mem0_rdata[32*prefetch_rsp_lane0_scale_lane_r +: 16];
                                 prefetch_weight_scale_r[prefetch_rsp_lane0_dest_r] <=
                                     mem0_rdata[32*prefetch_rsp_lane0_scale_lane_r+16 +: 16];
+                                p2_scale_cache_valid_r[prefetch_rsp_lane0_dest_r] <= 1'b1;
+                                p2_scale_cache_job_r[prefetch_rsp_lane0_dest_r] <=
+                                    prefetch_job_id_r;
+                                p2_scale_cache_word_index_r[prefetch_rsp_lane0_dest_r] <=
+                                    prefetch_scale_word_index_r[prefetch_rsp_lane0_dest_r];
+                                p2_scale_cache_word_r[prefetch_rsp_lane0_dest_r] <= mem0_rdata;
                             end
                             if (prefetch_rsp_valid_r && prefetch_rsp_lane1_valid_r) begin
                                 prefetch_act_scale_r[prefetch_rsp_lane1_dest_r] <=
                                     mem1_rdata[32*prefetch_rsp_lane1_scale_lane_r +: 16];
                                 prefetch_weight_scale_r[prefetch_rsp_lane1_dest_r] <=
                                     mem1_rdata[32*prefetch_rsp_lane1_scale_lane_r+16 +: 16];
+                                p2_scale_cache_valid_r[prefetch_rsp_lane1_dest_r] <= 1'b1;
+                                p2_scale_cache_job_r[prefetch_rsp_lane1_dest_r] <=
+                                    prefetch_job_id_r;
+                                p2_scale_cache_word_index_r[prefetch_rsp_lane1_dest_r] <=
+                                    prefetch_scale_word_index_r[prefetch_rsp_lane1_dest_r];
+                                p2_scale_cache_word_r[prefetch_rsp_lane1_dest_r] <= mem1_rdata;
                             end
 
                             if (prefetch_rsp_valid_r && prefetch_rsp_last_r) begin
