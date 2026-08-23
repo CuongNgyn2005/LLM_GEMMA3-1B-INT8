@@ -373,6 +373,16 @@ module AXI4_Mapping #(
     wire [31:0] spu_stream_final_write_count;
     wire [31:0] spu_stream_p3_reject_count;
     wire [31:0] spu_stream_p3_status;
+
+    // P2/x8 completion is architectural only after the SPU has consumed every
+    // accepted raw bundle and completed its final SPU_OUT write.  Latch whether
+    // the active GEMV command owns the P2 stream so later configuration writes
+    // cannot change the completion contract of the in-flight job.
+    reg core_completion_wait_spu_r;
+    wire core_waiting_for_spu =
+        core_completion_wait_spu_r && core_done && !spu_stream_status[4];
+    wire status_core_busy = core_busy || core_waiting_for_spu;
+    wire status_core_done = core_done && !core_waiting_for_spu;
     wire status_error = core_error;
 
     // Register read map.  Offset 0x0000 acts as a control register on writes
@@ -382,8 +392,8 @@ module AXI4_Mapping #(
         begin
             reg_read_word32 = 32'd0;
             case (addr[15:0])
-                16'h0000: reg_read_word32[2:0]   = {status_error, core_busy, core_done};
-                16'h0010: reg_read_word32[2:0]   = {status_error, core_busy, core_done};
+                16'h0000: reg_read_word32[2:0]   = {status_error, status_core_busy, status_core_done};
+                16'h0010: reg_read_word32[2:0]   = {status_error, status_core_busy, status_core_done};
                 16'h0020: reg_read_word32 = cfg_rows_reg;
                 16'h0030: reg_read_word32 = cfg_cols_reg;
                 16'h0040: reg_read_word32 = cfg_col_beats_reg;
@@ -432,8 +442,8 @@ module AXI4_Mapping #(
                     reg_read_word32[1]      = cfg_bank_reg[1];   // result read bank
                     reg_read_word32[8]      = core_active_bank;
                     reg_read_word32[9]      = core_done_bank;
-                    reg_read_word32[16]     = core_busy;
-                    reg_read_word32[17]     = core_done;
+                    reg_read_word32[16]     = status_core_busy;
+                    reg_read_word32[17]     = status_core_done;
                     reg_read_word32[18]     = core_error;
                 end
                 16'h0130: reg_read_word32 = core_active_job_id;
@@ -566,6 +576,7 @@ module AXI4_Mapping #(
             cfg_spu_aux0_reg  <= 32'd0;
             cfg_spu_aux1_reg  <= 32'd0;
             cfg_stream_mode_reg <= 32'd0;
+            core_completion_wait_spu_r <= 1'b0;
             wr_decode_en_r    <= 1'b0;
             wr_decode_addr_r  <= 32'd0;
             wr_decode_data_r  <= {AXI_DATA_WIDTH{1'b0}};
@@ -600,6 +611,12 @@ module AXI4_Mapping #(
             spu_soft_reset_r  <= spu_soft_reset_hit;
             core_wr_en_r      <= core_wr_hit;
             spu_wr_en_r       <= spu_wr_hit;
+
+            if (ctrl_start_hit)
+                core_completion_wait_spu_r <=
+                    cfg_mode_reg[4] && cfg_mode_reg[0] && !cfg_mode_reg[1];
+            else if (ctrl_clear_done_hit)
+                core_completion_wait_spu_r <= 1'b0;
 
             if (core_wr_hit) begin
                 core_wr_region_r <= mem_region(wr_decode_addr);

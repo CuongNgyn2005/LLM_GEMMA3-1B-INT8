@@ -339,7 +339,11 @@ module SPU_VPU_Stream8 #(
             (* keep = "true" *) wire resetn_local;
             wire launch_prefetch_lane = p2_prefetch_launch &&
                                         prefetch_lane_valid_r[gi];
-            assign resetn_local = resetn;
+            // A stream soft reset aborts the complete transaction, including
+            // arithmetic already accepted by a lane accumulator.  Resetting
+            // only the FIFO/FSM clears lane_valid_r and can otherwise expose a
+            // false-quiescent status while the accumulator is still busy.
+            assign resetn_local = resetn && !soft_reset;
             SPU_Q8_Scale_Accum #(
                 .ROW_ID_WIDTH(16), .MAX_ROWS(MAX_ROWS),
                 .ACC_WIDTH(64), .FIXED_FRAC_BITS(16)
