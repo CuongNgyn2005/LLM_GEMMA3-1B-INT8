@@ -1,6 +1,6 @@
 # Tổng quan RTL và dataflow VPU–SPU
 
-**Cập nhật:** 12-08-2026
+**Cập nhật:** 13-08-2026
 **Nguồn mô tả:** RTL canonical trong thư mục này. Các thay đổi phải được đồng bộ qua flow nguồn IP trước khi tạo bitstream mới; thư mục generated của `project_1` không được sửa trực tiếp.
 
 ## 1. Mục tiêu kiến trúc
@@ -360,35 +360,31 @@ Host chỉ ghi `FREE/FILLING`; PL chỉ đọc `READY/COMPUTING`; không bên n�
 
 ## 9. Bottleneck RTL và timing
 
-The current authoritative routed report is
-`DATN_VIVADO/project_1/project_1.runs/impl_1/SoC_wrapper_timing_summary_routed.rpt`
-(2026-08-12 11:45:10). It reports setup WNS `+0.415 ns`, TNS `0 ns`,
-zero setup failures, hold WHS `+0.010 ns`, THS `0 ns`, and pulse-width
-slack `+1.166 ns`. The design is timing-clean in that checkpoint, but it
-does not yet meet the requested `+0.500 ns` WNS margin. The older
-`task010_fast5` value `+0.661 ns` is not the current canonical report and
-must not be used as signoff evidence.
+The authoritative project2 routed report is
+`DATN_VIVADO/project_2/project_2.runs/impl_1/SoC_wrapper_timing_summary_routed.rpt`
+(Vivado 2022.2, 2026-08-13 14:00:22). Iteration 19 reports setup WNS
+`+0.509 ns`, TNS `0 ns`, zero setup failures, hold WHS `+0.010 ns`, THS
+`0 ns`, and pulse-width slack `+1.166 ns`; all user-specified timing
+constraints are met. The worst setup path is the registered SPU
+`pair_idx_r` control signal to the SPU input BRAM write-enable, with
+`+0.509 ns` slack and `4.108 ns` data-path delay.
 
-The latest RTL-only timing iteration is simulation-validated but has not
-been synthesized or implemented. It registers the VPU result/scale index
-with each raw token and makes production `SPU_Top` consume that index
-directly, removing the row*group_blocks arithmetic from the SPU
-ready/valid-to-DSP input cone. New WNS and resource counts are pending a
-fresh owner-run synthesis and implementation.
+Iteration 19 registers the internal `SPU_Local_Memory` core-region
+selectors at the existing memory-request clock boundary. This removes the
+live `core_region`/`core2_region` select cone from the SPU stream's
+lane-valid-to-scale-data path without changing BRAM enables, addresses,
+AXI/MMIO timing, memory capacity, or the stream protocol. The canonical
+RTL and `project_2/src` mirror are byte-identical; the refreshed generated
+IP source was also verified identical before synthesis.
 
-- the previous routed checkpoint reported 164 DSP48E2, 64 URAM, and 104.5
-  BRAM tiles; no storage-capacity change was made;
-- the previous route status reported zero routing errors, zero unrouted
-  nets, and zero partially routed nets; DRC reported zero errors;
-- P2 now issues one activation beat to four PMAUs (`16 lane × 4 PMAU = 64`
-  INT8 multiplications per accepted beat), then serializes the four raw
-  results into the existing result/stream protocol;
-- the weight write remapper is a 14-stage restoring divider plus per-bank
-  write staging, removing the old long combinational address/fanout path;
-- SPU_Q8_Scale_Accum uses four registered 32×32 partial products and staged
-  reconstruction, while SPU_RMSNorm registers the lane product before write;
-- the current source change has no new bitstream; the owner must rerun
-  synthesis and implementation before hardware use.
+Synthesis and implementation completed for project2 with 406 DSP48E2,
+104 RAMB36E2, 1 RAMB18E2, and 64 URAM288. The routed DRC completed with
+zero errors; its 454 warnings are existing advisory/DSP pipelining and
+unrouted-load diagnostics and are not timing violations. Bitstream writing
+completed successfully. Simulation evidence is archived under
+`DATN_VIVADO/manual_sim/project2_timing_iter19/`: VPU/SPU integration
+passed at 1771 ns and standalone SPU passed with `pass_count=94` at
+20705 ns.
 
 ## 10. Tiêu chí production
 

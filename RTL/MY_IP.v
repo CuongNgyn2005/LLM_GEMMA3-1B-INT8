@@ -4,7 +4,7 @@
  * Description : AXI4-Full slave protocol adapter for the INT8 VPU.
  *
  * MY_IP receives the standard AXI4-Full AW, W, B, AR, and R channels from
- * VPU_Top and converts them into a narrow ordered local request interface for
+ * AI_IP_top and converts them into a narrow ordered local request interface for
  * AXI4_Mapping.  It is responsible for AXI handshakes, burst beat counting,
  * INCR-burst address advancement, ID preservation, WSTRB forwarding,
  * RLAST/BVALID generation, and SLVERR propagation when the mapping layer

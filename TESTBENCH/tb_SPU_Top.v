@@ -587,6 +587,41 @@ module tb_SPU_Top;
         end
     endtask
 
+    task run_stream_soft_reset_abort_case;
+        begin
+            $display("[TB] VPU stream soft-reset aborts in-flight Q8 accumulator");
+            mm_write(REGION_PARAM, 0,
+                     {96'd0, 16'h3c00, 16'h3c00});
+            stream_push_entry(32'sd17, 16'd0, 16'd0, 16'd2,
+                              1'b0, 1'b1, 32'h0000_aa01, 1'b0);
+            timeout = 0;
+            while (!dut.stream_accum_busy) begin
+                @(posedge clk);
+                timeout = timeout + 1;
+                if (timeout > 100) begin
+                    fail("soft-reset test did not observe accumulator busy");
+                    timeout = 0;
+                end
+            end
+
+            @(negedge clk);
+            spu_soft_reset = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            spu_soft_reset = 1'b0;
+            #1;
+
+            if (dut.stream_accum_busy || dut.stream_accum_pair_busy)
+                fail("SPU soft reset left a Q8 stream accumulator in flight");
+            else
+                pass_count = pass_count + 1;
+            if (vpu_stream_status[4] !== 1'b1)
+                fail("SPU soft reset did not restore true stream quiescence");
+            else
+                pass_count = pass_count + 1;
+        end
+    endtask
+
     task run_vpu_stream_pair_case;
         reg [DATA_WIDTH-1:0] out0, out1;
         reg [31:0] count_before, out_before, err_before;
@@ -805,7 +840,7 @@ module tb_SPU_Top;
 
             // The unit-level mode signal intentionally changes here to prove
             // completion uses the latched P3 owner, not the live mode input.
-            // AXI-level mode-write rejection is covered in tb_VPU_Top.
+            // AXI-level mode-write rejection is covered in tb_AI_IP_top.
             stream_split_scale_enable = 1'b0;
             if (!vpu_stream_status[5])
                 fail("P3 lock changed with live mode before raw done");
@@ -1173,6 +1208,42 @@ module tb_SPU_Top;
         end
     endtask
 
+    task check_rmsnorm_saturation;
+        input signed [63:0] product_q38;
+        input signed [15:0] expected;
+        begin
+            force dut.u_spu_controller.u_rmsnorm.state_r = 2'd3;
+            force dut.u_spu_controller.u_rmsnorm.lane_active_r = 1'b1;
+            force dut.u_spu_controller.u_rmsnorm.lane_idx_r = 3'd0;
+            force dut.u_spu_controller.u_rmsnorm.norm_product_r = product_q38;
+            @(posedge clk);
+            #1;
+            if ($signed(dut.u_spu_controller.u_rmsnorm.result_word[15:0]) !== expected) begin
+                $display("[TB][FAIL] RMS saturation product=%0d got=%0d expected=%0d",
+                         product_q38,
+                         $signed(dut.u_spu_controller.u_rmsnorm.result_word[15:0]),
+                         expected);
+                fail_count = fail_count + 1;
+            end else begin
+                pass_count = pass_count + 1;
+            end
+            release dut.u_spu_controller.u_rmsnorm.norm_product_r;
+            release dut.u_spu_controller.u_rmsnorm.lane_idx_r;
+            release dut.u_spu_controller.u_rmsnorm.lane_active_r;
+            release dut.u_spu_controller.u_rmsnorm.state_r;
+        end
+    endtask
+
+    task run_rmsnorm_saturation_case;
+        begin
+            $display("[TB] SPU_RMSNorm saturation-boundary test");
+            check_rmsnorm_saturation(64'sd274869518848,  16'sd32767); //  32767 <<< 23
+            check_rmsnorm_saturation(64'sd274877906944,  16'sd32767); //  32768 <<< 23
+            check_rmsnorm_saturation(-64'sd274877906944, -16'sd32768); // -32768 <<< 23
+            check_rmsnorm_saturation(-64'sd274886295552, -16'sd32768); // -32769 <<< 23
+        end
+    endtask
+
     task run_rope_case;
         reg [DATA_WIDTH-1:0] out0;
         reg signed [15:0] got;
@@ -1352,11 +1423,13 @@ module tb_SPU_Top;
         run_scale_accum_case();
         run_scale_accum_bad_scale_case();
         run_scale_accum_row_range_case();
+        run_stream_soft_reset_abort_case();
         run_vpu_stream_scale_metadata_case();
         run_vpu_stream_pair_case();
         run_vpu_stream_p3_split_scale_case();
         run_silu_mul_case();
         run_rmsnorm_case();
+        run_rmsnorm_saturation_case();
         run_rope_case();
         run_softmax_case();
 

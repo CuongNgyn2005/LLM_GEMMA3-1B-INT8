@@ -7,8 +7,8 @@
 #   2. File → Create Project
 #   3. Set project directory to: TESTBENCH/vivado_proj
 #   4. Add sources:
-#        - RTL: ../RTL/PMAU_Full.v, ../RTL/VPU_Top.v
-#        - Testbench: tb_VPU_Top.v (or tb_PMAU_Full.v)
+#        - RTL: ../RTL/PMAU_Full.v, ../RTL/AI_IP_top.v
+#        - Testbench: tb_AI_IP_top.v (or tb_PMAU_Full.v)
 #   5. Tools → Run Tcl Script
 #   6. Select this file: run_sim.tcl
 #
@@ -18,7 +18,7 @@
 # ============================================================================
 
 # Parse command line arguments
-set tb_name "tb_VPU_Top"
+set tb_name "tb_AI_IP_top"
 if {$argc > 0} {
     set tb_name [lindex $argv 0]
 }
@@ -52,7 +52,7 @@ if {![file exists "$proj_dir/$proj_name.xpr"]} {
 puts "\[SOURCES\] Adding RTL files..."
 add_files -norecurse -force {
     ../RTL/PMAU_Full.v
-    ../RTL/VPU_Top.v
+    ../RTL/AI_IP_top.v
 }
 
 puts "\[SOURCES\] Adding testbench file..."

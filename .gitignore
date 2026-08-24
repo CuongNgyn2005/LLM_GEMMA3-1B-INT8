@@ -1,6 +1,17 @@
-# Vivado generated files
+# Vivado generated/heavy files - ignore when pushing
+*.dcb
+*.dcp
 *.wdb
 *.jou
+*.wdf
+
+.Xil/
+*.cache/
+*.gen/
+
+*.sim/
+*.hw/
+*.ip_user_files/
 
 *.pb
 *.str
@@ -8,13 +19,6 @@
 *.tar
 *.tar.gz
 
-.Xil/
-*.cache/
-*.hw/
-*.ip_user_files/
-*.runs/
-*.sim/
-*.gen/
 
 # Simulation outputs
 xsim.dir/

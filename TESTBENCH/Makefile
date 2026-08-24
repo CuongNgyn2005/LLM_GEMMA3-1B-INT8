@@ -37,11 +37,11 @@ WORK := xsim_work
 PMAU_Full_RTL := $(RTL_DIR)/PMAU_Full.v
 VPU_TOP_RTL := $(RTL_DIR)/VPU_Top.v
 TB_PMAU := $(TB_DIR)/tb_PMAU_Full.v
-TB_VPU := $(TB_DIR)/tb_VPU_Top.v
+TB_VPU := $(TB_DIR)/tb_AI_IP_top.v
 
 # Testbench names
 TB_PMAU_NAME := tb_PMAU_Full
-TB_VPU_NAME := tb_VPU_Top
+TB_VPU_NAME := tb_AI_IP_top
 
 # ============================================================================
 # Phony targets (not file-based)

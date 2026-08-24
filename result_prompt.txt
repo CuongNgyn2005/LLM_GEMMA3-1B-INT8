@@ -1,9 +1,34 @@
-debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo ./build_mem/bin/llama-cli     -m ./models/gemma-3-1b-it-Q8_0.gguf     -p "Please write about AI"        --single-turn     --temp 0
+debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$ sudo ./build_mem/bin/llama-cli \
+      -m /home/debian/soc/models/gemma-3-1b-it-Q8_0.gguf \
+      -p "Vietnam is a country in Southeast Asia with a long coastline along the South China Sea. Its official capital is Hanoi, while Ho Chi Minh City is
+      its largest city and an important economic center. Vietnam shares land borders with China, Laos, and Cambodia. The country has diverse geography,
+      including mountains in the north, the Red River Delta, the central coastal region, the Central Highlands, and the Mekong Delta in the south. The
+      Vietnamese dong is the national currency, and Vietnamese is the official language. Agriculture has historically played an important role in the
+      economy, especially the production of rice, coffee, pepper, seafood, and tropical fruit. In recent decades, manufacturing, technology, electronics,
+      tourism, and international trade have expanded rapidly. Vietnam declared independence in 1945 and became politically reunified in 1975. The country is
+      known for foods such as pho, banh mi, bun cha, fresh spring rolls, and regional dishes that vary significantly between northern, central, and southern
+      areas. Ha Long Bay is famous for limestone islands, Hue is associated with the former imperial capital, Hoi An is known for its preserved historic
+      town, and the Mekong Delta is recognized for rivers, farms, and floating markets. Consider the following additional claims carefully. Claim one says
+      that Hanoi is the capital of Vietnam. Claim two says that Ho Chi Minh City is the political capital. Claim three says that Vietnam borders Thailand
+      directly by land. Claim four says that the Mekong Delta is located in southern Vietnam. Claim five says that the Vietnamese dong is the national
+      currency. Some claims are correct and some are incorrect. Using the information above and your own general knowledge, write a clear English response
+      for a reader who knows little about Vietnam. Begin by stating the capital in one direct sentence. Then provide a concise overview of Vietnam's
+      geography, history, culture, food, and modern economy. After that, evaluate all five claims individually, label each one as true or false, and correct
+      every false claim. Explain why Hanoi is the capital even though Ho Chi Minh City is larger and economically influential. Compare the Red River Delta
+      with the Mekong Delta using location and economic role. Finally, recommend three places that a first-time visitor could explore, give a distinct reason
+      for each recommendation, and finish with a short conclusion of no more than three sentences. Do not answer in Chinese, Vietnamese, or Mandarin. Write
+      the entire response in natural English, avoid inventing unsupported facts, keep the sections logically organized, and make sure every requested item is
+      answered." \
+      --no-conversation \
+      --verbose-prompt \
+      --no-display-prompt \
+      --no-mmap \
+      --no-warmup
 build: 198 (b9d4df9) with cc (Debian 10.2.1-6) 10.2.1 20210110 for aarch64-linux-gnu
 main: llama backend init
 main: load the model and apply lora adapter, if any
 main: FPGA host initialized (Bare-metal mode)
-llama_model_loader: loaded meta data with 38 key-value pairs and 340 tensors from ./models/gemma-3-1b-it-Q8_0.gguf (version GGUF V3 (latest))
+llama_model_loader: loaded meta data with 38 key-value pairs and 340 tensors from /home/debian/soc/models/gemma-3-1b-it-Q8_0.gguf (version GGUF V3 (latest))
 llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
 llama_model_loader: - kv   0:                       general.architecture str              = gemma3
 llama_model_loader: - kv   1:                               general.type str              = model
@@ -101,8 +126,8 @@ print_info: LF token         = 248 '<0x0A>'
 print_info: EOG token        = 1 '<eos>'
 print_info: EOG token        = 106 '<end_of_turn>'
 print_info: max token length = 48
-load_tensors: loading model tensors, this can take a while... (mmap = true)
-load_tensors:   CPU_Mapped model buffer size =  1013.54 MiB
+load_tensors: loading model tensors, this can take a while... (mmap = false)
+load_tensors:          CPU model buffer size =  1013.54 MiB
 .......................................................................
 llama_context: constructing llama_context
 llama_context: n_seq_max     = 1
@@ -130,112 +155,674 @@ llama_context: graph splits = 1
 common_init_from_params: added <eos> logit bias = -inf
 common_init_from_params: added <end_of_turn> logit bias = -inf
 common_init_from_params: setting dry_penalty_last_n to ctx_size = 4096
-common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
-[FPGA] Kernel ready!
 main: llama threadpool init, n_threads = 4
-main: chat template is available, enabling conversation mode (disable it with -no-cnv)
-*** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?
-main: chat template example:
-<start_of_turn>user
-You are a helpful assistant
-
-Hello<end_of_turn>
-<start_of_turn>model
-Hi there<end_of_turn>
-<start_of_turn>user
-How are you?<end_of_turn>
-<start_of_turn>model
-
 
 system_info: n_threads = 4 (n_threads_batch = 4) / 4 | CPU : NEON = 1 | ARM_FMA = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 |
 
-sampler seed: 2891782680
+main: prompt: 'Vietnam is a country in Southeast Asia with a long coastline along the South China Sea. Its official capital is Hanoi, while Ho Chi Minh City is
+      its largest city and an important economic center. Vietnam shares land borders with China, Laos, and Cambodia. The country has diverse geography,
+      including mountains in the north, the Red River Delta, the central coastal region, the Central Highlands, and the Mekong Delta in the south. The
+      Vietnamese dong is the national currency, and Vietnamese is the official language. Agriculture has historically played an important role in the
+      economy, especially the production of rice, coffee, pepper, seafood, and tropical fruit. In recent decades, manufacturing, technology, electronics,
+      tourism, and international trade have expanded rapidly. Vietnam declared independence in 1945 and became politically reunified in 1975. The country is
+      known for foods such as pho, banh mi, bun cha, fresh spring rolls, and regional dishes that vary significantly between northern, central, and southern
+      areas. Ha Long Bay is famous for limestone islands, Hue is associated with the former imperial capital, Hoi An is known for its preserved historic
+      town, and the Mekong Delta is recognized for rivers, farms, and floating markets. Consider the following additional claims carefully. Claim one says
+      that Hanoi is the capital of Vietnam. Claim two says that Ho Chi Minh City is the political capital. Claim three says that Vietnam borders Thailand
+      directly by land. Claim four says that the Mekong Delta is located in southern Vietnam. Claim five says that the Vietnamese dong is the national
+      currency. Some claims are correct and some are incorrect. Using the information above and your own general knowledge, write a clear English response
+      for a reader who knows little about Vietnam. Begin by stating the capital in one direct sentence. Then provide a concise overview of Vietnam's
+      geography, history, culture, food, and modern economy. After that, evaluate all five claims individually, label each one as true or false, and correct
+      every false claim. Explain why Hanoi is the capital even though Ho Chi Minh City is larger and economically influential. Compare the Red River Delta
+      with the Mekong Delta using location and economic role. Finally, recommend three places that a first-time visitor could explore, give a distinct reason
+      for each recommendation, and finish with a short conclusion of no more than three sentences. Do not answer in Chinese, Vietnamese, or Mandarin. Write
+      the entire response in natural English, avoid inventing unsupported facts, keep the sections logically organized, and make sure every requested item is
+      answered.'
+main: number of tokens in prompt = 545
+     2 -> '<bos>'
+139980 -> 'Vietnam'
+   563 -> ' is'
+   496 -> ' a'
+  2891 -> ' country'
+   528 -> ' in'
+ 38784 -> ' Southeast'
+ 11560 -> ' Asia'
+   607 -> ' with'
+   496 -> ' a'
+  1440 -> ' long'
+ 44451 -> ' coastline'
+  3008 -> ' along'
+   506 -> ' the'
+  4257 -> ' South'
+  5818 -> ' China'
+ 12991 -> ' Sea'
+236761 -> '.'
+  9567 -> ' Its'
+  5125 -> ' official'
+  5279 -> ' capital'
+   563 -> ' is'
+112171 -> ' Hanoi'
+236764 -> ','
+  1651 -> ' while'
+ 10001 -> ' Ho'
+ 20439 -> ' Chi'
+ 56680 -> ' Minh'
+  4085 -> ' City'
+   563 -> ' is'
+   107 -> '
+'
+   142 -> '      '
+  1258 -> 'its'
+  7488 -> ' largest'
+  3207 -> ' city'
+   532 -> ' and'
+   614 -> ' an'
+  2132 -> ' important'
+  5527 -> ' economic'
+  3988 -> ' center'
+236761 -> '.'
+ 22265 -> ' Vietnam'
+ 12085 -> ' shares'
+  2601 -> ' land'
+ 27367 -> ' borders'
+   607 -> ' with'
+  5818 -> ' China'
+236764 -> ','
+ 96458 -> ' Laos'
+236764 -> ','
+   532 -> ' and'
+ 57964 -> ' Cambodia'
+236761 -> '.'
+   669 -> ' The'
+  2891 -> ' country'
+   815 -> ' has'
+ 12801 -> ' diverse'
+ 53842 -> ' geography'
+236764 -> ','
+   107 -> '
+'
+   142 -> '      '
+ 16603 -> 'including'
+ 13254 -> ' mountains'
+   528 -> ' in'
+   506 -> ' the'
+  8339 -> ' north'
+236764 -> ','
+   506 -> ' the'
+  4855 -> ' Red'
+  7940 -> ' River'
+ 22616 -> ' Delta'
+236764 -> ','
+   506 -> ' the'
+  6082 -> ' central'
+ 25260 -> ' coastal'
+  4128 -> ' region'
+236764 -> ','
+   506 -> ' the'
+  8870 -> ' Central'
+ 77700 -> ' Highlands'
+236764 -> ','
+   532 -> ' and'
+   506 -> ' the'
+161992 -> ' Mekong'
+ 22616 -> ' Delta'
+   528 -> ' in'
+   506 -> ' the'
+  8710 -> ' south'
+236761 -> '.'
+   669 -> ' The'
+   107 -> '
+'
+   142 -> '      '
+ 92249 -> 'Viet'
+ 49511 -> 'namese'
+ 83975 -> ' dong'
+   563 -> ' is'
+   506 -> ' the'
+  4559 -> ' national'
+ 15130 -> ' currency'
+236764 -> ','
+   532 -> ' and'
+ 56773 -> ' Vietnamese'
+   563 -> ' is'
+   506 -> ' the'
+  5125 -> ' official'
+  5192 -> ' language'
+236761 -> '.'
+ 22682 -> ' Agriculture'
+   815 -> ' has'
+ 41063 -> ' historically'
+  6657 -> ' played'
+   614 -> ' an'
+  2132 -> ' important'
+  3853 -> ' role'
+   528 -> ' in'
+   506 -> ' the'
+   107 -> '
+'
+   142 -> '      '
+159136 -> 'economy'
+236764 -> ','
+  4285 -> ' especially'
+   506 -> ' the'
+  3719 -> ' production'
+   529 -> ' of'
+ 12878 -> ' rice'
+236764 -> ','
+  7681 -> ' coffee'
+236764 -> ','
+ 22300 -> ' pepper'
+236764 -> ','
+ 37987 -> ' seafood'
+236764 -> ','
+   532 -> ' and'
+ 17795 -> ' tropical'
+  9479 -> ' fruit'
+236761 -> '.'
+   799 -> ' In'
+  4803 -> ' recent'
+ 13013 -> ' decades'
+236764 -> ','
+ 11675 -> ' manufacturing'
+236764 -> ','
+  4181 -> ' technology'
+236764 -> ','
+ 31182 -> ' electronics'
+236764 -> ','
+   107 -> '
+'
+   142 -> '      '
+216398 -> 'tourism'
+236764 -> ','
+   532 -> ' and'
+  5251 -> ' international'
+  5754 -> ' trade'
+   735 -> ' have'
+ 15744 -> ' expanded'
+ 13380 -> ' rapidly'
+236761 -> '.'
+ 22265 -> ' Vietnam'
+ 16200 -> ' declared'
+ 21555 -> ' independence'
+   528 -> ' in'
+236743 -> ' '
+236770 -> '1'
+236819 -> '9'
+236812 -> '4'
+236810 -> '5'
+   532 -> ' and'
+  5452 -> ' became'
+ 46855 -> ' politically'
+ 23275 -> ' reun'
+  2093 -> 'ified'
+   528 -> ' in'
+236743 -> ' '
+236770 -> '1'
+236819 -> '9'
+236832 -> '7'
+236810 -> '5'
+236761 -> '.'
+   669 -> ' The'
+  2891 -> ' country'
+   563 -> ' is'
+   107 -> '
+'
+   142 -> '      '
+  5863 -> 'known'
+   573 -> ' for'
+ 15188 -> ' foods'
+  1288 -> ' such'
+   618 -> ' as'
+ 93632 -> ' pho'
+236764 -> ','
+  8418 -> ' ban'
+236754 -> 'h'
+  3628 -> ' mi'
+236764 -> ','
+ 17213 -> ' bun'
+  8700 -> ' cha'
+236764 -> ','
+  5756 -> ' fresh'
+  6247 -> ' spring'
+ 28809 -> ' rolls'
+236764 -> ','
+   532 -> ' and'
+ 10969 -> ' regional'
+ 19292 -> ' dishes'
+   600 -> ' that'
+  9729 -> ' vary'
+  8792 -> ' significantly'
+  1534 -> ' between'
+ 16962 -> ' northern'
+236764 -> ','
+  6082 -> ' central'
+236764 -> ','
+   532 -> ' and'
+ 15891 -> ' southern'
+   107 -> '
+'
+   142 -> '      '
+ 37311 -> 'areas'
+236761 -> '.'
+  9673 -> ' Ha'
+  8099 -> ' Long'
+  8036 -> ' Bay'
+   563 -> ' is'
+  9639 -> ' famous'
+   573 -> ' for'
+ 56701 -> ' limestone'
+ 24915 -> ' islands'
+236764 -> ','
+ 73499 -> ' Hue'
+   563 -> ' is'
+  5143 -> ' associated'
+   607 -> ' with'
+   506 -> ' the'
+  4937 -> ' former'
+ 40042 -> ' imperial'
+  5279 -> ' capital'
+236764 -> ','
+222878 -> ' Hoi'
+  1455 -> ' An'
+   563 -> ' is'
+  3224 -> ' known'
+   573 -> ' for'
+  1061 -> ' its'
+ 27750 -> ' preserved'
+ 17110 -> ' historic'
+   107 -> '
+'
+   142 -> '      '
+ 11518 -> 'town'
+236764 -> ','
+   532 -> ' and'
+   506 -> ' the'
+161992 -> ' Mekong'
+ 22616 -> ' Delta'
+   563 -> ' is'
+ 12659 -> ' recognized'
+   573 -> ' for'
+ 25971 -> ' rivers'
+236764 -> ','
+ 27818 -> ' farms'
+236764 -> ','
+   532 -> ' and'
+ 18224 -> ' floating'
+  9766 -> ' markets'
+236761 -> '.'
+ 14066 -> ' Consider'
+   506 -> ' the'
+  2269 -> ' following'
+  4767 -> ' additional'
+  8787 -> ' claims'
+ 13058 -> ' carefully'
+236761 -> '.'
+ 29382 -> ' Claim'
+   886 -> ' one'
+  3189 -> ' says'
+   107 -> '
+'
+   142 -> '      '
+  7705 -> 'that'
+112171 -> ' Hanoi'
+   563 -> ' is'
+   506 -> ' the'
+  5279 -> ' capital'
+   529 -> ' of'
+ 22265 -> ' Vietnam'
+236761 -> '.'
+ 29382 -> ' Claim'
+  1156 -> ' two'
+  3189 -> ' says'
+   600 -> ' that'
+ 10001 -> ' Ho'
+ 20439 -> ' Chi'
+ 56680 -> ' Minh'
+  4085 -> ' City'
+   563 -> ' is'
+   506 -> ' the'
+  5255 -> ' political'
+  5279 -> ' capital'
+236761 -> '.'
+ 29382 -> ' Claim'
+  1806 -> ' three'
+  3189 -> ' says'
+   600 -> ' that'
+ 22265 -> ' Vietnam'
+ 27367 -> ' borders'
+ 17254 -> ' Thailand'
+   107 -> '
+'
+   142 -> '      '
+139584 -> 'directly'
+   684 -> ' by'
+  2601 -> ' land'
+236761 -> '.'
+ 29382 -> ' Claim'
+  2390 -> ' four'
+  3189 -> ' says'
+   600 -> ' that'
+   506 -> ' the'
+161992 -> ' Mekong'
+ 22616 -> ' Delta'
+   563 -> ' is'
+  5628 -> ' located'
+   528 -> ' in'
+ 15891 -> ' southern'
+ 22265 -> ' Vietnam'
+236761 -> '.'
+ 29382 -> ' Claim'
+  3493 -> ' five'
+  3189 -> ' says'
+   600 -> ' that'
+   506 -> ' the'
+ 56773 -> ' Vietnamese'
+ 83975 -> ' dong'
+   563 -> ' is'
+   506 -> ' the'
+  4559 -> ' national'
+   107 -> '
+'
+   142 -> '      '
+ 27617 -> 'currency'
+236761 -> '.'
+  4943 -> ' Some'
+  8787 -> ' claims'
+   659 -> ' are'
+  4338 -> ' correct'
+   532 -> ' and'
+  1070 -> ' some'
+   659 -> ' are'
+ 21648 -> ' incorrect'
+236761 -> '.'
+ 10352 -> ' Using'
+   506 -> ' the'
+  1938 -> ' information'
+  2787 -> ' above'
+   532 -> ' and'
+   822 -> ' your'
+  1852 -> ' own'
+  2870 -> ' general'
+  4654 -> ' knowledge'
+236764 -> ','
+  4903 -> ' write'
+   496 -> ' a'
+  3582 -> ' clear'
+  5422 -> ' English'
+  3072 -> ' response'
+   107 -> '
+'
+   142 -> '      '
+  1708 -> 'for'
+   496 -> ' a'
+ 11863 -> ' reader'
+  1015 -> ' who'
+ 10077 -> ' knows'
+  2268 -> ' little'
+  1003 -> ' about'
+ 22265 -> ' Vietnam'
+236761 -> '.'
+ 27441 -> ' Begin'
+   684 -> ' by'
+ 29354 -> ' stating'
+   506 -> ' the'
+  5279 -> ' capital'
+   528 -> ' in'
+   886 -> ' one'
+  1982 -> ' direct'
+ 13315 -> ' sentence'
+236761 -> '.'
+  4298 -> ' Then'
+  2847 -> ' provide'
+   496 -> ' a'
+ 63510 -> ' concise'
+ 21385 -> ' overview'
+   529 -> ' of'
+ 22265 -> ' Vietnam'
+236789 -> '''
+236751 -> 's'
+   107 -> '
+'
+   142 -> '      '
+   787 -> 'ge'
+  5167 -> 'ography'
+236764 -> ','
+  4083 -> ' history'
+236764 -> ','
+  6540 -> ' culture'
+236764 -> ','
+  2780 -> ' food'
+236764 -> ','
+   532 -> ' and'
+  4532 -> ' modern'
+  8122 -> ' economy'
+236761 -> '.'
+  4210 -> ' After'
+   600 -> ' that'
+236764 -> ','
+ 13901 -> ' evaluate'
+   784 -> ' all'
+  3493 -> ' five'
+  8787 -> ' claims'
+ 29772 -> ' individually'
+236764 -> ','
+  5346 -> ' label'
+  1546 -> ' each'
+   886 -> ' one'
+   618 -> ' as'
+  1847 -> ' true'
+   653 -> ' or'
+  2416 -> ' false'
+236764 -> ','
+   532 -> ' and'
+  4338 -> ' correct'
+   107 -> '
+'
+   142 -> '      '
+ 27881 -> 'every'
+  2416 -> ' false'
+  3539 -> ' claim'
+236761 -> '.'
+ 42085 -> ' Explain'
+  3217 -> ' why'
+112171 -> ' Hanoi'
+   563 -> ' is'
+   506 -> ' the'
+  5279 -> ' capital'
+  1581 -> ' even'
+  3635 -> ' though'
+ 10001 -> ' Ho'
+ 20439 -> ' Chi'
+ 56680 -> ' Minh'
+  4085 -> ' City'
+   563 -> ' is'
+  6268 -> ' larger'
+   532 -> ' and'
+ 41963 -> ' economically'
+ 36503 -> ' influential'
+236761 -> '.'
+ 44906 -> ' Compare'
+   506 -> ' the'
+  4855 -> ' Red'
+  7940 -> ' River'
+ 22616 -> ' Delta'
+   107 -> '
+'
+   142 -> '      '
+  4060 -> 'with'
+   506 -> ' the'
+161992 -> ' Mekong'
+ 22616 -> ' Delta'
+  1699 -> ' using'
+  4563 -> ' location'
+   532 -> ' and'
+  5527 -> ' economic'
+  3853 -> ' role'
+236761 -> '.'
+ 13472 -> ' Finally'
+236764 -> ','
+  5840 -> ' recommend'
+  1806 -> ' three'
+  6666 -> ' places'
+   600 -> ' that'
+   496 -> ' a'
+  1171 -> ' first'
+236772 -> '-'
+  2289 -> 'time'
+ 32801 -> ' visitor'
+  1451 -> ' could'
+ 11327 -> ' explore'
+236764 -> ','
+  2583 -> ' give'
+   496 -> ' a'
+  9245 -> ' distinct'
+  3282 -> ' reason'
+   107 -> '
+'
+   142 -> '      '
+  1708 -> 'for'
+  1546 -> ' each'
+ 25809 -> ' recommendation'
+236764 -> ','
+   532 -> ' and'
+  9009 -> ' finish'
+   607 -> ' with'
+   496 -> ' a'
+  2822 -> ' short'
+ 12882 -> ' conclusion'
+   529 -> ' of'
+   951 -> ' no'
+   919 -> ' more'
+  1082 -> ' than'
+  1806 -> ' three'
+ 23974 -> ' sentences'
+236761 -> '.'
+  3574 -> ' Do'
+   711 -> ' not'
+  3890 -> ' answer'
+   528 -> ' in'
+  8555 -> ' Chinese'
+236764 -> ','
+ 56773 -> ' Vietnamese'
+236764 -> ','
+   653 -> ' or'
+ 88802 -> ' Mandarin'
+236761 -> '.'
+ 15642 -> ' Write'
+   107 -> '
+'
+   142 -> '      '
+  1437 -> 'the'
+  4251 -> ' entire'
+  3072 -> ' response'
+   528 -> ' in'
+  3756 -> ' natural'
+  5422 -> ' English'
+236764 -> ','
+  5571 -> ' avoid'
+182170 -> ' inventing'
+113671 -> ' unsupported'
+ 10797 -> ' facts'
+236764 -> ','
+  2514 -> ' keep'
+   506 -> ' the'
+ 10458 -> ' sections'
+ 87121 -> ' logically'
+ 13957 -> ' organized'
+236764 -> ','
+   532 -> ' and'
+  1386 -> ' make'
+  2889 -> ' sure'
+  1418 -> ' every'
+ 15633 -> ' requested'
+  4188 -> ' item'
+   563 -> ' is'
+   107 -> '
+'
+   142 -> '      '
+ 74092 -> 'answered'
+236761 -> '.'
+
+sampler seed: 2256399308
 sampler params:
         repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
         dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 4096
-        top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+        top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.800
         mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000
 sampler chain: logits -> logit-bias -> penalties -> dry -> top-n-sigma -> top-k -> typical -> top-p -> min-p -> xtc -> temp-ext -> dist
 generate: n_ctx = 4096, n_batch = 2048, n_predict = -1, n_keep = 1
 
-user
-Please write about AI
-model
-Okay, let's dive into the fascinating and rapidly evolving world of AI (Artificial Intelligence). It’s a topic that’s both incredibly exciting and often surrounded by a lot of hype and misunderstanding. Here’s a breakdown of what AI is, what it can do, its current state, and some of the key considerations:
-
-**1. What is AI?**
-
-At its core, AI is about creating computer systems that can perform tasks that typically require human intelligence. This includes things like:
-
-* **Learning:**  The ability to identify patterns and improve performance based on data.
-* **Reasoning:**  The capacity to draw conclusions and solve problems.
-* **Problem-Solving:**  The ability to identify and address challenges.
-* **Perception:**  The ability to understand and interpret sensory input like images, sound, and text.
-* **Natural Language Processing (NLP):**  The ability to understand, interpret, and generate human language.
+[FPGA] Kernel ready!
 
 
-**2. Types of AI**
+```
+```
 
-There are several levels and categories of AI, often overlapping:
+**Capital City:** Hanoi is the capital of Vietnam.
 
-* **Narrow or Weak AI:** This is the type of AI we largely see today. It’  is designed and trained for a specific task. Examples include:
-    * **Spam Filters:**  Identify and filter unwanted emails.
-    * **Voice Assistants (Siri, Alexa, Google Assistant):** Respond to voice commands and perform tasks.
-    * **Recommendation Systems (Netflix, Amazon):** Suggest products or content based on your past behavior.
-* **General or Strong AI:** This is the theoretical type of AI that possesses human-level intelligence – the ability to understand, learn, and apply knowledge across a wide range of tasks, just like a human.  We haven't achieved this yet.
-* **Super AI:**  A hypothetical AI that surpasses human intelligence in all aspects. This is largely the subject of science fiction.
+**Geography and History:**
 
+Vietnam has a long and complex history, starting with the Bronze Age and evolving through periods of independence, foreign rule, and unification. The country'  is a mountainous nation, with the northern region characterized by the Red River Delta, the central coastal region, and the Central Highlands.  Historically, Vietnam has been the site of numerous empires and kingdoms, including the Cham, the Ngo Dong, and the Ming Dynasty. The country's geography has played a crucial role in its cultural development, with distinct traditions and customs present in different regions.
 
-**3. Current State of AI – Where We Are Now**
+**Culture:**
 
-* **Deep Learning:** A subset of AI that uses artificial neural networks with multiple layers (hence "deep") to analyze data and learn complex patterns. This is the driving force behind many recent advances.
-* **Large Language Models (LLMs):**  These are incredibly powerful AI models, like GPT-3, LaMDA, and others, that can generate human-quality text, translate languages, write different kinds of creative content, and answer your questions in an informative way.
-* **Image Recognition & Computer Vision:** AI can now identify objects, people, and scenes in images and videos with impressive accuracy.
-* **Autonomous Vehicles:**  AI is essential for self-driving cars, enabling them to perceive their surroundings, make decisions, and navigate.
+Vietnamese culture is a blend of ancient traditions and influences from China and other Southeast Asian countries. It's highly influenced by Buddhism and Confucianism, with the emphasis on social harmony and respect for elders. Traditional arts include calligraphy, painting, and music. The country’s cuisine is incredibly diverse, reflecting regional variations. Pho, banh mi, bun cha, fresh spring rolls, and regional dishes are just a few examples of the many culinary delights Vietnam offers.
 
+**Economy:**
 
-**4.  How AI is Being Used Today**
+Vietnam’  has undergone a remarkable transformation in recent decades.  The country’s economy has expanded rapidly, driven by manufacturing, technology, electronics, tourism, and international trade.  The government has actively promoted economic reforms, focusing on opening up to the global market.  Vietnam is currently ranked as one of the top countries in the world for economic growth.
 
-* **Healthcare:**  AI is being used for diagnosis, drug discovery, personalized treatment plans, and robotic surgery.
-* **Finance:**  Fraud detection, algorithmic trading, and customer service chatbots.
-  * **Retail:** Personalized recommendations, inventory management, and supply chain optimization.
-* **Manufacturing:**  Robotics and automation, predictive maintenance.
-* **Transportation:**  Self-driving trucks and logistics.
+**Claim Analysis:**
 
+1.  **True:** Hanoi is the capital of Vietnam.
+2.  **False:** Ho Chi Minh City is the political capital. (Ho Chi Minh City is the largest city and an important economic center).
+3.  **False:** Vietnam borders Thailand directly by land. (Vietnam shares land borders with China, Laos, and Cambodia).
+4.  **False:** The Mekong Delta is located in southern Vietnam. (The Mekong Delta is located in the northern part of Vietnam).
+5.  **False:** The Vietnamese dong is the national currency. (The Vietnamese dong is the official currency).
 
-**5.  Challenges and Concerns**
+**Explanation of Hanoi’s Capital Status:**
 
-* **Bias:** AI systems are trained on data, and if that data reflects existing societal biases, the AI will perpetuate and even amplify those biases.
-* **Job Displacement:**  As AI becomes more capable, there are concerns about the impact on jobs, particularly in roles involving repetitive tasks.
-  * **Ethical Considerations:**  Questions around accountability, transparency, and the potential misuse of AI are increasingly important.
-* **Security Risks:**  AI systems can be vulnerable to attacks and manipulation.
-* **Lack of Explainability (Black Box Problem):**  Some AI models, particularly deep learning models, are difficult to understand – it’s hard to know *why* they make certain desions.
+Hanoi’s status as the capital is largely due to its historical significance as the center of Vietnamese political and administrative power.  While Ho Chi Minh City is the largest and most economically influential city, Hanoi has always been the seat of the government and the heart of the nation's identity.  Historically, it was the location of the imperial capital, and its strategic position made it the most important city to govern.
 
+**Red River Delta vs. Mekong Delta:**
 
-**6.  The Future of AI**
+The Red River Delta is the northernmost part of Vietnam, characterized by fertile river plains, rice paddies, and a large population. It’s a vital agricultural region, supporting a substantial portion of Vietnam's food supply.  The Mekong Delta, on the other hand, is located in the south, known for its intricate waterways, floating markets, and extensive agriculture, particularly rice cultivation.  The Mekong Delta’s economic role is particularly significant for exporting products like shrimp, fruits, and vegetables.
 
-* **Continued Advancement:**  AI is expected to continue to advance rapidly, with even more sophisticated capabilities.
-* **Human-AI Collaboration:**  The most likely future is one of collaboration between humans and AI, where AI handles routine tasks and humans focus on creativity, critical thiing, and complex decision-making.
-* **Personalized AI:**  AI will become increasingly tailored to individual needs and preferences.
+**Conclusion:**
+
+Vietnam offers a fascinating blend of history, culture, and modern development.  It’  is a rapidly changing country with a vibrant and diverse economy.  Exploring Vietnam's landscapes and cultural traditions will provide a memorable and enriching experience.
+```
+```
+ [end of text]
 
 
-**Resources for Further Learning:**
+llama_perf_sampler_print:    sampling time =    1294.77 ms /  1246 runs   (    1.04 ms per token,   962.33 tokens per second)
 
-* **Google AI:** [https://ai.google/](https://ai.google/)
-* **OpenAI:** [https://openai.com/](https://openai.
-llama_perf_sampler_print:    sampling time =    1787.20 ms /   964 runs   (    1.85 ms per token,   539.39 tokens per second)
-
---- Detailed Function Profiling (within sampler print) ---
-llama_perf_sampler_print: Total_Attn_MHA       time =       3.05 ms ( 39.45 %)
-llama_perf_sampler_print: Total_FFN            time =       1.36 ms ( 17.64 %)
-llama_perf_sampler_print: Total_MoE_FFN        time =       0.00 ms (  0.00 %)
-llama_perf_sampler_print: Total_Norm           time =       3.32 ms ( 42.91 %)
-llama_perf_sampler_print: Total Profiled       time =       7.73 ms
-----------------------------------------------------------
-llama_perf_context_print:        load time =    9826.93 ms
-llama_perf_context_print: prompt eval time =   34554.55 ms /    13 tokens ( 2658.04 ms per token,     0.38 tokens per second)
-llama_perf_context_print:        eval time = 3587650.93 ms /   950 runs   ( 3776.47 ms per token,     0.26 tokens per second)
-llama_perf_context_print:       total time = 3628292.45 ms /   963 tokens
-llama_perf_context_print:    graphs reused =        947
-Interrupted by user
+--- FPGA Decode Summary (within sampler print) ---
+llama_perf_sampler_print: Decode tokens             =        700
+llama_perf_sampler_print: End-to-end decode speed   =       0.38 tokens/s
+llama_perf_sampler_print: End-to-end decode time    = 1837721.83 ms
+llama_perf_sampler_print: FPGA matmul hooks         =     127400
+llama_perf_sampler_print: VPU runs                  =    1547000
+llama_perf_sampler_print: IP-only compute time      =  259499.14 ms
+llama_perf_sampler_print: IP-only compute speed     =       2.70 tokens/s
+llama_perf_sampler_print: H2IP DMA time             =  228790.67 ms
+llama_perf_sampler_print: Output transfer time      =  162410.46 ms
+llama_perf_sampler_print: IP + transfer time        =  650700.27 ms
+llama_perf_sampler_print: IP + transfer speed       =       1.08 tokens/s
+llama_perf_sampler_print: CPU preparation time      = 1279234.17 ms
+llama_perf_sampler_print: Direct weight packing     = 1053005.65 ms ( 82.3 %)
+llama_perf_sampler_print: Scale-table packing       =  215654.48 ms
+llama_perf_sampler_print: ZDMA descriptors          =   12649000 ( 531785.69 MiB)
+llama_perf_sampler_print: Preloaded input DMA       =       0.00 ms, 0 overlap jobs
+llama_perf_sampler_print: FPGA GEMV coverage        =     127761 completed, 0 fallback, 0 reject
+llama_perf_sampler_print: SPU stream status         =          0 drop, 0 error
+llama_perf_sampler_print: Weight residency          =          0/128 slots, 0 hit, 0 miss
+--------------------------------------------------------------------------------
+llama_perf_context_print:        load time = 1281832.26 ms
+llama_perf_context_print: prompt eval time = 1199432.47 ms /   545 tokens ( 2200.79 ms per token,     0.45 tokens per second)
+llama_perf_context_print:        eval time = 1839125.76 ms /   700 runs   ( 2627.32 ms per token,     0.38 tokens per second)
+llama_perf_context_print:       total time = 3123543.38 ms /  1245 tokens
+llama_perf_context_print:    graphs reused =        697
+debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$
 debian@ZCU104-01:~/Cuong_test/Infrastructure_GEMMA3$
