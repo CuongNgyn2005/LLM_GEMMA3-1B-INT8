@@ -10,11 +10,12 @@
  * Each P2 lane also keeps the last full 128-bit PARAM word it fetched. Because
  * four consecutive P2 scale entries share one PARAM word, a following bundle
  * from the same job can select another 32-bit entry from that registered word
- * without issuing another BRAM read. A bundle takes the fast path only when
- * every valid lane hits both job_id and word index; otherwise the original
- * registered two-port read pipeline is used unchanged. The cache is cleared on
- * reset/soft-reset and never participates in P3, so it cannot change P3 memory
- * ownership or turn a P2 miss into speculative scale data.
+ * without issuing another BRAM read. During those hits, a second per-lane word
+ * set prefetches the first later FIFO bundle whose actual tags differ.  It is
+ * exposed only after every required lane returns, then promoted atomically when
+ * that FIFO bundle reaches the head. Foreground misses retain port priority.
+ * Both cache sets are cleared on reset/soft-reset and never participate in P3,
+ * so P3 memory ownership and the P2 ABI remain unchanged.
  *
  * A ready look-ahead bundle can start the eight accumulators on the same edge
  * that it becomes the active bundle. If another FIFO entry exists, the
@@ -111,6 +112,9 @@ module SPU_VPU_Stream8 #(
     localparam [2:0] PF_CAPTURE  = 3'd2;
     localparam [2:0] PF_READY    = 3'd3;
     localparam [2:0] PF_RESPONSE = 3'd4;
+
+    localparam BG_IDLE = 1'b0;
+    localparam BG_READ = 1'b1;
 
     reg [2:0] state_r;
     reg [1:0] pair_idx_r;
@@ -225,6 +229,34 @@ module SPU_VPU_Stream8 #(
     reg [31:0] p2_scale_cache_word_index_r [0:7];
     reg [AXI_DATA_WIDTH-1:0] p2_scale_cache_word_r [0:7];
 
+    // A complete second word-set is filled while current-cache hits consume no
+    // PARAM bandwidth.  The ready bit is asserted only after every valid lane
+    // from the selected future FIFO bundle has returned.
+    reg p2_next_cache_ready_r;
+    reg [7:0] p2_next_cache_valid_r;
+    reg [31:0] p2_next_cache_job_r [0:7];
+    reg [31:0] p2_next_cache_word_index_r [0:7];
+    reg [AXI_DATA_WIDTH-1:0] p2_next_cache_word_r [0:7];
+
+    reg bg_state_r;
+    reg [1:0] bg_pair_idx_r;
+    reg [7:0] bg_required_valid_r;
+    reg [7:0] bg_returned_valid_r;
+    reg [31:0] bg_job_id_r;
+    reg [31:0] bg_word_index_r [0:7];
+    reg bg_req_valid_r;
+    reg bg_req_lane0_valid_r;
+    reg bg_req_lane1_valid_r;
+    reg [2:0] bg_req_lane0_dest_r;
+    reg [2:0] bg_req_lane1_dest_r;
+    reg bg_req_last_r;
+    reg bg_rsp_valid_r;
+    reg bg_rsp_lane0_valid_r;
+    reg bg_rsp_lane1_valid_r;
+    reg [2:0] bg_rsp_lane0_dest_r;
+    reg [2:0] bg_rsp_lane1_dest_r;
+    reg bg_rsp_last_r;
+
     reg [2:0] fifo_count_r;
     reg [1:0] fifo_wr_ptr_r;
     reg [1:0] fifo_rd_ptr_r;
@@ -311,6 +343,101 @@ module SPU_VPU_Stream8 #(
         end
     end
 
+    reg fifo_head_next_cache_hit;
+    always @* begin
+        fifo_head_next_cache_hit = p2_next_cache_ready_r &&
+                                   (fifo_count_r != 3'd0) &&
+                                   (fifo_lane_valid[fifo_rd_ptr_r] != 8'd0);
+        for (ci = 0; ci < 8; ci = ci + 1) begin
+            if (fifo_lane_valid[fifo_rd_ptr_r][ci] &&
+                (!p2_next_cache_valid_r[ci] ||
+                 (p2_next_cache_job_r[ci] != fifo_job_id[fifo_rd_ptr_r]) ||
+                 (p2_next_cache_word_index_r[ci] !=
+                  fifo_scale_word_index[fifo_rd_ptr_r][32*ci +: 32])))
+                fifo_head_next_cache_hit = 1'b0;
+        end
+    end
+
+    function automatic p2_current_cache_hit_at;
+        input [1:0] ptr;
+        integer cj;
+        begin
+            p2_current_cache_hit_at = (fifo_lane_valid[ptr] != 8'd0);
+            for (cj = 0; cj < 8; cj = cj + 1) begin
+                if (fifo_lane_valid[ptr][cj] &&
+                    (!p2_scale_cache_valid_r[cj] ||
+                     (p2_scale_cache_job_r[cj] != fifo_job_id[ptr]) ||
+                     (p2_scale_cache_word_index_r[cj] !=
+                      fifo_scale_word_index[ptr][32*cj +: 32])))
+                    p2_current_cache_hit_at = 1'b0;
+            end
+        end
+    endfunction
+
+    function automatic p2_next_cache_hit_at;
+        input [1:0] ptr;
+        integer cj;
+        begin
+            p2_next_cache_hit_at = p2_next_cache_ready_r &&
+                                   (fifo_lane_valid[ptr] != 8'd0);
+            for (cj = 0; cj < 8; cj = cj + 1) begin
+                if (fifo_lane_valid[ptr][cj] &&
+                    (!p2_next_cache_valid_r[cj] ||
+                     (p2_next_cache_job_r[cj] != fifo_job_id[ptr]) ||
+                     (p2_next_cache_word_index_r[cj] !=
+                      fifo_scale_word_index[ptr][32*cj +: 32])))
+                    p2_next_cache_hit_at = 1'b0;
+            end
+        end
+    endfunction
+
+    wire [1:0] bg_candidate_ptr = fifo_wr_ptr_r - 2'd1;
+    reg bg_prior_entries_hit;
+    reg bg_candidate_different;
+    reg bg_candidate_valid;
+    integer bi;
+    always @* begin
+        bg_prior_entries_hit = 1'b0;
+        case (fifo_count_r)
+            3'd2: bg_prior_entries_hit =
+                    p2_current_cache_hit_at(fifo_rd_ptr_r);
+            3'd3: bg_prior_entries_hit =
+                    p2_current_cache_hit_at(fifo_rd_ptr_r) &&
+                    p2_current_cache_hit_at(fifo_rd_ptr_r + 2'd1);
+            3'd4: bg_prior_entries_hit =
+                    p2_current_cache_hit_at(fifo_rd_ptr_r) &&
+                    p2_current_cache_hit_at(fifo_rd_ptr_r + 2'd1) &&
+                    p2_current_cache_hit_at(fifo_rd_ptr_r + 2'd2);
+            default: bg_prior_entries_hit = 1'b0;
+        endcase
+
+        bg_candidate_different = 1'b0;
+        for (bi = 0; bi < 8; bi = bi + 1) begin
+            if (fifo_lane_valid[bg_candidate_ptr][bi] &&
+                (!p2_scale_cache_valid_r[bi] ||
+                 (p2_scale_cache_job_r[bi] != fifo_job_id[bg_candidate_ptr]) ||
+                 (p2_scale_cache_word_index_r[bi] !=
+                  fifo_scale_word_index[bg_candidate_ptr][32*bi +: 32])))
+                bg_candidate_different = 1'b1;
+        end
+
+        bg_candidate_valid = (fifo_count_r >= 3'd2) &&
+                             (fifo_lane_valid[bg_candidate_ptr] != 8'd0) &&
+                             (fifo_job_id[bg_candidate_ptr] == job_id_r) &&
+                             bg_prior_entries_hit &&
+                             bg_candidate_different &&
+                             !p2_next_cache_hit_at(bg_candidate_ptr);
+    end
+
+    reg [7:0] bg_return_mask;
+    always @* begin
+        bg_return_mask = bg_returned_valid_r;
+        if (bg_rsp_valid_r && bg_rsp_lane0_valid_r)
+            bg_return_mask[bg_rsp_lane0_dest_r] = 1'b1;
+        if (bg_rsp_valid_r && bg_rsp_lane1_valid_r)
+            bg_return_mask[bg_rsp_lane1_dest_r] = 1'b1;
+    end
+
     wire bank_mismatch = split_scale_enable && p3_bank_lock_valid &&
                          (vpu_bank != p3_bank_lock);
     wire fifo_empty = (fifo_count_r == 3'd0);
@@ -334,8 +461,11 @@ module SPU_VPU_Stream8 #(
     wire fifo_prefetch_pop = !split_scale_enable && prefetch_slot_open &&
                              !command_busy && !fifo_empty &&
                              ((state_r == S_IDLE) ||
-                              ((state_r == S_WAIT) && !last_block_r) ||
-                              ((state_r == S_WRITE) && (pair_idx_r == 2'd3)));
+                               ((state_r == S_WAIT) && !last_block_r) ||
+                               ((state_r == S_WRITE) && (pair_idx_r == 2'd3)));
+    wire foreground_miss_pop = fifo_prefetch_pop &&
+                               !fifo_head_scale_cache_hit &&
+                               !fifo_head_next_cache_hit;
     wire fifo_pop = fifo_prefetch_pop;
 
     wire p2_fifo_ready = resetn && !command_busy && (!fifo_full || fifo_pop);
@@ -355,6 +485,10 @@ module SPU_VPU_Stream8 #(
                                   (state_r != S_CAPTURE) &&
                                   (state_r != S_RESPONSE) &&
                                   (state_r != S_WRITE);
+    wire bg_start = !split_scale_enable && (bg_state_r == BG_IDLE) &&
+                    (state_r == S_WAIT) && !last_block_r &&
+                    prefetch_ready && prefetch_mem_available &&
+                    bg_candidate_valid;
 
     assign stream_status[0] = stream_engine_idle;
     assign stream_status[1] = stream_engine_idle;
@@ -477,6 +611,25 @@ module SPU_VPU_Stream8 #(
             read_unused_prefetch_rsp_scratch_lane_r <= 3'd0;
             prefetch_rsp_last_r <= 1'b0;
             p2_scale_cache_valid_r <= 8'd0;
+            p2_next_cache_ready_r <= 1'b0;
+            p2_next_cache_valid_r <= 8'd0;
+            bg_state_r <= BG_IDLE;
+            bg_pair_idx_r <= 2'd0;
+            bg_required_valid_r <= 8'd0;
+            bg_returned_valid_r <= 8'd0;
+            bg_job_id_r <= 32'd0;
+            bg_req_valid_r <= 1'b0;
+            bg_req_lane0_valid_r <= 1'b0;
+            bg_req_lane1_valid_r <= 1'b0;
+            bg_req_lane0_dest_r <= 3'd0;
+            bg_req_lane1_dest_r <= 3'd0;
+            bg_req_last_r <= 1'b0;
+            bg_rsp_valid_r <= 1'b0;
+            bg_rsp_lane0_valid_r <= 1'b0;
+            bg_rsp_lane1_valid_r <= 1'b0;
+            bg_rsp_lane0_dest_r <= 3'd0;
+            bg_rsp_lane1_dest_r <= 3'd0;
+            bg_rsp_last_r <= 1'b0;
             mem0_en <= 1'b0; mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
             mem0_index <= 32'd0; mem0_wdata <= {AXI_DATA_WIDTH{1'b0}};
             mem0_wstrb <= {(AXI_DATA_WIDTH/8){1'b0}};
@@ -498,6 +651,10 @@ module SPU_VPU_Stream8 #(
                 p2_scale_cache_job_r[i] <= 32'd0;
                 p2_scale_cache_word_index_r[i] <= 32'd0;
                 p2_scale_cache_word_r[i] <= {AXI_DATA_WIDTH{1'b0}};
+                p2_next_cache_job_r[i] <= 32'd0;
+                p2_next_cache_word_index_r[i] <= 32'd0;
+                p2_next_cache_word_r[i] <= {AXI_DATA_WIDTH{1'b0}};
+                bg_word_index_r[i] <= 32'd0;
             end
             for (fi = 0; fi < 4; fi = fi + 1) begin
                 fifo_lane_valid[fi] <= 8'd0;
@@ -568,6 +725,138 @@ module SPU_VPU_Stream8 #(
             if (fifo_pop)
                 fifo_rd_ptr_r <= fifo_rd_ptr_r + 2'd1;
 
+            // Background P2 refill uses the same registered two-port cadence
+            // as the foreground miss path.  A newly required foreground word
+            // aborts this speculative fill and owns both PARAM ports that cycle.
+            if (split_scale_enable) begin
+                bg_state_r <= BG_IDLE;
+                bg_req_valid_r <= 1'b0;
+                bg_req_lane0_valid_r <= 1'b0;
+                bg_req_lane1_valid_r <= 1'b0;
+                bg_req_last_r <= 1'b0;
+                bg_rsp_valid_r <= 1'b0;
+                bg_rsp_lane0_valid_r <= 1'b0;
+                bg_rsp_lane1_valid_r <= 1'b0;
+                bg_rsp_last_r <= 1'b0;
+                bg_returned_valid_r <= 8'd0;
+                p2_next_cache_ready_r <= 1'b0;
+                p2_next_cache_valid_r <= 8'd0;
+            end else if (bg_start) begin
+                bg_state_r <= BG_READ;
+                bg_pair_idx_r <= 2'd0;
+                bg_required_valid_r <= fifo_lane_valid[bg_candidate_ptr];
+                bg_returned_valid_r <= 8'd0;
+                bg_job_id_r <= fifo_job_id[bg_candidate_ptr];
+                p2_next_cache_ready_r <= 1'b0;
+                p2_next_cache_valid_r <= 8'd0;
+                for (i = 0; i < 8; i = i + 1)
+                    bg_word_index_r[i] <=
+                        fifo_scale_word_index[bg_candidate_ptr][32*i +: 32];
+
+                bg_req_valid_r <= 1'b1;
+                bg_req_lane0_valid_r <= fifo_lane_valid[bg_candidate_ptr][0];
+                bg_req_lane1_valid_r <= fifo_lane_valid[bg_candidate_ptr][1];
+                bg_req_lane0_dest_r <= 3'd0;
+                bg_req_lane1_dest_r <= 3'd1;
+                bg_req_last_r <= 1'b0;
+                bg_rsp_valid_r <= 1'b0;
+                bg_rsp_lane0_valid_r <= 1'b0;
+                bg_rsp_lane1_valid_r <= 1'b0;
+                bg_rsp_last_r <= 1'b0;
+                mem0_en <= fifo_lane_valid[bg_candidate_ptr][0];
+                mem0_we <= 1'b0;
+                mem0_region <= REGION_PARAM;
+                mem0_index <= fifo_scale_word_index[bg_candidate_ptr][31:0];
+                mem1_en <= fifo_lane_valid[bg_candidate_ptr][1];
+                mem1_we <= 1'b0;
+                mem1_region <= REGION_PARAM;
+                mem1_index <= fifo_scale_word_index[bg_candidate_ptr][63:32];
+            end else if (bg_state_r == BG_READ) begin
+                if (foreground_miss_pop || !prefetch_mem_available) begin
+                    bg_state_r <= BG_IDLE;
+                    bg_req_valid_r <= 1'b0;
+                    bg_req_lane0_valid_r <= 1'b0;
+                    bg_req_lane1_valid_r <= 1'b0;
+                    bg_req_last_r <= 1'b0;
+                    bg_rsp_valid_r <= 1'b0;
+                    bg_rsp_lane0_valid_r <= 1'b0;
+                    bg_rsp_lane1_valid_r <= 1'b0;
+                    bg_rsp_last_r <= 1'b0;
+                    bg_returned_valid_r <= 8'd0;
+                    p2_next_cache_ready_r <= 1'b0;
+                    p2_next_cache_valid_r <= 8'd0;
+                end else begin
+                    if (bg_rsp_valid_r && bg_rsp_lane0_valid_r) begin
+                        p2_next_cache_valid_r[bg_rsp_lane0_dest_r] <= 1'b1;
+                        p2_next_cache_job_r[bg_rsp_lane0_dest_r] <= bg_job_id_r;
+                        p2_next_cache_word_index_r[bg_rsp_lane0_dest_r] <=
+                            bg_word_index_r[bg_rsp_lane0_dest_r];
+                        p2_next_cache_word_r[bg_rsp_lane0_dest_r] <= mem0_rdata;
+                    end
+                    if (bg_rsp_valid_r && bg_rsp_lane1_valid_r) begin
+                        p2_next_cache_valid_r[bg_rsp_lane1_dest_r] <= 1'b1;
+                        p2_next_cache_job_r[bg_rsp_lane1_dest_r] <= bg_job_id_r;
+                        p2_next_cache_word_index_r[bg_rsp_lane1_dest_r] <=
+                            bg_word_index_r[bg_rsp_lane1_dest_r];
+                        p2_next_cache_word_r[bg_rsp_lane1_dest_r] <= mem1_rdata;
+                    end
+                    bg_returned_valid_r <= bg_return_mask;
+
+                    if (bg_rsp_valid_r && bg_rsp_last_r) begin
+                        bg_state_r <= BG_IDLE;
+                        bg_pair_idx_r <= 2'd0;
+                        bg_req_valid_r <= 1'b0;
+                        bg_req_lane0_valid_r <= 1'b0;
+                        bg_req_lane1_valid_r <= 1'b0;
+                        bg_req_last_r <= 1'b0;
+                        bg_rsp_valid_r <= 1'b0;
+                        bg_rsp_lane0_valid_r <= 1'b0;
+                        bg_rsp_lane1_valid_r <= 1'b0;
+                        bg_rsp_last_r <= 1'b0;
+                        p2_next_cache_ready_r <=
+                            ((bg_return_mask & bg_required_valid_r) ==
+                             bg_required_valid_r);
+                    end else begin
+                        bg_rsp_valid_r <= bg_req_valid_r;
+                        bg_rsp_lane0_valid_r <= bg_req_lane0_valid_r;
+                        bg_rsp_lane1_valid_r <= bg_req_lane1_valid_r;
+                        bg_rsp_lane0_dest_r <= bg_req_lane0_dest_r;
+                        bg_rsp_lane1_dest_r <= bg_req_lane1_dest_r;
+                        bg_rsp_last_r <= bg_req_last_r;
+
+                        if (bg_req_valid_r && !bg_req_last_r) begin
+                            bg_req_lane0_valid_r <=
+                                bg_required_valid_r[{(bg_pair_idx_r + 2'd1),1'b0}];
+                            bg_req_lane1_valid_r <=
+                                bg_required_valid_r[{(bg_pair_idx_r + 2'd1),1'b1}];
+                            bg_req_lane0_dest_r <=
+                                {(bg_pair_idx_r + 2'd1),1'b0};
+                            bg_req_lane1_dest_r <=
+                                {(bg_pair_idx_r + 2'd1),1'b1};
+                            bg_req_last_r <= ((bg_pair_idx_r + 2'd1) == 2'd3);
+                            mem0_en <=
+                                bg_required_valid_r[{(bg_pair_idx_r + 2'd1),1'b0}];
+                            mem0_we <= 1'b0;
+                            mem0_region <= REGION_PARAM;
+                            mem0_index <=
+                                bg_word_index_r[{(bg_pair_idx_r + 2'd1),1'b0}];
+                            mem1_en <=
+                                bg_required_valid_r[{(bg_pair_idx_r + 2'd1),1'b1}];
+                            mem1_we <= 1'b0;
+                            mem1_region <= REGION_PARAM;
+                            mem1_index <=
+                                bg_word_index_r[{(bg_pair_idx_r + 2'd1),1'b1}];
+                            bg_pair_idx_r <= bg_pair_idx_r + 2'd1;
+                        end else begin
+                            bg_req_valid_r <= 1'b0;
+                            bg_req_lane0_valid_r <= 1'b0;
+                            bg_req_lane1_valid_r <= 1'b0;
+                            bg_req_last_r <= 1'b0;
+                        end
+                    end
+                end
+            end
+
             // A pop may fill an empty prefetch slot or replace a slot that is
             // being launched this cycle. RHS values still refer to the old
             // prefetch bundle, so simultaneous launch/refill preserves FIFO order.
@@ -610,9 +899,43 @@ module SPU_VPU_Stream8 #(
                     prefetch_rsp_lane1_valid_r <= 1'b0;
                     prefetch_rsp_last_r <= 1'b0;
                     prefetch_state_r <= PF_READY;
+                end else if (fifo_head_next_cache_hit) begin
+                    // The background set is atomic at this point.  Promote it
+                    // to the current slot while selecting this bundle's entry.
+                    for (i = 0; i < 8; i = i + 1) begin
+                        if (fifo_lane_valid[fifo_rd_ptr_r][i]) begin
+                            prefetch_act_scale_r[i] <=
+                                p2_next_cache_word_r[i]
+                                    [32*fifo_scale_lane[fifo_rd_ptr_r][3*i +: 3] +: 16];
+                            prefetch_weight_scale_r[i] <=
+                                p2_next_cache_word_r[i]
+                                    [32*fifo_scale_lane[fifo_rd_ptr_r][3*i +: 3]+16 +: 16];
+                            p2_scale_cache_valid_r[i] <= 1'b1;
+                            p2_scale_cache_job_r[i] <= p2_next_cache_job_r[i];
+                            p2_scale_cache_word_index_r[i] <=
+                                p2_next_cache_word_index_r[i];
+                            p2_scale_cache_word_r[i] <= p2_next_cache_word_r[i];
+                        end
+                    end
+                    p2_next_cache_ready_r <= 1'b0;
+                    p2_next_cache_valid_r <= 8'd0;
+                    prefetch_req_valid_r <= 1'b0;
+                    prefetch_req_lane0_valid_r <= 1'b0;
+                    prefetch_req_lane1_valid_r <= 1'b0;
+                    prefetch_req_last_r <= 1'b0;
+                    prefetch_rsp_valid_r <= 1'b0;
+                    prefetch_rsp_lane0_valid_r <= 1'b0;
+                    prefetch_rsp_lane1_valid_r <= 1'b0;
+                    prefetch_rsp_last_r <= 1'b0;
+                    prefetch_state_r <= PF_READY;
                 end else begin
                     // Cache miss: preserve the original registered two-port
                     // prefetch sequence exactly.
+                    bg_state_r <= BG_IDLE;
+                    bg_req_valid_r <= 1'b0;
+                    bg_rsp_valid_r <= 1'b0;
+                    p2_next_cache_ready_r <= 1'b0;
+                    p2_next_cache_valid_r <= 8'd0;
                     prefetch_req_valid_r <= 1'b1;
                     prefetch_req_lane0_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][0];
                     prefetch_req_lane1_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][1];
