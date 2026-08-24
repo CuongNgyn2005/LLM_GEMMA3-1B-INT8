@@ -10,7 +10,7 @@
 
 ### Testbench Files Created
 
-- ✅ **tb_VPU_Top.v** (579 lines)
+- ✅ **tb_AI_IP_top.v** (579 lines)
   - Integration testbench for VPU_Top module
   - Tests internal valid/ready handshake behavior
   - Golden model for self-checking
@@ -62,7 +62,7 @@
 
 ## 🧪 Test Coverage
 
-### tb_VPU_Top.v Test Cases
+### tb_AI_IP_top.v Test Cases
 
 | Test Case | Description | Status |
 |-----------|-------------|--------|
@@ -148,9 +148,9 @@ cd h:\DATN\DATN_RTL\TESTBENCH
 $vivado = "C:\Xilinx\Vivado\2023.2\bin"
 $rtl = "..\RTL"
 mkdir -Force .\sim\xsim_work | Out-Null
-& "$vivado\xvlog.bat" -work .\sim\xsim_work $rtl\PMAU_Full.v $rtl\VPU_Top.v .\tb_VPU_Top.v
-& "$vivado\xelab.bat" -work .\sim\xsim_work -top tb_VPU_Top tb_VPU_Top
-& "$vivado\xsim.bat" -work .\sim\xsim_work tb_VPU_Top
+& "$vivado\xvlog.bat" -work .\sim\xsim_work $rtl\PMAU_Full.v $rtl\AI_IP_top.v .\tb_AI_IP_top.v
+& "$vivado\xelab.bat" -work .\sim\xsim_work -top tb_AI_IP_top tb_AI_IP_top
+& "$vivado\xsim.bat" -work .\sim\xsim_work tb_AI_IP_top
 ```
 
 ### Vivado GUI (Recommended)
@@ -175,7 +175,7 @@ make clean       # Clean artifacts
 
 ## 📊 Expected Results
 
-### tb_VPU_Top Output
+### tb_AI_IP_top Output
 ```
 [TB] ============================================================
 [TB] VPU_Top Testbench Started
@@ -284,7 +284,7 @@ make clean       # Clean artifacts
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| tb_VPU_Top.v | 579 | Integration testbench with 2 test cases |
+| tb_AI_IP_top.v | 579 | Integration testbench with 2 test cases |
 | tb_PMAU_Full.v | 480 | Unit testbench with 3 test cases |
 | README_TESTBENCH.md | 450+ | Full documentation & debugging guide |
 | QUICKSTART_WINDOWS.md | 300+ | Windows quick start & PowerShell guide |

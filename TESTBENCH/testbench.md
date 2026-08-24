@@ -3,7 +3,7 @@
 Note: file nay la prompt cu truoc khi VPU duoc doi sang AXI4-Full. Testbench hien tai cua VPU dung AXI4-Full; PMAU_Full chi dung valid/ready noi bo.
 
 ## Mục tiêu:
-Viết một module testbench (`tb_VPU_Top.v`) bằng Verilog để kiểm tra tính đúng đắn của khối `VPU_Top`. Khối này sử dụng giao diện AXI-Stream thuần túy.
+Viết một module testbench (`tb_AI_IP_top.v`) bằng Verilog để kiểm tra tính đúng đắn của khối `AI_IP_top`. Khối này sử dụng giao diện AXI-Stream thuần túy.
 
 ## Thông số cấu hình (Parameters) cho Testbench:
 * Kích thước ma trận Test: 1 Vector Activation (1x64) nhân với Ma trận Weight (4x64). 

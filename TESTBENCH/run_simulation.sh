@@ -9,7 +9,7 @@
 #
 # Supported testbenches:
 #   - tb_PMAU_Full     (Unit test for PMAU core)
-#   - tb_VPU_Top            (Integration test for VPU)
+#   - tb_AI_IP_top          (Integration test for the AI IP)
 #
 # Verbosity levels:
 #   0 = Standard output
@@ -32,7 +32,7 @@ RTL_DIR="../RTL"
 TESTBENCH_DIR="."
 
 # Testbench selection
-TB_NAME="${1:-tb_VPU_Top}"
+TB_NAME="${1:-tb_AI_IP_top}"
 VERBOSITY="${2:-0}"
 
 # ============================================================================
