@@ -7,12 +7,6 @@ set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==SoC || ORIG
 # IP: bd/SoC/ip/SoC_zynq_ultra_ps_e_0_0/SoC_zynq_ultra_ps_e_0_0.xci
 set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==SoC_zynq_ultra_ps_e_0_0 || ORIG_REF_NAME==SoC_zynq_ultra_ps_e_0_0} -quiet] -quiet
 
-# IP: bd/SoC/ip/SoC_VPU_Top_0_0/SoC_VPU_Top_0_0.xci
-set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==SoC_VPU_Top_0_0 || ORIG_REF_NAME==SoC_VPU_Top_0_0} -quiet] -quiet
-
-# IP: d:/DOAN/DATN_RTL/DATN_VIVADO/project_2/project_2.gen/sources_1/bd/SoC/ip/SoC_VPU_Top_0_0/project_2.srcs/sources_1/ip/mult_gen_0/mult_gen_0.xci
-set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==mult_gen_0 || ORIG_REF_NAME==mult_gen_0} -quiet] -quiet
-
 # IP: bd/SoC/ip/SoC_axi_smc_0/SoC_axi_smc_0.xci
 set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==SoC_axi_smc_0 || ORIG_REF_NAME==SoC_axi_smc_0} -quiet] -quiet
 
@@ -117,6 +111,12 @@ set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==SoC_axi_smc
 
 # IP: bd/SoC/ip/SoC_rst_ps8_0_100M_0/SoC_rst_ps8_0_100M_0.xci
 set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==SoC_rst_ps8_0_100M_0 || ORIG_REF_NAME==SoC_rst_ps8_0_100M_0} -quiet] -quiet
+
+# IP: bd/SoC/ip/SoC_VPU_Top_0_0/SoC_VPU_Top_0_0.xci
+set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==SoC_VPU_Top_0_0 || ORIG_REF_NAME==SoC_VPU_Top_0_0} -quiet] -quiet
+
+# IP: d:/DOAN/DATN_RTL/DATN_VIVADO/project_2/project_2.gen/sources_1/bd/SoC/ip/SoC_VPU_Top_0_0/project_2.srcs/sources_1/ip/mult_gen_0/mult_gen_0.xci
+set_property KEEP_HIERARCHY SOFT [get_cells -hier -filter {REF_NAME==mult_gen_0 || ORIG_REF_NAME==mult_gen_0} -quiet] -quiet
 
 # XDC: d:/DOAN/DATN_RTL/DATN_VIVADO/project_2/project_2.gen/sources_1/bd/SoC/ip/SoC_zynq_ultra_ps_e_0_0/SoC_zynq_ultra_ps_e_0_0_ooc.xdc
 

@@ -5,7 +5,7 @@
 This directory contains comprehensive testbenches for verifying the VPU (Vector Processing Unit) RTL design:
 
 1. **tb_PMAU_Full.v** - Unit testbench for PMAU_Full core
-2. **tb_VPU_Top.v** - Integration testbench for VPU_Top module
+2. **tb_AI_IP_top.v** - Integration testbench for the AI_IP_top module
 
 ## Test Coverage
 
@@ -34,7 +34,7 @@ Tests the parallel multiply-accumulate unit with streaming interface.
 - Golden model verification
 - Input/output ready/valid handshaking
 
-### tb_VPU_Top.v
+### tb_AI_IP_top.v
 
 Tests the complete VPU with FSM-controlled streaming.
 
@@ -64,8 +64,8 @@ Tests the complete VPU with FSM-controlled streaming.
 1. Open Vivado 2023.2 (or compatible version)
 2. File → Create Project
 3. Add sources:
-   - RTL: `../RTL/PMAU_Full.v`, `../RTL/VPU_Top.v`
-   - Testbench: `tb_VPU_Top.v` or `tb_PMAU_Full.v`
+   - RTL: `../RTL/PMAU_Full.v`, `../RTL/AI_IP_top.v`
+- Testbench: `tb_AI_IP_top.v` or `tb_PMAU_Full.v`
 4. Tools → Run Simulation → Run Behavioral Simulation
 5. View waveforms in Wave window
 
@@ -78,7 +78,7 @@ Tests the complete VPU with FSM-controlled streaming.
 **Run PMAU_Full testbench:**
 ```bash
 cd TESTBENCH
-xvlog -work xsim_work ../RTL/PMAU_Full.v ../RTL/VPU_Top.v tb_PMAU_Full.v
+xvlog -work xsim_work ../RTL/PMAU_Full.v ../RTL/AI_IP_top.v tb_PMAU_Full.v
 xelab -work xsim_work -top tb_PMAU_Full tb_PMAU_Full
 xsim -work xsim_work tb_PMAU_Full
 ```
@@ -86,9 +86,9 @@ xsim -work xsim_work tb_PMAU_Full
 **Run VPU_Top testbench:**
 ```bash
 cd TESTBENCH
-xvlog -work xsim_work ../RTL/PMAU_Full.v ../RTL/VPU_Top.v tb_VPU_Top.v
-xelab -work xsim_work -top tb_VPU_Top tb_VPU_Top
-xsim -work xsim_work tb_VPU_Top
+xvlog -work xsim_work ../RTL/PMAU_Full.v ../RTL/AI_IP_top.v tb_AI_IP_top.v
+xelab -work xsim_work -top tb_AI_IP_top tb_AI_IP_top
+xsim -work xsim_work tb_AI_IP_top
 ```
 
 ### Option 3: Using run_simulation.sh (Linux/macOS)
@@ -98,13 +98,13 @@ cd TESTBENCH
 chmod +x run_simulation.sh
 
 # Run VPU_Top testbench (default)
-./run_simulation.sh tb_VPU_Top
+./run_simulation.sh tb_AI_IP_top
 
 # Run PMAU_Full testbench
 ./run_simulation.sh tb_PMAU_Full
 
 # Run with debug/waveform output
-./run_simulation.sh tb_VPU_Top 2
+./run_simulation.sh tb_AI_IP_top 2
 ```
 
 ### Option 4: PowerShell Script (Windows)
@@ -115,7 +115,7 @@ Create file `run_simulation.ps1`:
 # Vivado xsim compilation
 $vivado_path = "C:\Xilinx\Vivado\2023.2\bin"
 $rtl_dir = "..\RTL"
-$tb_name = "tb_VPU_Top"
+$tb_name = "tb_AI_IP_top"
 
 # Compile and run
 & "$vivado_path\xvlog.bat" -work xsim_work "$rtl_dir\PMAU_Full.v" "$rtl_dir\VPU_Top.v" "$tb_name.v"
@@ -166,7 +166,7 @@ Then run:
 [TB] [PASS] All tests passed!
 ```
 
-### For tb_VPU_Top.v
+### For tb_AI_IP_top.v
 
 ```
 [TB] ============================================================
@@ -300,7 +300,7 @@ Output (Result valid after ~5-7 cycles)
 Easily modify testbench behavior by changing these parameters:
 
 ```verilog
-// tb_VPU_Top.v
+// tb_AI_IP_top.v
 parameter NUM_LANES    = 16;      // Parallel lanes
 parameter ACT_WIDTH    = 8;       // INT8 inputs
 parameter ACC_WIDTH    = 32;      // INT32 output

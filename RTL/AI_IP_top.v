@@ -1,9 +1,9 @@
 /*
  *-----------------------------------------------------------------------------
- * Module      : VPU_Top
- * Description : AXI4-Full top-level wrapper for the INT8 VPU IP.
+ * Module      : AI_IP_top
+ * Description : AXI4-Full top-level wrapper for the programmable-logic AI IP.
  *
- * VPU_Top is the integration boundary that Vivado Block Design sees as the
+ * AI_IP_top is the integration boundary that Vivado Block Design sees as the
  * custom accelerator IP.  It exposes the AXI4-Full slave interface, clock,
  * reset, user-side AXI metadata signals, and datapath sizing parameters, then
  * forwards these signals into MY_IP without adding extra behavior.
@@ -24,7 +24,7 @@
 
 `timescale 1ns/1ps
 
-module VPU_Top #(
+module AI_IP_top #(
     parameter integer C_S00_AXI_ID_WIDTH     = 1,
     parameter integer C_S00_AXI_DATA_WIDTH   = 128,
     parameter integer C_S00_AXI_ADDR_WIDTH   = 40,

@@ -840,7 +840,7 @@ module tb_SPU_Top;
 
             // The unit-level mode signal intentionally changes here to prove
             // completion uses the latched P3 owner, not the live mode input.
-            // AXI-level mode-write rejection is covered in tb_VPU_Top.
+            // AXI-level mode-write rejection is covered in tb_AI_IP_top.
             stream_split_scale_enable = 1'b0;
             if (!vpu_stream_status[5])
                 fail("P3 lock changed with live mode before raw done");

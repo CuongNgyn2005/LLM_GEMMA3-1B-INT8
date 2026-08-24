@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-module tb_VPU_Top;
+module tb_AI_IP_top;
 
     localparam integer ID_WIDTH      = 1;
     localparam integer DATA_WIDTH    = 128;
@@ -148,7 +148,7 @@ module tb_VPU_Top;
     integer pair_inactive_weight_a_write_observed;
     reg pair_weight_port_watch_enable;
 
-    VPU_Top #(
+    AI_IP_top #(
         .C_S00_AXI_ID_WIDTH     (ID_WIDTH),
         .C_S00_AXI_DATA_WIDTH   (DATA_WIDTH),
         .C_S00_AXI_ADDR_WIDTH   (ADDR_WIDTH),

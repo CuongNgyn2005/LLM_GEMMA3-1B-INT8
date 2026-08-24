@@ -822,6 +822,8 @@ module SPU_Top #(
         end
     end
 
+    wire stream_accum_resetn = resetn && !spu_soft_reset;
+
     SPU_Q8_Scale_Accum #(
         .ROW_ID_WIDTH     (16),
         .MAX_ROWS         (SCALE_ACCUM_ROWS),
@@ -829,7 +831,7 @@ module SPU_Top #(
         .FIXED_FRAC_BITS  (16)
     ) u_vpu_stream_scale_accum (
         .clk              (clk),
-        .resetn           (resetn),
+        .resetn           (stream_accum_resetn),
         .start            (stream_accum_start_r),
         .raw_in           (stream_raw_r),
         .act_scale_fp16   (stream_scale_word_r[15:0]),
@@ -850,7 +852,7 @@ module SPU_Top #(
         .ROW_ID_WIDTH (16), .MAX_ROWS (SCALE_ACCUM_ROWS),
         .ACC_WIDTH (64), .FIXED_FRAC_BITS (16)
     ) u_vpu_stream_pair_scale_accum (
-        .clk              (clk), .resetn (resetn), .start (stream_accum_pair_start_r),
+        .clk              (clk), .resetn (stream_accum_resetn), .start (stream_accum_pair_start_r),
         .raw_in           (stream_pair_raw_r),
         .act_scale_fp16   (stream_pair_scale_word_r[15:0]),
         .weight_scale_fp16(stream_pair_scale_word_r[31:16]),

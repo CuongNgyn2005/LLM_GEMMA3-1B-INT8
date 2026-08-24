@@ -8,18 +8,17 @@
  *
  *     contribution = raw * fp16_to_q0_32(d_a) * fp16_to_q0_32(d_w)
  *
- * The accumulator output is signed Q16.16 fixed-point, but the product scale
- * is held internally as Q0.32 so small Q8_0 scale products do not round to
- * zero before multiplication by the INT32 raw dot product.  The module rejects
- * negative, NaN, and infinity FP16 scales.  Zero scale is allowed for zero
- * blocks and contributes zero.
+ * The accumulator output is signed Q16.16 fixed-point.  The product scale is
+ * held internally as Q0.32.  Negative, NaN and infinity FP16 scales are
+ * rejected; zero scale is valid and contributes zero.
  *
- * A finite nonnegative FP16 value has an exact Q0.32 representation of an
- * 11-bit significand shifted by a small integer amount.  Multiplying those
- * significands first and applying the combined shift is bit-identical to the
- * previous 64x64 Q0.32 product.  Input validation, FP16 decode and the
- * accumulator-memory read are performed on the accepted start edge, leaving
- * the product/alignment/raw-multiply register boundaries intact for timing.
+ * Throughput note: the exact 11x11 significand product and exponent-shift sum
+ * are captured directly on the accepted start edge.  Alignment, signed raw
+ * multiply, and accumulation keep their existing register boundaries.  This
+ * removes the otherwise idle S_PRODUCT_MUL handoff stage without combining
+ * the 64-bit aligner with the signed raw multiply, reducing the steady P2
+ * accepted-start interval from four clocks to three while preserving the
+ * numerical operation and the one-cycle-early non-final entry_done contract.
  *-----------------------------------------------------------------------------
  */
 
@@ -51,6 +50,8 @@ module SPU_Q8_Scale_Accum #(
     output reg  [3:0]                        error_code
 );
 
+    // S_PRODUCT_MUL is retained as a defensive compatibility state but normal
+    // accepted entries now jump directly to S_PRODUCT_ALIGN.
     localparam [2:0] S_IDLE          = 3'd0;
     localparam [2:0] S_PRODUCT_MUL   = 3'd1;
     localparam [2:0] S_PRODUCT_ALIGN = 3'd2;
@@ -66,18 +67,14 @@ module SPU_Q8_Scale_Accum #(
     reg signed [31:0] raw_r;
     reg [ROW_ID_WIDTH-1:0] row_id_r;
     reg last_block_r;
+    reg pending_error_r;
 
-    reg [10:0] act_scale_sig_r;
-    reg [10:0] weight_scale_sig_r;
-    reg [5:0] act_scale_shift_r;
-    reg [5:0] weight_scale_shift_r;
     reg [21:0] product_scale_sig_r;
     reg [6:0] product_scale_shift_r;
 
-    // Keep a register boundary before the signed raw multiply.  Besides
-    // preserving timing margin, this keeps the compact scale-product rewrite
-    // local to the scale path and leaves the raw/contribution arithmetic
-    // bit-identical to the previous implementation.
+    // Keep a register boundary before the signed raw multiply.  The only
+    // throughput change is moving the compact 11x11 significand multiply onto
+    // the accepted-start edge; align/raw-multiply boundaries remain intact.
     (* dont_touch = "yes" *) reg [63:0] product_scale_q32_r;
     reg signed [96:0] contribution_full_r;
 
@@ -106,7 +103,6 @@ module SPU_Q8_Scale_Accum #(
 
     // For finite nonnegative FP16 values:
     //   fp16_to_q0_32(value) = significand << q32_shift
-    // Normal exponent e uses e+7; subnormals use the exact frac<<8 form.
     function [5:0] fp16_q32_shift;
         input [15:0] value;
         begin
@@ -116,10 +112,15 @@ module SPU_Q8_Scale_Accum #(
         end
     endfunction
 
-    (* use_dsp = "yes" *) wire [21:0] product_scale_sig_w =
-        act_scale_sig_r * weight_scale_sig_r;
-    wire [6:0] product_scale_shift_w =
-        {1'b0, act_scale_shift_r} + {1'b0, weight_scale_shift_r};
+    // These are the same compact scale-product operands previously evaluated
+    // in S_PRODUCT_MUL; only the capture edge changes.
+    (* use_dsp = "yes" *) wire [21:0] start_product_scale_sig_w =
+        fp16_q32_significand(act_scale_fp16) *
+        fp16_q32_significand(weight_scale_fp16);
+    wire [6:0] start_product_scale_shift_w =
+        {1'b0, fp16_q32_shift(act_scale_fp16)} +
+        {1'b0, fp16_q32_shift(weight_scale_fp16)};
+
     wire [63:0] product_scale_sig_ext_w = {42'd0, product_scale_sig_r};
     wire [63:0] product_scale_aligned_w =
         (product_scale_shift_r >= 7'd32) ?
@@ -137,16 +138,29 @@ module SPU_Q8_Scale_Accum #(
 
     assign busy = (state_r != S_IDLE);
 
+    task capture_valid_start;
+        begin
+            raw_r <= raw_in;
+            row_id_r <= row_id;
+            last_block_r <= last_block;
+            product_scale_sig_r <= start_product_scale_sig_w;
+            product_scale_shift_r <= start_product_scale_shift_w;
+            accum_prev_r <= clear_accum ?
+                            {ACC_WIDTH{1'b0}} : accum_mem[row_id];
+            pending_error_r <= 1'b0;
+            error <= 1'b0;
+            error_code <= ERR_NONE;
+            state_r <= S_PRODUCT_ALIGN;
+        end
+    endtask
+
     always @(posedge clk) begin
         if (!resetn) begin
             state_r <= S_IDLE;
             raw_r <= 32'sd0;
             row_id_r <= {ROW_ID_WIDTH{1'b0}};
             last_block_r <= 1'b0;
-            act_scale_sig_r <= 11'd0;
-            weight_scale_sig_r <= 11'd0;
-            act_scale_shift_r <= 6'd0;
-            weight_scale_shift_r <= 6'd0;
+            pending_error_r <= 1'b0;
             product_scale_sig_r <= 22'd0;
             product_scale_shift_r <= 7'd0;
             product_scale_q32_r <= 64'd0;
@@ -165,61 +179,123 @@ module SPU_Q8_Scale_Accum #(
             case (state_r)
                 S_IDLE: begin
                     if (start) begin
+                        last_block_r <= last_block;
                         if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
                             !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
+                            pending_error_r <= 1'b1;
                             error <= 1'b1;
                             error_code <= ERR_BAD_SCALE;
-                            entry_done <= 1'b1;
+                            state_r <= S_PRODUCT_ALIGN;
                         end else if (row_id >= MAX_ROWS) begin
+                            pending_error_r <= 1'b1;
                             error <= 1'b1;
                             error_code <= ERR_ROW_RANGE;
-                            entry_done <= 1'b1;
+                            state_r <= S_PRODUCT_ALIGN;
                         end else begin
-                            raw_r <= raw_in;
-                            row_id_r <= row_id;
-                            last_block_r <= last_block;
-                            act_scale_sig_r <= fp16_q32_significand(act_scale_fp16);
-                            weight_scale_sig_r <= fp16_q32_significand(weight_scale_fp16);
-                            act_scale_shift_r <= fp16_q32_shift(act_scale_fp16);
-                            weight_scale_shift_r <= fp16_q32_shift(weight_scale_fp16);
-                            accum_prev_r <= clear_accum ?
-                                            {ACC_WIDTH{1'b0}} : accum_mem[row_id];
-                            error <= 1'b0;
-                            error_code <= ERR_NONE;
-                            state_r <= S_PRODUCT_MUL;
+                            capture_valid_start();
                         end
                     end
                 end
 
+                // Normal traffic no longer enters this state.  Keeping the
+                // redirect makes a corrupted/legacy state value fail benignly
+                // into the same pipeline rather than changing state encoding.
                 S_PRODUCT_MUL: begin
-                    product_scale_sig_r <= product_scale_sig_w;
-                    product_scale_shift_r <= product_scale_shift_w;
                     state_r <= S_PRODUCT_ALIGN;
                 end
 
                 S_PRODUCT_ALIGN: begin
-                    product_scale_q32_r <= product_scale_aligned_w;
+                    if (!pending_error_r)
+                        product_scale_q32_r <= product_scale_aligned_w;
                     state_r <= S_RAW_MUL;
                 end
 
                 S_RAW_MUL: begin
-                    contribution_full_r <= contribution_mul_w;
+                    if (pending_error_r) begin
+                        if (!last_block_r)
+                            entry_done <= 1'b1;
+                    end else begin
+                        contribution_full_r <= contribution_mul_w;
+                        if (!last_block_r)
+                            entry_done <= 1'b1;
+                    end
                     state_r <= S_ACCUM;
                 end
 
                 S_ACCUM: begin
-                    accum_mem[row_id_r] <= accum_next_w;
-                    entry_done <= 1'b1;
-                    if (last_block_r) begin
-                        out_valid <= 1'b1;
-                        out_row_id <= row_id_r;
-                        out_accum_q16 <= accum_next_w;
+                    if (pending_error_r) begin
+                        // Failed entries never touch accumulator RAM.  Preserve
+                        // the same handoff/error retirement boundary as valid lanes.
+                        if (last_block_r) begin
+                            entry_done <= 1'b1;
+                            state_r <= S_IDLE;
+                        end else if (start) begin
+                            last_block_r <= last_block;
+                            if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
+                                !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
+                                pending_error_r <= 1'b1;
+                                error <= 1'b1;
+                                error_code <= ERR_BAD_SCALE;
+                                state_r <= S_PRODUCT_ALIGN;
+                            end else if (row_id >= MAX_ROWS) begin
+                                pending_error_r <= 1'b1;
+                                error <= 1'b1;
+                                error_code <= ERR_ROW_RANGE;
+                                state_r <= S_PRODUCT_ALIGN;
+                            end else begin
+                                capture_valid_start();
+                            end
+                        end else begin
+                            state_r <= S_IDLE;
+                        end
+                    end else begin
+                        // Commit current contribution.  The same-row bypass is
+                        // required when the next block is accepted on this edge.
+                        accum_mem[row_id_r] <= accum_next_w;
+
+                        if (last_block_r) begin
+                            entry_done <= 1'b1;
+                            out_valid <= 1'b1;
+                            out_row_id <= row_id_r;
+                            out_accum_q16 <= accum_next_w;
+                            state_r <= S_IDLE;
+                        end else if (start) begin
+                            last_block_r <= last_block;
+                            if (!fp16_is_nonnegative_finite(act_scale_fp16) ||
+                                !fp16_is_nonnegative_finite(weight_scale_fp16)) begin
+                                pending_error_r <= 1'b1;
+                                error <= 1'b1;
+                                error_code <= ERR_BAD_SCALE;
+                                state_r <= S_PRODUCT_ALIGN;
+                            end else if (row_id >= MAX_ROWS) begin
+                                pending_error_r <= 1'b1;
+                                error <= 1'b1;
+                                error_code <= ERR_ROW_RANGE;
+                                state_r <= S_PRODUCT_ALIGN;
+                            end else begin
+                                raw_r <= raw_in;
+                                row_id_r <= row_id;
+                                last_block_r <= last_block;
+                                product_scale_sig_r <= start_product_scale_sig_w;
+                                product_scale_shift_r <= start_product_scale_shift_w;
+                                accum_prev_r <= clear_accum ?
+                                                {ACC_WIDTH{1'b0}} :
+                                                ((row_id == row_id_r) ? accum_next_w :
+                                                                        accum_mem[row_id]);
+                                pending_error_r <= 1'b0;
+                                error <= 1'b0;
+                                error_code <= ERR_NONE;
+                                state_r <= S_PRODUCT_ALIGN;
+                            end
+                        end else begin
+                            state_r <= S_IDLE;
+                        end
                     end
-                    state_r <= S_IDLE;
                 end
 
                 default: begin
                     state_r <= S_IDLE;
+                    pending_error_r <= 1'b0;
                 end
             endcase
         end
