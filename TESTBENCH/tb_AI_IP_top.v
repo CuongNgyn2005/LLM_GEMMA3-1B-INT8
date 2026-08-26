@@ -2978,6 +2978,7 @@ module tb_AI_IP_top;
         run_pair_weight_port_ownership_case();
         run_group_case(132, 255, 36);
         run_group_case(133, 256, 64);
+        run_group_case(134, 17, 24);
         run_p3_axi_split_scale_case();
         run_group_case(137, 1, 1);
         run_act_burst_compute_case();

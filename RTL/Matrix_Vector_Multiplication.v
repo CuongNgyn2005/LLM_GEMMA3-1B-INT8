@@ -176,9 +176,9 @@ module Matrix_Vector_Multiplication #(
     localparam [15:0] MAX_COL_BEATS_16      = MAX_COL_BEATS;
     localparam [15:0] Q8_BLOCK_BEATS_16     = 16'd2;
     // Raw P2 x8 mode may issue several Q8 blocks before retiring
-    // results. Four is deliberately below PMAU_Full's 8-entry result
+    // results. Seven is deliberately below PMAU_Full's 8-entry result
     // FIFO depth so every PMAU has deterministic reservation headroom.
-    localparam [2:0]  RAW_BURST_MAX          = 3'd4;
+    localparam [2:0]  RAW_BURST_MAX          = 3'd7;
     localparam [SCALE_WIDTH-1:0] FP16_ONE    = 16'h3c00;
     localparam [31:0] MAX_ROWS_32           = MAX_ROWS;
     localparam [31:0] MAX_COL_BEATS_32      = MAX_COL_BEATS;
@@ -562,7 +562,7 @@ module Matrix_Vector_Multiplication #(
     wire wait_after_feed =
         result_i8_mode_r ? feed_group_last_r : feed_last_r;
     // In P2 raw x8 mode a block boundary is not necessarily a scheduler
-    // boundary. Keep the local-memory stream alive until the bounded four-block
+    // boundary. Keep the local-memory stream alive until the bounded seven-block
     // reservation is complete, then clear the read enables once before retire.
     wire p2_block_end_fire = raw_burst_mode && pmau_input_fire && feed_last_r;
     wire p2_burst_continue =
@@ -605,7 +605,7 @@ module Matrix_Vector_Multiplication #(
         {raw_issue_block_idx[14:0], 1'b0} + Q8_BLOCK_BEATS_16;
     // During a P2 burst block_idx_r is the oldest unretired block and remains
     // stable while reads issue. One limit therefore covers the complete
-    // <=RAW_BURST_MAX reservation window without issuing a fifth result.
+    // <=RAW_BURST_MAX reservation window without issuing an eighth result.
     wire [15:0] raw_p2_candidate_end_block =
         block_idx_r + {13'd0, RAW_BURST_MAX};
     wire [15:0] raw_p2_end_block =
@@ -1700,7 +1700,7 @@ module Matrix_Vector_Multiplication #(
                                 raw_burst_blocks_r <= raw_burst_blocks_r + 3'd1;
                                 state_r            <= S_RUN;
                             end else begin
-                                // The fourth (or final short-burst) block is the
+                                // The seventh (or final short-burst) block is the
                                 // only P2 boundary that flushes before retire.
                                 feed_valid_r     <= 1'b0;
                                 compute_rd_en    <= 1'b0;
