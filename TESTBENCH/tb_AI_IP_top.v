@@ -1583,7 +1583,7 @@ module tb_AI_IP_top;
 
     task run_p2_nonuniform_scale_case;
         localparam integer ROWS = 17;
-        localparam integer BLOCKS = 5;
+        localparam integer BLOCKS = 10;
         integer beat;
         integer row;
         integer block_id;
