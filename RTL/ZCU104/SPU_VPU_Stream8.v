@@ -111,6 +111,7 @@ module SPU_VPU_Stream8 #(
     localparam [2:0] PF_CAPTURE  = 3'd2;
     localparam [2:0] PF_READY    = 3'd3;
     localparam [2:0] PF_RESPONSE = 3'd4;
+    localparam [2:0] PF_CHECK    = 3'd5;
 
     reg [2:0] state_r;
     reg [1:0] pair_idx_r;
@@ -225,21 +226,23 @@ module SPU_VPU_Stream8 #(
     reg [31:0] p2_scale_cache_word_index_r [0:7];
     reg [AXI_DATA_WIDTH-1:0] p2_scale_cache_word_r [0:7];
 
-    reg [2:0] fifo_count_r;
-    reg [1:0] fifo_wr_ptr_r;
-    reg [1:0] fifo_rd_ptr_r;
-    reg [7:0] fifo_lane_valid [0:3];
-    reg [8*32-1:0] fifo_lane_data [0:3];
-    reg [8*16-1:0] fifo_lane_row [0:3];
-    reg [8*32-1:0] fifo_scale_word_index [0:3];
-    reg [8*3-1:0] fifo_scale_lane [0:3];
-    reg [15:0] fifo_block [0:3];
-    reg [15:0] fifo_group_blocks [0:3];
-    reg fifo_last_block [0:3];
-    reg fifo_clear_accum [0:3];
-    reg [31:0] fifo_job_id [0:3];
-    reg fifo_bank [0:3];
-    reg fifo_p3 [0:3];
+    // Match the P2 VPU retirement burst so one complete eight-result burst can
+    // be absorbed while the scale accumulators continue draining older work.
+    reg [3:0] fifo_count_r;
+    reg [2:0] fifo_wr_ptr_r;
+    reg [2:0] fifo_rd_ptr_r;
+    reg [7:0] fifo_lane_valid [0:7];
+    reg [8*32-1:0] fifo_lane_data [0:7];
+    reg [8*16-1:0] fifo_lane_row [0:7];
+    reg [8*32-1:0] fifo_scale_word_index [0:7];
+    reg [8*3-1:0] fifo_scale_lane [0:7];
+    reg [15:0] fifo_block [0:7];
+    reg [15:0] fifo_group_blocks [0:7];
+    reg fifo_last_block [0:7];
+    reg fifo_clear_accum [0:7];
+    reg [31:0] fifo_job_id [0:7];
+    reg fifo_bank [0:7];
+    reg fifo_p3 [0:7];
 
     wire [7:0] accum_busy;
     wire [7:0] accum_entry_done;
@@ -297,24 +300,26 @@ module SPU_VPU_Stream8 #(
     // the miss path exactly the old four-pair protocol and avoids mixing cached
     // and live BRAM data inside one x8 atomic bundle.
     integer ci;
-    reg fifo_head_scale_cache_hit;
+    reg prefetch_scale_cache_hit;
     always @* begin
-        fifo_head_scale_cache_hit = (fifo_count_r != 3'd0) &&
-                                    (fifo_lane_valid[fifo_rd_ptr_r] != 8'd0);
+        // Cache qualification uses the registered prefetch payload.  This
+        // removes the circular-FIFO read pointer and its wide metadata muxes
+        // from the tag-compare and accumulator clock-enable path.
+        prefetch_scale_cache_hit = (prefetch_lane_valid_r != 8'd0);
         for (ci = 0; ci < 8; ci = ci + 1) begin
-            if (fifo_lane_valid[fifo_rd_ptr_r][ci] &&
+            if (prefetch_lane_valid_r[ci] &&
                 (!p2_scale_cache_valid_r[ci] ||
-                 (p2_scale_cache_job_r[ci] != fifo_job_id[fifo_rd_ptr_r]) ||
+                 (p2_scale_cache_job_r[ci] != prefetch_job_id_r) ||
                  (p2_scale_cache_word_index_r[ci] !=
-                  fifo_scale_word_index[fifo_rd_ptr_r][32*ci +: 32])))
-                fifo_head_scale_cache_hit = 1'b0;
+                  prefetch_scale_word_index_r[ci])))
+                prefetch_scale_cache_hit = 1'b0;
         end
     end
 
     wire bank_mismatch = split_scale_enable && p3_bank_lock_valid &&
                          (vpu_bank != p3_bank_lock);
-    wire fifo_empty = (fifo_count_r == 3'd0);
-    wire fifo_full = (fifo_count_r == 3'd4);
+    wire fifo_empty = (fifo_count_r == 4'd0);
+    wire fifo_full = (fifo_count_r == 4'd8);
     wire prefetch_empty = (prefetch_state_r == PF_IDLE);
     wire prefetch_ready = (prefetch_state_r == PF_READY);
 
@@ -446,7 +451,7 @@ module SPU_VPU_Stream8 #(
             stream_entry_done_count <= 32'd0;
             stream_final_write_count <= 32'd0;
             stream_p3_reject_count <= 32'd0;
-            fifo_count_r <= 3'd0; fifo_wr_ptr_r <= 2'd0; fifo_rd_ptr_r <= 2'd0;
+            fifo_count_r <= 4'd0; fifo_wr_ptr_r <= 3'd0; fifo_rd_ptr_r <= 3'd0;
             prefetch_state_r <= PF_IDLE; prefetch_pair_idx_r <= 2'd0;
             prefetch_lane_valid_r <= 8'd0;
             prefetch_block_r <= 16'd0; prefetch_group_blocks_r <= 16'd0;
@@ -499,7 +504,7 @@ module SPU_VPU_Stream8 #(
                 p2_scale_cache_word_index_r[i] <= 32'd0;
                 p2_scale_cache_word_r[i] <= {AXI_DATA_WIDTH{1'b0}};
             end
-            for (fi = 0; fi < 4; fi = fi + 1) begin
+            for (fi = 0; fi < 8; fi = fi + 1) begin
                 fifo_lane_valid[fi] <= 8'd0;
                 fifo_lane_data[fi] <= {8*32{1'b0}};
                 fifo_lane_row[fi] <= {8*16{1'b0}};
@@ -548,7 +553,7 @@ module SPU_VPU_Stream8 #(
                 fifo_job_id[fifo_wr_ptr_r] <= vpu_job_id;
                 fifo_bank[fifo_wr_ptr_r] <= vpu_bank;
                 fifo_p3[fifo_wr_ptr_r] <= 1'b0;
-                fifo_wr_ptr_r <= fifo_wr_ptr_r + 2'd1;
+                fifo_wr_ptr_r <= fifo_wr_ptr_r + 3'd1;
                 stream_count <= stream_count + accepted_lanes;
                 stream_last_raw <= vpu_lane_data[32*tail_lane +: 32];
                 stream_last_meta <= {vpu_clear_accum,vpu_last_block,
@@ -556,17 +561,17 @@ module SPU_VPU_Stream8 #(
                 stream_last_job <= vpu_job_id;
                 stream_last_bank <= {31'd0,vpu_bank};
                 if (!fifo_pop &&
-                    (stream_fifo_high_water < {29'd0,(fifo_count_r + 3'd1)}))
-                    stream_fifo_high_water <= {29'd0,(fifo_count_r + 3'd1)};
+                    (stream_fifo_high_water < {28'd0,(fifo_count_r + 4'd1)}))
+                    stream_fifo_high_water <= {28'd0,(fifo_count_r + 4'd1)};
             end
 
             case ({fifo_push, fifo_pop})
-                2'b10: fifo_count_r <= fifo_count_r + 3'd1;
-                2'b01: fifo_count_r <= fifo_count_r - 3'd1;
+                2'b10: fifo_count_r <= fifo_count_r + 4'd1;
+                2'b01: fifo_count_r <= fifo_count_r - 4'd1;
                 default: fifo_count_r <= fifo_count_r;
             endcase
             if (fifo_pop)
-                fifo_rd_ptr_r <= fifo_rd_ptr_r + 2'd1;
+                fifo_rd_ptr_r <= fifo_rd_ptr_r + 3'd1;
 
             // A pop may fill an empty prefetch slot or replace a slot that is
             // being launched this cycle. RHS values still refer to the old
@@ -588,56 +593,57 @@ module SPU_VPU_Stream8 #(
                 prefetch_bank_r <= fifo_bank[fifo_rd_ptr_r];
                 prefetch_pair_idx_r <= 2'd0;
 
-                if (fifo_head_scale_cache_hit) begin
-                    // Registered-word hit: select the requested 32-bit scale
-                    // entry directly.  No PARAM RAM command is issued.
-                    for (i = 0; i < 8; i = i + 1) begin
-                        if (fifo_lane_valid[fifo_rd_ptr_r][i]) begin
-                            prefetch_act_scale_r[i] <=
-                                p2_scale_cache_word_r[i]
-                                    [32*fifo_scale_lane[fifo_rd_ptr_r][3*i +: 3] +: 16];
-                            prefetch_weight_scale_r[i] <=
-                                p2_scale_cache_word_r[i]
-                                    [32*fifo_scale_lane[fifo_rd_ptr_r][3*i +: 3]+16 +: 16];
-                        end
-                    end
-                    prefetch_req_valid_r <= 1'b0;
-                    prefetch_req_lane0_valid_r <= 1'b0;
-                    prefetch_req_lane1_valid_r <= 1'b0;
-                    prefetch_req_last_r <= 1'b0;
-                    prefetch_rsp_valid_r <= 1'b0;
-                    prefetch_rsp_lane0_valid_r <= 1'b0;
-                    prefetch_rsp_lane1_valid_r <= 1'b0;
-                    prefetch_rsp_last_r <= 1'b0;
-                    prefetch_state_r <= PF_READY;
-                end else begin
-                    // Cache miss: preserve the original registered two-port
-                    // prefetch sequence exactly.
-                    prefetch_req_valid_r <= 1'b1;
-                    prefetch_req_lane0_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][0];
-                    prefetch_req_lane1_valid_r <= fifo_lane_valid[fifo_rd_ptr_r][1];
-                    prefetch_req_lane0_dest_r <= 3'd0;
-                    prefetch_req_lane1_dest_r <= 3'd1;
-                    prefetch_req_lane0_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
-                    prefetch_req_lane1_word_index_r <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
-                    prefetch_req_lane0_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][2:0];
-                    prefetch_req_lane1_scale_lane_r <= fifo_scale_lane[fifo_rd_ptr_r][5:3];
-                    prefetch_req_last_r <= 1'b0;
-                    prefetch_rsp_valid_r <= 1'b0;
-                    prefetch_rsp_last_r <= 1'b0;
-                    mem0_en <= fifo_lane_valid[fifo_rd_ptr_r][0];
-                    mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
-                    mem0_index <= fifo_scale_word_index[fifo_rd_ptr_r][31:0];
-                    mem1_en <= fifo_lane_valid[fifo_rd_ptr_r][1];
-                    mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
-                    mem1_index <= fifo_scale_word_index[fifo_rd_ptr_r][63:32];
-                    mem3_scratch_en <= 1'b0; mem3_scratch_index <= 32'd0;
-                    prefetch_state_r <= PF_READ;
-                end
+                prefetch_req_valid_r <= 1'b0;
+                prefetch_req_lane0_valid_r <= 1'b0;
+                prefetch_req_lane1_valid_r <= 1'b0;
+                prefetch_req_last_r <= 1'b0;
+                prefetch_rsp_valid_r <= 1'b0;
+                prefetch_rsp_lane0_valid_r <= 1'b0;
+                prefetch_rsp_lane1_valid_r <= 1'b0;
+                prefetch_rsp_last_r <= 1'b0;
+                prefetch_state_r <= PF_CHECK;
             end
 
             if (!split_scale_enable) begin
                 case (prefetch_state_r)
+                    PF_CHECK: begin
+                        if (prefetch_scale_cache_hit) begin
+                            // Registered-word hit: select the requested scale
+                            // entry without issuing a PARAM RAM command.
+                            for (i = 0; i < 8; i = i + 1) begin
+                                if (prefetch_lane_valid_r[i]) begin
+                                    prefetch_act_scale_r[i] <=
+                                        p2_scale_cache_word_r[i]
+                                            [32*prefetch_scale_lane_r[i] +: 16];
+                                    prefetch_weight_scale_r[i] <=
+                                        p2_scale_cache_word_r[i]
+                                            [32*prefetch_scale_lane_r[i]+16 +: 16];
+                                end
+                            end
+                            prefetch_state_r <= PF_READY;
+                        end else begin
+                            // Cache miss: begin the retained registered
+                            // two-port PARAM RAM prefetch sequence.
+                            prefetch_req_valid_r <= 1'b1;
+                            prefetch_req_lane0_valid_r <= prefetch_lane_valid_r[0];
+                            prefetch_req_lane1_valid_r <= prefetch_lane_valid_r[1];
+                            prefetch_req_lane0_dest_r <= 3'd0;
+                            prefetch_req_lane1_dest_r <= 3'd1;
+                            prefetch_req_lane0_word_index_r <= prefetch_scale_word_index_r[0];
+                            prefetch_req_lane1_word_index_r <= prefetch_scale_word_index_r[1];
+                            prefetch_req_lane0_scale_lane_r <= prefetch_scale_lane_r[0];
+                            prefetch_req_lane1_scale_lane_r <= prefetch_scale_lane_r[1];
+                            prefetch_req_last_r <= 1'b0;
+                            mem0_en <= prefetch_lane_valid_r[0];
+                            mem0_we <= 1'b0; mem0_region <= REGION_PARAM;
+                            mem0_index <= prefetch_scale_word_index_r[0];
+                            mem1_en <= prefetch_lane_valid_r[1];
+                            mem1_we <= 1'b0; mem1_region <= REGION_PARAM;
+                            mem1_index <= prefetch_scale_word_index_r[1];
+                            prefetch_state_r <= PF_READ;
+                        end
+                    end
+
                     PF_READ: begin
                         if (prefetch_mem_available) begin
                             if (prefetch_rsp_valid_r && prefetch_rsp_lane0_valid_r) begin

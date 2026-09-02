@@ -175,10 +175,11 @@ module Matrix_Vector_Multiplication #(
     localparam [15:0] MAX_ROWS_16           = MAX_ROWS;
     localparam [15:0] MAX_COL_BEATS_16      = MAX_COL_BEATS;
     localparam [15:0] Q8_BLOCK_BEATS_16     = 16'd2;
-    // Raw P2 x8 mode may issue several Q8 blocks before retiring
-    // results. Seven is deliberately below PMAU_Full's 8-entry result
-    // FIFO depth so every PMAU has deterministic reservation headroom.
-    localparam [2:0]  RAW_BURST_MAX          = 3'd7;
+    // Raw P2 x8 mode may fill the complete PMAU result reservation window
+    // before retiring results. PMAU_Full accounts for both FIFO-resident and
+    // in-flight row ends, so eight accepted blocks exactly consume (but never
+    // exceed) the default eight-entry result FIFO capacity.
+    localparam [3:0]  RAW_BURST_MAX          = 4'd8;
     localparam [SCALE_WIDTH-1:0] FP16_ONE    = 16'h3c00;
     localparam [31:0] MAX_ROWS_32           = MAX_ROWS;
     localparam [31:0] MAX_COL_BEATS_32      = MAX_COL_BEATS;
@@ -308,11 +309,12 @@ module Matrix_Vector_Multiplication #(
     reg [15:0] active_rows_r;
     reg [15:0] active_col_beats_r;
     reg [15:0] row_idx_r;
+    reg [7:0]  row_lane_valid_r;
     reg [15:0] read_beat_idx_r;
     reg [15:0] block_idx_r;
     reg [15:0] issue_block_idx_r;
-    reg [2:0]  raw_burst_blocks_r;
-    reg [2:0]  raw_burst_retired_r;
+    reg [3:0]  raw_burst_blocks_r;
+    reg [3:0]  raw_burst_retired_r;
     reg [15:0] group_blocks_r;
     reg [31:0] result_row_base_r;
     reg [WEIGHT_LOCAL_ADDR_WIDTH-1:0] weight_row_base_r;
@@ -451,13 +453,29 @@ module Matrix_Vector_Multiplication #(
         (active_rows_r > MAX_ROWS_16) ||
         (active_col_beats_r > MAX_COL_BEATS_16) ||
         active_group_invalid;
-    wire pair_lane1_valid = pair_mode_r && ((row_idx_r + 16'd1) < active_rows_r);
-    wire pair_lane2_valid = pair_mode_r && ((row_idx_r + 16'd2) < active_rows_r);
-    wire pair_lane3_valid = pair_mode_r && ((row_idx_r + 16'd3) < active_rows_r);
-    wire pair_lane4_valid = pair_mode_r && ((row_idx_r + 16'd4) < active_rows_r);
-    wire pair_lane5_valid = pair_mode_r && ((row_idx_r + 16'd5) < active_rows_r);
-    wire pair_lane6_valid = pair_mode_r && ((row_idx_r + 16'd6) < active_rows_r);
-    wire pair_lane7_valid = pair_mode_r && ((row_idx_r + 16'd7) < active_rows_r);
+    function [7:0] make_row_lane_valid;
+        input [15:0] base_row;
+        input [15:0] total_rows;
+        input        pair_mode;
+        begin
+            make_row_lane_valid[0] = 1'b1;
+            make_row_lane_valid[1] = pair_mode && ((base_row + 16'd1) < total_rows);
+            make_row_lane_valid[2] = pair_mode && ((base_row + 16'd2) < total_rows);
+            make_row_lane_valid[3] = pair_mode && ((base_row + 16'd3) < total_rows);
+            make_row_lane_valid[4] = pair_mode && ((base_row + 16'd4) < total_rows);
+            make_row_lane_valid[5] = pair_mode && ((base_row + 16'd5) < total_rows);
+            make_row_lane_valid[6] = pair_mode && ((base_row + 16'd6) < total_rows);
+            make_row_lane_valid[7] = pair_mode && ((base_row + 16'd7) < total_rows);
+        end
+    endfunction
+
+    wire pair_lane1_valid = row_lane_valid_r[1];
+    wire pair_lane2_valid = row_lane_valid_r[2];
+    wire pair_lane3_valid = row_lane_valid_r[3];
+    wire pair_lane4_valid = row_lane_valid_r[4];
+    wire pair_lane5_valid = row_lane_valid_r[5];
+    wire pair_lane6_valid = row_lane_valid_r[6];
+    wire pair_lane7_valid = row_lane_valid_r[7];
     wire raw_burst_mode = pair_mode_r && group_mode_r && !result_i8_mode_r;
     wire pair_compute_ownership = pair_mode_r &&
         ((state_r == S_RUN) || (state_r == S_WAIT_RESULT) ||
@@ -532,14 +550,29 @@ module Matrix_Vector_Multiplication #(
                                   (!pair_lane5_valid || pmau6_result_valid) &&
                                   (!pair_lane6_valid || pmau7_result_valid) &&
                                   (!pair_lane7_valid || pmau8_result_valid);
-    wire pmau_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
-    wire pmau2_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
-    wire pmau3_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
-    wire pmau4_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
-    wire pmau5_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
-    wire pmau6_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
-    wire pmau7_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
-    wire pmau8_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
+    wire raw_stream_fire = spu_raw_valid && spu_raw_ready;
+    wire raw_burst_more_results =
+        (raw_burst_retired_r + 4'd1) < raw_burst_blocks_r;
+    // When the current raw bundle is accepted, pop the next already-complete
+    // PMAU result directly into the same output register. This preserves the
+    // registered ready/valid boundary under backpressure while removing the
+    // otherwise idle return through S_WAIT_RESULT between burst results.
+    wire raw_burst_chain_request =
+        (state_r == S_RAW_STREAM_HOLD) && raw_burst_mode &&
+        result_writes_done_r && raw_stream_fire && raw_burst_more_results;
+    wire pmau_result_accept =
+        ((state_r == S_WAIT_RESULT) || raw_burst_chain_request) &&
+        pmau_all_results_valid;
+    wire raw_burst_chain_pop = raw_burst_chain_request &&
+                               pmau_all_results_valid;
+    wire pmau_result_ready = pmau_result_accept;
+    wire pmau2_result_ready = pmau_result_accept;
+    wire pmau3_result_ready = pmau_result_accept;
+    wire pmau4_result_ready = pmau_result_accept;
+    wire pmau5_result_ready = pmau_result_accept;
+    wire pmau6_result_ready = pmau_result_accept;
+    wire pmau7_result_ready = pmau_result_accept;
+    wire pmau8_result_ready = pmau_result_accept;
     wire pair_issue_grant = pmau_input_ready &&
                             (!pair_lane1_valid || pmau2_input_ready) &&
                             (!pair_lane2_valid || pmau3_input_ready) &&
@@ -562,13 +595,13 @@ module Matrix_Vector_Multiplication #(
     wire wait_after_feed =
         result_i8_mode_r ? feed_group_last_r : feed_last_r;
     // In P2 raw x8 mode a block boundary is not necessarily a scheduler
-    // boundary. Keep the local-memory stream alive until the bounded seven-block
+    // boundary. Keep the local-memory stream alive until the bounded eight-block
     // reservation is complete, then clear the read enables once before retire.
     wire p2_block_end_fire = raw_burst_mode && pmau_input_fire && feed_last_r;
     wire p2_burst_continue =
         p2_block_end_fire &&
         ((issue_block_idx_r + 16'd1) < group_blocks_r) &&
-        (raw_burst_blocks_r < (RAW_BURST_MAX - 3'd1));
+        (raw_burst_blocks_r < (RAW_BURST_MAX - 4'd1));
     wire p2_burst_end_fire = p2_block_end_fire && !p2_burst_continue;
     wire legacy_compute_final_clear =
         (!raw_burst_mode) && pmau_input_fire && wait_after_feed;
@@ -605,9 +638,9 @@ module Matrix_Vector_Multiplication #(
         {raw_issue_block_idx[14:0], 1'b0} + Q8_BLOCK_BEATS_16;
     // During a P2 burst block_idx_r is the oldest unretired block and remains
     // stable while reads issue. One limit therefore covers the complete
-    // <=RAW_BURST_MAX reservation window without issuing an eighth result.
+    // <=RAW_BURST_MAX reservation window without exceeding FIFO capacity.
     wire [15:0] raw_p2_candidate_end_block =
-        block_idx_r + {13'd0, RAW_BURST_MAX};
+        block_idx_r + {12'd0, RAW_BURST_MAX};
     wire [15:0] raw_p2_end_block =
         (raw_p2_candidate_end_block < group_blocks_r) ?
             raw_p2_candidate_end_block : group_blocks_r;
@@ -1326,11 +1359,12 @@ module Matrix_Vector_Multiplication #(
             active_rows_r       <= 16'd0;
             active_col_beats_r  <= 16'd0;
             row_idx_r           <= 16'd0;
+            row_lane_valid_r    <= 8'b00000001;
             read_beat_idx_r     <= 16'd0;
             block_idx_r          <= 16'd0;
             issue_block_idx_r    <= 16'd0;
-            raw_burst_blocks_r   <= 3'd0;
-            raw_burst_retired_r  <= 3'd0;
+            raw_burst_blocks_r   <= 4'd0;
+            raw_burst_retired_r  <= 4'd0;
             group_blocks_r       <= 16'd1;
             result_row_base_r    <= 32'd0;
             weight_row_base_r   <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
@@ -1549,8 +1583,8 @@ module Matrix_Vector_Multiplication #(
                     row_idx_r          <= 16'd0;
                     block_idx_r        <= 16'd0;
                     issue_block_idx_r  <= 16'd0;
-                    raw_burst_blocks_r <= 3'd0;
-                    raw_burst_retired_r <= 3'd0;
+                    raw_burst_blocks_r <= 4'd0;
+                    raw_burst_retired_r <= 4'd0;
                     result_row_base_r  <= 32'd0;
                     weight_row_base_r  <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
 
@@ -1580,6 +1614,8 @@ module Matrix_Vector_Multiplication #(
                         done_job_id_r <= active_job_id_r;
                         state_r <= S_ERROR;
                     end else if (!active_bank_weight_write_pipeline_busy) begin
+                        row_lane_valid_r <= make_row_lane_valid(
+                            16'd0, active_rows_r, pair_mode_r);
                         raw_group_offset_r[0] <= 32'd0;
                         raw_group_offset_r[1] <= {16'd0,group_blocks_r};
                         raw_group_offset_r[2] <= ({16'd0,group_blocks_r} << 1);
@@ -1697,10 +1733,10 @@ module Matrix_Vector_Multiplication #(
                                 // boundaries so the next block arrives without
                                 // a local-memory refill bubble.
                                 issue_block_idx_r  <= issue_block_idx_r + 16'd1;
-                                raw_burst_blocks_r <= raw_burst_blocks_r + 3'd1;
+                                raw_burst_blocks_r <= raw_burst_blocks_r + 4'd1;
                                 state_r            <= S_RUN;
                             end else begin
-                                // The seventh (or final short-burst) block is the
+                                // The eighth (or final short-burst) block is the
                                 // only P2 boundary that flushes before retire.
                                 feed_valid_r     <= 1'b0;
                                 compute_rd_en    <= 1'b0;
@@ -1708,8 +1744,8 @@ module Matrix_Vector_Multiplication #(
                                 read_valid_d_r   <= 1'b0;
                                 read_valid_q_r   <= 1'b0;
                                 read_valid_x_r   <= 1'b0;
-                                raw_burst_blocks_r  <= raw_burst_blocks_r + 3'd1;
-                                raw_burst_retired_r <= 3'd0;
+                                raw_burst_blocks_r  <= raw_burst_blocks_r + 4'd1;
+                                raw_burst_retired_r <= 4'd0;
                                 state_r             <= S_WAIT_RESULT;
                             end
                         end else begin
@@ -1815,6 +1851,49 @@ module Matrix_Vector_Multiplication #(
 
                 S_RAW_STREAM_HOLD: begin
                     feed_valid_r <= 1'b0;
+                    if (raw_burst_chain_pop) begin
+                        // The current stream bundle and the next PMAU result
+                        // retire on the same edge. Replace the output payload
+                        // with block N+1 and keep valid asserted continuously.
+                        raw_burst_retired_r <= raw_burst_retired_r + 4'd1;
+                        block_idx_r <= block_idx_r + 16'd1;
+                        for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
+                            raw_lane_result_index_r[fsm_bank_i] <=
+                                raw_lane_result_index_r[fsm_bank_i] + 32'd1;
+
+                        spu_raw_valid <= 1'b1;
+                        spu_raw_data <= $signed(pmau_result_data);
+                        spu_raw_block <= block_idx_r + 16'd1;
+                        spu_raw_last_block <=
+                            ((block_idx_r + 16'd2) >= group_blocks_r);
+                        spu_raw_clear_accum <= 1'b0;
+                        spu_raw_scale_index <= result_value_index + 32'd1;
+
+                        spu_raw_pair_valid <= pair_lane1_valid;
+                        spu_raw_pair_data <= $signed(pmau2_result_data);
+                        spu_raw_pair_block <= block_idx_r + 16'd1;
+                        spu_raw_pair_last_block <=
+                            ((block_idx_r + 16'd2) >= group_blocks_r);
+                        spu_raw_pair_clear_accum <= 1'b0;
+                        spu_raw_pair_scale_index <= pair_result_value_index + 32'd1;
+
+                        spu_raw_lane_valid <=
+                            {pair_lane7_valid,pair_lane6_valid,pair_lane5_valid,pair_lane4_valid,
+                             pair_lane3_valid,pair_lane2_valid,pair_lane1_valid,1'b1};
+                        spu_raw_lane_data <=
+                            {pmau8_result_data,pmau7_result_data,pmau6_result_data,pmau5_result_data,
+                             pmau4_result_data,pmau3_result_data,pmau2_result_data,pmau_result_data};
+                        spu_raw_lane_scale_index <=
+                            {quad7_result_value_index + 32'd1,
+                             quad6_result_value_index + 32'd1,
+                             quad5_result_value_index + 32'd1,
+                             quad4_result_value_index + 32'd1,
+                             quad3_result_value_index + 32'd1,
+                             quad2_result_value_index + 32'd1,
+                             pair_result_value_index + 32'd1,
+                             result_value_index + 32'd1};
+                        raw_bundle_accepted_r <= 1'b0;
+                    end else begin
                     if (result_writeback_fire) begin
                         case (result_write_slot_r)
                             3'd0: if (pair_lane1_valid) begin result_write_pending_r<=1'b1; result_write_addr_r<=result_row1_addr_r; result_write_addr_bank_r[active_bank_r]<=result_row1_addr_r; result_write_lane_r<=result_row1_lane_r; result_write_i32_r<=result_row1_data_r; result_write_is_i8_r<=1'b0; result_write_slot_r<=3'd1; end else result_writes_done_r<=1'b1;
@@ -1828,24 +1907,24 @@ module Matrix_Vector_Multiplication #(
                         endcase
                         spu_raw_valid <= 1'b1;
                     end
-                    if (spu_raw_valid && spu_raw_ready) begin
+                    if (raw_stream_fire) begin
                         spu_raw_valid <= 1'b0;
                         spu_raw_pair_valid <= 1'b0;
                         spu_raw_lane_valid <= 8'd0;
                         raw_bundle_accepted_r <= 1'b1;
                     end
                     if (result_writes_done_r &&
-                        (raw_bundle_accepted_r || (spu_raw_valid && spu_raw_ready))) begin
+                        (raw_bundle_accepted_r || raw_stream_fire)) begin
                         if (raw_burst_mode) begin
-                            if ((raw_burst_retired_r + 3'd1) < raw_burst_blocks_r) begin
-                                raw_burst_retired_r <= raw_burst_retired_r + 3'd1;
+                            if ((raw_burst_retired_r + 4'd1) < raw_burst_blocks_r) begin
+                                raw_burst_retired_r <= raw_burst_retired_r + 4'd1;
                                 block_idx_r         <= block_idx_r + 16'd1;
                                 for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
                                     raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
                                 state_r             <= S_WAIT_RESULT;
                             end else begin
-                                raw_burst_blocks_r  <= 3'd0;
-                                raw_burst_retired_r <= 3'd0;
+                                raw_burst_blocks_r  <= 4'd0;
+                                raw_burst_retired_r <= 4'd0;
                                 if ((issue_block_idx_r + 16'd1) < group_blocks_r) begin
                                     issue_block_idx_r <= issue_block_idx_r + 16'd1;
                                     block_idx_r       <= block_idx_r + 16'd1;
@@ -1859,6 +1938,9 @@ module Matrix_Vector_Multiplication #(
                                         state_r <= S_DRAIN_RESULT;
                                     end else begin
                                         row_idx_r <= row_idx_r + (pair_mode_r ? 16'd8 : 16'd1);
+                                        row_lane_valid_r <= make_row_lane_valid(
+                                            row_idx_r + (pair_mode_r ? 16'd8 : 16'd1),
+                                            active_rows_r, pair_mode_r);
                                         read_beat_idx_r <= 16'd0;
                                         result_row_base_r <= result_row_base_r + raw_row_base_advance_r;
                                         for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
@@ -1882,6 +1964,9 @@ module Matrix_Vector_Multiplication #(
                                     state_r <= S_DRAIN_RESULT;
                                 end else begin
                                     row_idx_r <= row_idx_r + (pair_mode_r ? 16'd8 : 16'd1);
+                                    row_lane_valid_r <= make_row_lane_valid(
+                                        row_idx_r + (pair_mode_r ? 16'd8 : 16'd1),
+                                        active_rows_r, pair_mode_r);
                                     read_beat_idx_r <= 16'd0;
                                     result_row_base_r <= result_row_base_r + raw_row_base_advance_r;
                                     for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
@@ -1893,6 +1978,7 @@ module Matrix_Vector_Multiplication #(
                                 end
                             end
                         end
+                    end
                     end
                 end
 
@@ -1990,8 +2076,8 @@ module Matrix_Vector_Multiplication #(
                         read_req_valid_r    <= 1'b0;
                         block_idx_r         <= 16'd0;
                         issue_block_idx_r   <= 16'd0;
-                        raw_burst_blocks_r  <= 3'd0;
-                        raw_burst_retired_r <= 3'd0;
+                    raw_burst_blocks_r  <= 4'd0;
+                    raw_burst_retired_r <= 4'd0;
                         result_row_base_r   <= 32'd0;
                         weight_row_base_r   <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
                         state_r             <= S_VALIDATE;
@@ -2022,8 +2108,8 @@ module Matrix_Vector_Multiplication #(
                         read_req_valid_r   <= 1'b0;
                         block_idx_r        <= 16'd0;
                         issue_block_idx_r  <= 16'd0;
-                        raw_burst_blocks_r <= 3'd0;
-                        raw_burst_retired_r <= 3'd0;
+                    raw_burst_blocks_r <= 4'd0;
+                    raw_burst_retired_r <= 4'd0;
                         result_row_base_r  <= 32'd0;
                         weight_row_base_r  <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
                         state_r            <= S_VALIDATE;

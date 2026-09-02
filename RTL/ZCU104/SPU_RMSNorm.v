@@ -48,15 +48,20 @@ module SPU_RMSNorm #(
     reg lane_active_r;
     reg signed [31:0] value_ext_r;
     reg signed [31:0] weight_ext_r;
-    reg signed [63:0] value_weight_r;
+    // INT16 x INT16 is exactly representable in signed 32 bits.  Retaining a
+    // 64-bit sign-extended operand here makes the following x31 multiply map
+    // to a needlessly wide DSP cascade without adding numerical range.
+    reg signed [31:0] value_weight_r;
     reg signed [63:0] norm_product_r;
     reg [63:0] sumsq_product_r;
 
     // Keep the normalization multiplier off the FSM-state enable path.  The
     // operands are already registered one state earlier, and S_WRITE
     // consumes norm_product_r one cycle after this product is captured.
-    wire signed [63:0] norm_product_w =
+    wire signed [62:0] norm_product_exact_w =
         value_weight_r * $signed({1'b0, inv_rms_q15_r[30:0]});
+    wire signed [63:0] norm_product_w =
+        {norm_product_exact_w[62], norm_product_exact_w};
 
     // The Q8.8 result is norm_product_r >>> 23.  Retain only the 41 bits
     // that can affect the signed-16 saturation decision, then detect whether
@@ -85,7 +90,7 @@ module SPU_RMSNorm #(
             lane_active_r <= 1'b0;
             value_ext_r <= 32'sd0;
             weight_ext_r <= 32'sd0;
-            value_weight_r <= 64'sd0;
+            value_weight_r <= 32'sd0;
             norm_product_r <= 64'sd0;
             sumsq_product_r <= 64'd0;
         end else begin
