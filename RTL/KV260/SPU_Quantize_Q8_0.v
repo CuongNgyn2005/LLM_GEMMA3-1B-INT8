@@ -37,6 +37,7 @@ module SPU_Quantize_Q8_0 #(
     localparam [2:0] S_FIND_MAX = 3'd1;
     localparam [2:0] S_PREPARE  = 3'd2;
     localparam [2:0] S_DIVIDE   = 3'd3;
+    localparam [2:0] S_COMMIT   = 3'd4;
 
     reg [2:0] state_r;
     reg [INPUT_WIDTH*BLOCK_SIZE-1:0] values_r;
@@ -169,18 +170,25 @@ module SPU_Quantize_Q8_0 #(
                     div_remainder_r <= div_remainder_next_w;
                     div_quotient_r  <= div_quotient_next_w;
                     if (div_bits_left_r == 5'd1) begin
-                        qs_out[OUTPUT_WIDTH*sample_index_r +: OUTPUT_WIDTH] <=
-                            signed_quantized_byte(sign_r, div_quotient_next_w);
-                        if (sample_index_r == BLOCK_SIZE - 1) begin
-                            busy    <= 1'b0;
-                            done    <= 1'b1;
-                            state_r <= S_IDLE;
-                        end else begin
-                            sample_index_r <= sample_index_r + 1'b1;
-                            state_r        <= S_PREPARE;
-                        end
+                        // Commit from the registered final quotient on the
+                        // following cycle.  This keeps the restoring-divider
+                        // subtract/mux chain out of the wide indexed qs_out D path.
+                        state_r <= S_COMMIT;
                     end else begin
                         div_bits_left_r <= div_bits_left_r - 1'b1;
+                    end
+                end
+
+                S_COMMIT: begin
+                    qs_out[OUTPUT_WIDTH*sample_index_r +: OUTPUT_WIDTH] <=
+                        signed_quantized_byte(sign_r, div_quotient_r);
+                    if (sample_index_r == BLOCK_SIZE - 1) begin
+                        busy    <= 1'b0;
+                        done    <= 1'b1;
+                        state_r <= S_IDLE;
+                    end else begin
+                        sample_index_r <= sample_index_r + 1'b1;
+                        state_r        <= S_PREPARE;
                     end
                 end
 

@@ -311,6 +311,10 @@ module Matrix_Vector_Multiplication #(
     reg [15:0] read_beat_idx_r;
     reg [15:0] block_idx_r;
     reg [15:0] issue_block_idx_r;
+    // Registered end-beat for the current P2 reservation.  This value is
+    // prepared before S_RUN so the read-register enables do not contain the
+    // live block-index add/compare/minimum chain.
+    reg [15:0] raw_p2_burst_issue_limit_r;
     reg [2:0]  raw_burst_blocks_r;
     reg [2:0]  raw_burst_retired_r;
     reg [15:0] group_blocks_r;
@@ -365,6 +369,10 @@ module Matrix_Vector_Multiplication #(
     reg [2:0] result_write_slot_r;
     reg result_writes_done_r;
     reg raw_bundle_accepted_r;
+    // Registered validity for the current eight-row pair group.  Bit 0 is
+    // the base PMAU lane and is always valid for an accepted row group;
+    // bits 7:1 identify valid companion rows.
+    reg [7:0] pair_lane_valid_r;
 
     reg result_requant_pending_r;
     reg signed [ACC_WIDTH-1:0] result_requant_value_r;
@@ -451,13 +459,51 @@ module Matrix_Vector_Multiplication #(
         (active_rows_r > MAX_ROWS_16) ||
         (active_col_beats_r > MAX_COL_BEATS_16) ||
         active_group_invalid;
-    wire pair_lane1_valid = pair_mode_r && ((row_idx_r + 16'd1) < active_rows_r);
-    wire pair_lane2_valid = pair_mode_r && ((row_idx_r + 16'd2) < active_rows_r);
-    wire pair_lane3_valid = pair_mode_r && ((row_idx_r + 16'd3) < active_rows_r);
-    wire pair_lane4_valid = pair_mode_r && ((row_idx_r + 16'd4) < active_rows_r);
-    wire pair_lane5_valid = pair_mode_r && ((row_idx_r + 16'd5) < active_rows_r);
-    wire pair_lane6_valid = pair_mode_r && ((row_idx_r + 16'd6) < active_rows_r);
-    wire pair_lane7_valid = pair_mode_r && ((row_idx_r + 16'd7) < active_rows_r);
+    // The row-boundary comparisons are evaluated only when a new row group
+    // starts and captured in pair_lane_valid_r.  Keeping these bits out of
+    // the live ready/valid cones avoids rebuilding seven wide comparisons at
+    // every PMAU input/result decision.
+    function [7:0] pair_lane_mask_for_row;
+        input [15:0] base_row;
+        input [15:0] row_limit;
+        input        pair_mode;
+        begin
+            // Lane 0 is the base result and is valid in both pair and legacy
+            // modes whenever the configuration has passed validation.
+            pair_lane_mask_for_row = 8'h01;
+            if (pair_mode) begin
+                pair_lane_mask_for_row[1] = (base_row + 16'd1) < row_limit;
+                pair_lane_mask_for_row[2] = (base_row + 16'd2) < row_limit;
+                pair_lane_mask_for_row[3] = (base_row + 16'd3) < row_limit;
+                pair_lane_mask_for_row[4] = (base_row + 16'd4) < row_limit;
+                pair_lane_mask_for_row[5] = (base_row + 16'd5) < row_limit;
+                pair_lane_mask_for_row[6] = (base_row + 16'd6) < row_limit;
+                pair_lane_mask_for_row[7] = (base_row + 16'd7) < row_limit;
+            end
+        end
+    endfunction
+
+    function [15:0] p2_burst_issue_limit_for_block;
+        input [15:0] base_block;
+        input [15:0] block_limit;
+        reg   [15:0] candidate_end_block;
+        reg   [15:0] end_block;
+        begin
+            candidate_end_block = base_block + {13'd0, RAW_BURST_MAX};
+            end_block = (candidate_end_block < block_limit) ?
+                        candidate_end_block : block_limit;
+            p2_burst_issue_limit_for_block = {end_block[14:0], 1'b0};
+        end
+    endfunction
+
+    wire pair_lane0_valid = pair_lane_valid_r[0];
+    wire pair_lane1_valid = pair_lane_valid_r[1];
+    wire pair_lane2_valid = pair_lane_valid_r[2];
+    wire pair_lane3_valid = pair_lane_valid_r[3];
+    wire pair_lane4_valid = pair_lane_valid_r[4];
+    wire pair_lane5_valid = pair_lane_valid_r[5];
+    wire pair_lane6_valid = pair_lane_valid_r[6];
+    wire pair_lane7_valid = pair_lane_valid_r[7];
     wire raw_burst_mode = pair_mode_r && group_mode_r && !result_i8_mode_r;
     wire pair_compute_ownership = pair_mode_r &&
         ((state_r == S_RUN) || (state_r == S_WAIT_RESULT) ||
@@ -524,7 +570,7 @@ module Matrix_Vector_Multiplication #(
     wire [ACC_WIDTH-1:0] pmau8_result_data;
     wire signed [7:0] pmau_result_i8;
     wire [4:0] result_requant_shift = cfg_scale[4:0];
-    wire pmau_all_results_valid = pmau_result_valid &&
+    wire pmau_all_results_valid = pair_lane0_valid && pmau_result_valid &&
                                   (!pair_lane1_valid || pmau2_result_valid) &&
                                   (!pair_lane2_valid || pmau3_result_valid) &&
                                   (!pair_lane3_valid || pmau4_result_valid) &&
@@ -540,7 +586,7 @@ module Matrix_Vector_Multiplication #(
     wire pmau6_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
     wire pmau7_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
     wire pmau8_result_ready = (state_r == S_WAIT_RESULT) && pmau_all_results_valid;
-    wire pair_issue_grant = pmau_input_ready &&
+    wire pair_issue_grant = pair_lane0_valid && pmau_input_ready &&
                             (!pair_lane1_valid || pmau2_input_ready) &&
                             (!pair_lane2_valid || pmau3_input_ready) &&
                             (!pair_lane3_valid || pmau4_input_ready) &&
@@ -603,18 +649,8 @@ module Matrix_Vector_Multiplication #(
         raw_burst_mode ? issue_block_idx_r : block_idx_r;
     wire [15:0] raw_group_issue_limit =
         {raw_issue_block_idx[14:0], 1'b0} + Q8_BLOCK_BEATS_16;
-    // During a P2 burst block_idx_r is the oldest unretired block and remains
-    // stable while reads issue. One limit therefore covers the complete
-    // <=RAW_BURST_MAX reservation window without issuing an eighth result.
-    wire [15:0] raw_p2_candidate_end_block =
-        block_idx_r + {13'd0, RAW_BURST_MAX};
-    wire [15:0] raw_p2_end_block =
-        (raw_p2_candidate_end_block < group_blocks_r) ?
-            raw_p2_candidate_end_block : group_blocks_r;
-    wire [15:0] raw_p2_burst_issue_limit =
-        {raw_p2_end_block[14:0], 1'b0};
     wire [15:0] issue_read_limit =
-        raw_burst_mode ? raw_p2_burst_issue_limit :
+        raw_burst_mode ? raw_p2_burst_issue_limit_r :
         (!result_i8_mode_r && group_mode_r) ? raw_group_issue_limit :
                                               active_col_beats_r;
     wire p2_can_issue_read =
@@ -1326,9 +1362,11 @@ module Matrix_Vector_Multiplication #(
             active_rows_r       <= 16'd0;
             active_col_beats_r  <= 16'd0;
             row_idx_r           <= 16'd0;
+            pair_lane_valid_r   <= 8'h01;
             read_beat_idx_r     <= 16'd0;
             block_idx_r          <= 16'd0;
             issue_block_idx_r    <= 16'd0;
+            raw_p2_burst_issue_limit_r <= 16'd0;
             raw_burst_blocks_r   <= 3'd0;
             raw_burst_retired_r  <= 3'd0;
             group_blocks_r       <= 16'd1;
@@ -1372,6 +1410,7 @@ module Matrix_Vector_Multiplication #(
             result_write_slot_r <= 3'd0;
             result_writes_done_r <= 1'b0;
             raw_bundle_accepted_r <= 1'b0;
+            pair_lane_valid_r <= 8'h01;
             result_requant_pending_r <= 1'b0;
             result_requant_value_r <= {ACC_WIDTH{1'b0}};
             result_requant_addr_r <= {RESULT_ADDR_WIDTH{1'b0}};
@@ -1547,10 +1586,12 @@ module Matrix_Vector_Multiplication #(
                     read_valid_x_r     <= 1'b0;
                     read_beat_idx_r    <= 16'd0;
                     row_idx_r          <= 16'd0;
+                    pair_lane_valid_r  <= 8'h01;
                     block_idx_r        <= 16'd0;
                     issue_block_idx_r  <= 16'd0;
                     raw_burst_blocks_r <= 3'd0;
                     raw_burst_retired_r <= 3'd0;
+                    raw_p2_burst_issue_limit_r <= 16'd0;
                     result_row_base_r  <= 32'd0;
                     weight_row_base_r  <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
 
@@ -1574,6 +1615,7 @@ module Matrix_Vector_Multiplication #(
                 S_VALIDATE: begin
                     feed_valid_r <= 1'b0;
                     if (active_config_invalid) begin
+                        pair_lane_valid_r <= 8'h01;
                         error_r <= 1'b1;
                         done_r  <= 1'b1;
                         done_bank_r <= active_bank_r;
@@ -1599,6 +1641,10 @@ module Matrix_Vector_Multiplication #(
                         raw_row_base_advance_r <= pair_mode_r ?
                                                   ({16'd0,group_blocks_r} << 3) :
                                                   {16'd0,group_blocks_r};
+                        pair_lane_valid_r <= pair_lane_mask_for_row(
+                            row_idx_r, active_rows_r, pair_mode_r);
+                        raw_p2_burst_issue_limit_r <=
+                            p2_burst_issue_limit_for_block(16'd0, group_blocks_r);
                         state_r <= S_RUN;
                     end
                 end
@@ -1797,7 +1843,7 @@ module Matrix_Vector_Multiplication #(
                             spu_raw_pair_bank <= active_bank_r;
                             spu_raw_pair_scale_index <= pair_result_value_index;
                             spu_raw_lane_valid <= {pair_lane7_valid,pair_lane6_valid,pair_lane5_valid,pair_lane4_valid,
-                                                   pair_lane3_valid,pair_lane2_valid,pair_lane1_valid,1'b1};
+                                                   pair_lane3_valid,pair_lane2_valid,pair_lane1_valid,pair_lane0_valid};
                             spu_raw_lane_data <= {pmau8_result_data,pmau7_result_data,pmau6_result_data,pmau5_result_data,
                                                   pmau4_result_data,pmau3_result_data,pmau2_result_data,pmau_result_data};
                             spu_raw_lane_row <= {row_idx_r+16'd7,row_idx_r+16'd6,row_idx_r+16'd5,row_idx_r+16'd4,
@@ -1849,6 +1895,9 @@ module Matrix_Vector_Multiplication #(
                                 if ((issue_block_idx_r + 16'd1) < group_blocks_r) begin
                                     issue_block_idx_r <= issue_block_idx_r + 16'd1;
                                     block_idx_r       <= block_idx_r + 16'd1;
+                                    raw_p2_burst_issue_limit_r <=
+                                        p2_burst_issue_limit_for_block(
+                                            block_idx_r + 16'd1, group_blocks_r);
                                     for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
                                         raw_lane_result_index_r[fsm_bank_i] <= raw_lane_result_index_r[fsm_bank_i] + 32'd1;
                                     state_r           <= S_RUN;
@@ -1864,6 +1913,12 @@ module Matrix_Vector_Multiplication #(
                                         for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
                                             raw_lane_result_index_r[fsm_bank_i] <=
                                                 result_row_base_r + raw_row_base_advance_r + raw_group_offset_r[fsm_bank_i];
+                                        pair_lane_valid_r <= pair_lane_mask_for_row(
+                                            row_idx_r + (pair_mode_r ? 16'd8 : 16'd1),
+                                            active_rows_r, pair_mode_r);
+                                        raw_p2_burst_issue_limit_r <=
+                                            p2_burst_issue_limit_for_block(
+                                                16'd0, group_blocks_r);
                                         if (pair_mode_r || (row_idx_r[2:0] == 3'd7))
                                             weight_row_base_r <= weight_row_base_r + active_col_beats_r;
                                         state_r <= S_RUN;
@@ -1887,6 +1942,9 @@ module Matrix_Vector_Multiplication #(
                                     for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
                                         raw_lane_result_index_r[fsm_bank_i] <=
                                             result_row_base_r + raw_row_base_advance_r + raw_group_offset_r[fsm_bank_i];
+                                    pair_lane_valid_r <= pair_lane_mask_for_row(
+                                        row_idx_r + (pair_mode_r ? 16'd8 : 16'd1),
+                                        active_rows_r, pair_mode_r);
                                     if (pair_mode_r || (row_idx_r[2:0] == 3'd7))
                                         weight_row_base_r <= weight_row_base_r + active_col_beats_r;
                                     state_r <= S_RUN;
@@ -1933,6 +1991,8 @@ module Matrix_Vector_Multiplication #(
                         row_idx_r         <= row_idx_r + 16'd1;
                         read_beat_idx_r   <= 16'd0;
                         result_row_base_r <= result_row_base_r + 32'd1;
+                        pair_lane_valid_r <= pair_lane_mask_for_row(
+                            row_idx_r + 16'd1, active_rows_r, pair_mode_r);
                         if (row_idx_r[2:0] == 3'd7)
                             weight_row_base_r <= weight_row_base_r +
                                                  active_col_beats_r;
@@ -1986,6 +2046,7 @@ module Matrix_Vector_Multiplication #(
                         active_bank_r        <= cfg_wr_bank;
                         active_job_id_r      <= cfg_job_id;
                         row_idx_r           <= 16'd0;
+                        pair_lane_valid_r   <= 8'h01;
                         read_beat_idx_r     <= 16'd0;
                         read_req_valid_r    <= 1'b0;
                         block_idx_r         <= 16'd0;
@@ -2018,6 +2079,7 @@ module Matrix_Vector_Multiplication #(
                         active_bank_r      <= cfg_wr_bank;
                         active_job_id_r    <= cfg_job_id;
                         row_idx_r          <= 16'd0;
+                        pair_lane_valid_r  <= 8'h01;
                         read_beat_idx_r    <= 16'd0;
                         read_req_valid_r   <= 1'b0;
                         block_idx_r        <= 16'd0;

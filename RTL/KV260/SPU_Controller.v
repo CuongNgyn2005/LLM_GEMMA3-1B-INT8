@@ -382,7 +382,10 @@ module SPU_Controller #(
             mode_r         <= mode;
             len_r          <= len;
             word_idx_r     <= 32'd0;
-            word_count_r   <= 32'd0;
+            // Precompute the vector word count at command capture.  S_DECODE
+            // consumes this registered value one cycle later, keeping the
+            // ceil-divide carry chain out of the softmax accumulator enables.
+            word_count_r   <= ceil_div8(len);
             block_idx_r    <= 32'd0;
             block_count_r  <= ceil_div32(len);
             scale_out_count_r <= 32'd0;
@@ -524,14 +527,13 @@ module SPU_Controller #(
                             error_code <= ERR_BAD_LENGTH;
                             done <= 1'b1;
                             state_r <= S_ERROR;
-                        end else if ((ceil_div8(len_r) > WORD_DEPTH) ||
+                        end else if ((word_count_r > WORD_DEPTH) ||
                                      ((mode_r == SPU_MODE_ROPE) && len_r[0])) begin
                             error <= 1'b1;
                             error_code <= ERR_RANGE;
                             done <= 1'b1;
                             state_r <= S_ERROR;
                         end else begin
-                            word_count_r <= ceil_div8(len_r);
                             word_idx_r <= 32'd0;
                             if (mode_r == SPU_MODE_RMSNORM) begin
                                 rms_sumsq_total_r <= 64'd0;

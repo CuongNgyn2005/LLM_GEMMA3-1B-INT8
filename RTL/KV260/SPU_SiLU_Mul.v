@@ -48,15 +48,19 @@ module SPU_SiLU_Mul #(
     reg signed [15:0] gate_q8_r;
     reg signed [15:0] up_q8_r;
     reg signed [31:0] sigmoid_q15_r;
-    reg signed [47:0] silu_q8_r;
-    reg signed [47:0] result_q8_r;
+    // After (gate_q8 * sigmoid_q15) >>> 15, the full mathematical range is
+    // signed Q8.8 [-32768, 32767].  Keeping this value at 16 bits lets the
+    // following SiLU*up operation map to one native 16x16 DSP multiply rather
+    // than a cascaded 48x16 implementation.
+    reg signed [15:0] silu_q8_r;
+    reg signed [31:0] result_q8_r;
 
     function signed [15:0] sat16;
-        input signed [47:0] value;
+        input signed [31:0] value;
         begin
-            if (value > 48'sd32767)
+            if (value > 32'sd32767)
                 sat16 = 16'sd32767;
-            else if (value < -48'sd32768)
+            else if (value < -32'sd32768)
                 sat16 = -16'sd32768;
             else
                 sat16 = value[15:0];
@@ -77,8 +81,8 @@ module SPU_SiLU_Mul #(
             gate_q8_r <= 16'sd0;
             up_q8_r <= 16'sd0;
             sigmoid_q15_r <= 32'sd0;
-            silu_q8_r <= 48'sd0;
-            result_q8_r <= 48'sd0;
+            silu_q8_r <= 16'sd0;
+            result_q8_r <= 32'sd0;
         end else begin
             done <= 1'b0;
 

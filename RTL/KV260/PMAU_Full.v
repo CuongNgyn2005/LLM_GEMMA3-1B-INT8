@@ -157,6 +157,10 @@ module PMAU_Full #(
     // occupancy counter removes that popcount/adder network from the input
     // ready path while preserving the same reservation semantics.
     reg [FIFO_COUNT_WIDTH-1:0] inflight_result_count;
+    // Registered credit predicate for row-ending input beats.  Updating this
+    // from reservation events keeps the FIFO-count add/compare out of GEMV's
+    // eight-lane ready reduction while remaining conservative after a pop.
+    reg result_slot_available_r;
 
     // GEMV accepts PMAU input beats only in S_RUN and consumes PMAU results
     // only in S_WAIT_RESULT, so result_fire and input_fire cannot occur in
@@ -169,8 +173,7 @@ module PMAU_Full #(
     wire both_inputs_valid = activation_valid && weight_valid;
     wire incoming_last_match = (activation_last == weight_last);
 
-    assign input_ready = (!activation_last) ||
-                         (reserved_result_slots < FIFO_DEPTH_COUNT);
+    assign input_ready = (!activation_last) || result_slot_available_r;
 
     // Ready is deliberately independent of the opposite valid.  GEMV presents
     // activation/weight together, while input_fire below still requires both
@@ -349,6 +352,7 @@ module PMAU_Full #(
             fifo_rd_ptr <= {FIFO_PTR_WIDTH{1'b0}};
             fifo_count  <= {FIFO_COUNT_WIDTH{1'b0}};
             inflight_result_count <= {FIFO_COUNT_WIDTH{1'b0}};
+            result_slot_available_r <= 1'b1;
 
             for (k = 0; k < RESULT_FIFO_DEPTH; k = k + 1) begin
                 result_fifo_data[k] <= {ACC_WIDTH{1'b0}};
@@ -383,6 +387,17 @@ module PMAU_Full #(
                 2'b01: inflight_result_count <= inflight_result_count -
                                                      {{(FIFO_COUNT_WIDTH-1){1'b0}}, 1'b1};
                 default: inflight_result_count <= inflight_result_count;
+            endcase
+
+            // accepted_row_end reserves one additional result slot;
+            // result_fire releases one.  Simultaneous events leave the total
+            // reservation unchanged.  A release becomes visible one cycle
+            // later, which is safe and only adds conservative backpressure.
+            case ({accepted_row_end, result_fire})
+                2'b10: result_slot_available_r <=
+                    (reserved_result_slots < (FIFO_DEPTH_COUNT - 1'b1));
+                2'b01: result_slot_available_r <= 1'b1;
+                default: result_slot_available_r <= result_slot_available_r;
             endcase
 
             if (final_valid) begin
