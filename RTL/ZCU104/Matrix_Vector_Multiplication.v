@@ -581,7 +581,10 @@ module Matrix_Vector_Multiplication #(
                             (!pair_lane5_valid || pmau6_input_ready) &&
                             (!pair_lane6_valid || pmau7_input_ready) &&
                             (!pair_lane7_valid || pmau8_input_ready);
-    wire pmau_offer_valid = feed_valid_r && pair_issue_grant;
+    // One next-burst beat may remain buffered while the current bounded P2
+    // result reservation retires.  Keep it out of the PMAUs until S_RUN.
+    wire pmau_offer_valid = (state_r == S_RUN) && feed_valid_r &&
+                            pair_issue_grant;
     wire pmau_input_fire =
         pmau_offer_valid && pmau_activation_ready && pmau_weight_ready &&
         (!pair_lane1_valid || (pmau2_activation_ready && pmau2_weight_ready)) &&
@@ -646,8 +649,14 @@ module Matrix_Vector_Multiplication #(
             raw_p2_candidate_end_block : group_blocks_r;
     wire [15:0] raw_p2_burst_issue_limit =
         {raw_p2_end_block[14:0], 1'b0};
+    // Fetch the first beat of the next reservation before retiring the current
+    // one.  The existing feed register owns the complete BRAM payload, so only
+    // one beat crosses the S_WAIT_RESULT/S_RAW_STREAM_HOLD boundary.
+    wire [15:0] raw_p2_lookahead_issue_limit =
+        raw_p2_burst_issue_limit +
+        ((raw_p2_end_block < group_blocks_r) ? 16'd1 : 16'd0);
     wire [15:0] issue_read_limit =
-        raw_burst_mode ? raw_p2_burst_issue_limit :
+        raw_burst_mode ? raw_p2_lookahead_issue_limit :
         (!result_i8_mode_r && group_mode_r) ? raw_group_issue_limit :
                                               active_col_beats_r;
     wire p2_can_issue_read =
@@ -1738,7 +1747,9 @@ module Matrix_Vector_Multiplication #(
                             end else begin
                                 // The eighth (or final short-burst) block is the
                                 // only P2 boundary that flushes before retire.
-                                feed_valid_r     <= 1'b0;
+                                // A simultaneously consumed read_x beat is the
+                                // first beat of the next reservation.  Preserve
+                                // it while clearing every upstream read stage.
                                 compute_rd_en    <= 1'b0;
                                 read_req_valid_r <= 1'b0;
                                 read_valid_d_r   <= 1'b0;
@@ -1761,7 +1772,8 @@ module Matrix_Vector_Multiplication #(
                 end
 
                 S_WAIT_RESULT: begin
-                    feed_valid_r <= 1'b0;
+                    if (!raw_burst_mode)
+                        feed_valid_r <= 1'b0;
                     if (pmau_result_fire) begin
                         if (result_i8_mode_r) begin
                             result_accum_rd_en_r <= 1'b1;
@@ -1850,7 +1862,8 @@ module Matrix_Vector_Multiplication #(
                 end
 
                 S_RAW_STREAM_HOLD: begin
-                    feed_valid_r <= 1'b0;
+                    if (!raw_burst_mode)
+                        feed_valid_r <= 1'b0;
                     if (raw_burst_chain_pop) begin
                         // The current stream bundle and the next PMAU result
                         // retire on the same edge. Replace the output payload
