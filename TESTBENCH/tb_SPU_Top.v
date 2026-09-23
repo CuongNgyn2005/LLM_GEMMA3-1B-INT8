@@ -464,6 +464,73 @@ module tb_SPU_Top;
         end
     endfunction
 
+    `include "../../TESTBENCH/q16_job1973_vectors.vh"
+
+    reg audit_start = 0;
+    reg signed [31:0] audit_raw_in;
+    reg [31:0] audit_scale_in;
+    reg audit_clear, audit_last;
+    wire audit_busy, audit_done, audit_valid, audit_error;
+    wire [3:0] audit_error_code;
+    wire [15:0] audit_row;
+    wire signed [63:0] audit_result;
+    SPU_Q8_Scale_Accum audit_accum (
+        .clk(clk), .resetn(resetn), .start(audit_start),
+        .raw_in(audit_raw_in), .act_scale_fp16(audit_scale_in[15:0]),
+        .weight_scale_fp16(audit_scale_in[31:16]), .row_id(16'd38),
+        .clear_accum(audit_clear), .last_block(audit_last),
+        .busy(audit_busy), .entry_done(audit_done), .out_valid(audit_valid),
+        .out_row_id(audit_row), .out_accum_q16(audit_result),
+        .error(audit_error), .error_code(audit_error_code)
+    );
+
+    // Non-final entry_done precedes accumulator commit by one edge. With
+    // gap=0, offer the next entry on precisely that edge (same-row bypass).
+    task run_captured_accumulator;
+        input integer gap;
+        integer block_id, waited;
+        reg signed [63:0] expected_sum;
+        begin
+            expected_sum = 0;
+            @(negedge clk);
+            for (block_id = 0; block_id < 24; block_id = block_id + 1) begin
+                audit_raw_in = audit_raw[block_id];
+                audit_scale_in = audit_scale[block_id];
+                audit_clear = (block_id == 0);
+                audit_last = (block_id == 23);
+                audit_start = 1;
+                @(posedge clk);
+                @(negedge clk);
+                audit_start = 0;
+                waited = 0;
+                while (audit_done !== 1'b1 && waited < 20) begin
+                    @(negedge clk);
+                    waited = waited + 1;
+                end
+                if (audit_done !== 1'b1 || audit_error !== 1'b0)
+                    $fatal(1, "[TB][FAIL] AUDIT SPU timeout/error block=%0d time=%0t", block_id, $time);
+                expected_sum = expected_sum + audit_contribution[block_id];
+                if (audit_accum.contribution_shifted_q16_w !== audit_contribution[block_id])
+                    $fatal(1, "[TB][FAIL] AUDIT SPU contribution block=%0d time=%0t got=%0d expected=%0d",
+                           block_id, $time, audit_accum.contribution_shifted_q16_w, audit_contribution[block_id]);
+                if (block_id == 16 && audit_accum.product_scale_q32_r !== 64'd3337074)
+                    $fatal(1, "[TB][FAIL] AUDIT SPU block16 scale product");
+                if (block_id < 23 && (audit_valid !== 1'b0 || audit_accum.accum_next_w !== expected_sum))
+                    $fatal(1, "[TB][FAIL] AUDIT SPU partial sum block=%0d time=%0t", block_id, $time);
+                $display("[AUDIT][SPU] gap=%0d block=%0d time=%0t contribution=%0d sum=%0d",
+                         gap, block_id, $time, audit_accum.contribution_shifted_q16_w, expected_sum);
+                pass_count = pass_count + 1;
+                if (block_id < 23)
+                    repeat (gap) @(negedge clk);
+            end
+            if (audit_valid !== 1'b1 || audit_row !== 16'd38 || audit_result !== -64'sd82480)
+                $fatal(1, "[TB][FAIL] AUDIT SPU final row=%0d got=%0d expected=-82480", audit_row, audit_result);
+            pass_count = pass_count + 1;
+            $display("[AUDIT][PASS] SPU 24 blocks row=38 gap=%0d result=%0d", gap, audit_result);
+            @(negedge clk);
+        end
+    endtask
+
     task run_copy_case;
         reg [DATA_WIDTH-1:0] got0;
         reg [DATA_WIDTH-1:0] got1;
@@ -1418,6 +1485,9 @@ module tb_SPU_Top;
         else
             pass_count = pass_count + 1;
 
+        init_audit_vectors();
+        run_captured_accumulator(3);
+        run_captured_accumulator(0);
         run_copy_case();
         run_quant_case();
         run_scale_accum_case();
