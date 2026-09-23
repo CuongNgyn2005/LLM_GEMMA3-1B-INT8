@@ -1,6 +1,49 @@
+`include "../../TESTBENCH/tb_AXI4_Mapping.v"
+`include "../../TESTBENCH/tb_Dual_Port_BRAM.v"
+`include "../../TESTBENCH/tb_MY_IP.v"
+`include "../../TESTBENCH/tb_Matrix_Vector_Multiplication.v"
+`include "../../TESTBENCH/tb_PMAU_Full.v"
+`include "../../TESTBENCH/tb_SPU_Controller.v"
+`include "../../TESTBENCH/tb_SPU_Local_Memory.v"
+`include "../../TESTBENCH/tb_SPU_Q8_Scale_Accum.v"
+`include "../../TESTBENCH/tb_SPU_Quantize_Q8_0.v"
+`include "../../TESTBENCH/tb_SPU_RMSInv_Engine.v"
+`include "../../TESTBENCH/tb_SPU_RMSNorm.v"
+`include "../../TESTBENCH/tb_SPU_RoPE.v"
+`include "../../TESTBENCH/tb_SPU_SiLU_Mul.v"
+`include "../../TESTBENCH/tb_SPU_Softmax.v"
+`include "../../TESTBENCH/tb_SPU_Top.v"
+`include "../../TESTBENCH/tb_SPU_VPU_Stream8.v"
+`include "../../TESTBENCH/tb_VPU_Result_Requantizer.v"
 `timescale 1ns/1ps
 
 module tb_AI_IP_top;
+    // Each unit owns a separate DUT. Only this top ends the combined run.
+    reg integration_completed = 0;
+    wire [16:0] unit_completed;
+    tb_AXI4_Mapping #(.AUTO_FINISH(0)) unit_AXI4_Mapping(.completed(unit_completed[0]));
+    tb_Dual_Port_BRAM #(.AUTO_FINISH(0)) unit_Dual_Port_BRAM(.completed(unit_completed[1]));
+    tb_MY_IP #(.AUTO_FINISH(0)) unit_MY_IP(.completed(unit_completed[2]));
+    tb_Matrix_Vector_Multiplication #(.AUTO_FINISH(0)) unit_Matrix_Vector_Multiplication(.completed(unit_completed[3]));
+    tb_PMAU_Full #(.AUTO_FINISH(0)) unit_PMAU_Full(.completed(unit_completed[4]));
+    tb_SPU_Controller #(.AUTO_FINISH(0)) unit_SPU_Controller(.completed(unit_completed[5]));
+    tb_SPU_Local_Memory #(.AUTO_FINISH(0)) unit_SPU_Local_Memory(.completed(unit_completed[6]));
+    tb_SPU_Q8_Scale_Accum #(.AUTO_FINISH(0)) unit_SPU_Q8_Scale_Accum(.completed(unit_completed[7]));
+    tb_SPU_Quantize_Q8_0 #(.AUTO_FINISH(0)) unit_SPU_Quantize_Q8_0(.completed(unit_completed[8]));
+    tb_SPU_RMSInv_Engine #(.AUTO_FINISH(0)) unit_SPU_RMSInv_Engine(.completed(unit_completed[9]));
+    tb_SPU_RMSNorm #(.AUTO_FINISH(0)) unit_SPU_RMSNorm(.completed(unit_completed[10]));
+    tb_SPU_RoPE #(.AUTO_FINISH(0)) unit_SPU_RoPE(.completed(unit_completed[11]));
+    tb_SPU_SiLU_Mul #(.AUTO_FINISH(0)) unit_SPU_SiLU_Mul(.completed(unit_completed[12]));
+    tb_SPU_Softmax #(.AUTO_FINISH(0)) unit_SPU_Softmax(.completed(unit_completed[13]));
+    tb_SPU_Top #(.AUTO_FINISH(0)) unit_SPU_Top(.completed(unit_completed[14]));
+    tb_SPU_VPU_Stream8 #(.AUTO_FINISH(0)) unit_SPU_VPU_Stream8(.completed(unit_completed[15]));
+    tb_VPU_Result_Requantizer #(.AUTO_FINISH(0)) unit_VPU_Result_Requantizer(.completed(unit_completed[16]));
+    initial begin
+        #100000000;
+        if (!integration_completed || (&unit_completed !== 1'b1))
+            $fatal(1, "[TB][FAIL] unit suite timeout completed=%b", unit_completed);
+    end
+
 
     localparam integer ID_WIDTH      = 1;
     localparam integer DATA_WIDTH    = 128;
@@ -1078,6 +1121,7 @@ module tb_AI_IP_top;
                 fail("SPU_OUT full burst did not produce exactly one RLAST");
             else
                 pass_count = pass_count + 1;
+            $display("[TB] SPU_OUT_BURST cycles=%0d beats=256", cycle_count - start_cycle);
             if ((cycle_count - start_cycle) > 10000)
                 fail("SPU_OUT full burst exceeded bounded completion latency");
             else
@@ -1085,6 +1129,137 @@ module tb_AI_IP_top;
         end
     endtask
 
+    // Drive on falling edges and sample handshakes before the rising-edge NBA.
+    // This catches consecutive responses as well as long/full-queue stalls.
+    task check_spu_pipeline_burst;
+        input [ADDR_WIDTH-1:0] addr;
+        input integer beats;
+        input integer fixed_addr;
+        input integer stalls;
+        input integer expect_error;
+        integer received;
+        integer elapsed;
+        integer max_reserved;
+        integer first_cycle;
+        integer last_cycle;
+        reg stalled;
+        reg [DATA_WIDTH-1:0] held;
+        reg [1:0] held_resp;
+        reg held_last;
+        reg [ID_WIDTH-1:0] held_id;
+        reg [DATA_WIDTH-1:0] expected;
+        integer row_index;
+        begin
+            @(negedge clk);
+            araddr = addr;
+            arlen = beats - 1;
+            arsize = 4;
+            arburst = fixed_addr ? 2'b00 : 2'b01;
+            arid = {ID_WIDTH{1'b1}};
+            arvalid = 1;
+            rready = 0;
+            @(posedge clk);
+            while (!arready) @(posedge clk);
+            @(negedge clk);
+            arvalid = 0;
+            received = 0;
+            elapsed = 0;
+            max_reserved = 0;
+            first_cycle = -1;
+            last_cycle = -1;
+            stalled = 0;
+            while (received < beats && elapsed < 6000) begin
+                rready = !stalls || ((elapsed >= 40) &&
+                         ((elapsed % 53) >= 25) && ((elapsed % 7) != 0));
+                @(posedge clk);
+                if (dut.u_my_ip.rd_reserved_r > max_reserved)
+                    max_reserved = dut.u_my_ip.rd_reserved_r;
+                if (dut.u_my_ip.rd_reserved_r > 16 ||
+                    dut.u_my_ip.rd_available_r > dut.u_my_ip.rd_reserved_r)
+                    fail("SPU response reservation overflow/underflow");
+                if (stalled && (!rvalid || rdata !== held ||
+                    rresp !== held_resp || rlast !== held_last || rid !== held_id))
+                    fail("SPU pipeline changed held AXI response");
+                stalled = rvalid && !rready;
+                held = rdata;
+                held_resp = rresp;
+                held_last = rlast;
+                held_id = rid;
+                if (rvalid && rready) begin
+                    if (first_cycle < 0) first_cycle = cycle_count;
+                    last_cycle = cycle_count;
+                    if (rid !== {ID_WIDTH{1'b1}} || rlast !== (received == beats-1))
+                        fail("SPU pipeline ID/RLAST mismatch");
+                    if (rresp !== (expect_error ? 2'b10 : 2'b00))
+                        fail("SPU pipeline response status mismatch");
+                    if (!expect_error) begin
+                        row_index = fixed_addr ? 0 : received;
+                        expected = {48'habcde1234567, -64'sd123456789 - row_index, 16'h8000 + 16'(row_index)};
+                        if (rdata !== expected)
+                            fail("SPU pipeline payload/order mismatch");
+                    end
+                    received = received + 1;
+                end
+                @(negedge clk);
+                elapsed = elapsed + 1;
+            end
+            rready = 0;
+            if (stalls && beats == 256 && max_reserved != 16)
+                fail("SPU stall test did not fill the response queue");
+            if (received != beats) fail("SPU pipeline burst timeout");
+            if (!stalls && !expect_error && beats > 1 &&
+                (last_cycle - first_cycle) != beats - 1)
+                fail("SPU pipeline did not sustain one beat per clock");
+            repeat (3) @(negedge clk);
+            if (rvalid || !arready) fail("SPU pipeline left an extra response");
+            $display("[TB] SPU_PIPELINE beats=%0d stalls=%0d fixed=%0d error=%0d cycles=%0d response_span=%0d",
+                     beats, stalls, fixed_addr, expect_error, elapsed, last_cycle-first_cycle+1);
+            pass_count = pass_count + 1;
+        end
+    endtask
+
+    task run_spu_pipeline_cases;
+        integer row;
+        reg [127:0] payload;
+        begin
+            for (row = 0; row < 256; row = row + 1) begin
+                payload = {48'habcde1234567, -64'sd123456789 - row, 16'h8000 + 16'(row)};
+                axi_write(SPU_OUT_BASE + row*16, payload, 16'hffff);
+            end
+            check_spu_pipeline_burst(SPU_OUT_BASE, 256, 0, 0, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE, 256, 0, 1, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE + 40'hA0000000, 17, 0, 1, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE, 16, 1, 1, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE, 1, 0, 1, 0);
+            // Last implemented word followed by a separate out-of-range burst.
+            payload = {48'habcde1234567, -64'sd123456789, 16'h8000};
+            axi_write(SPU_OUT_BASE + 4095*16, payload, 16'hffff);
+            check_spu_pipeline_burst(SPU_OUT_BASE + 4095*16, 1, 0, 0, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE + 4096*16, 16, 0, 1, 1);
+            axi_read(REG_LIMITS, init_rd_word);
+            if (init_rd_word[15:0] !== 256) fail("Register read after SPU errors failed");
+
+            // Reset with responses queued and reads in flight, then reuse RAM.
+            @(negedge clk);
+            araddr = SPU_OUT_BASE;
+            arlen = 255;
+            arsize = 4;
+            arburst = 1;
+            arvalid = 1;
+            rready = 0;
+            @(posedge clk);
+            while (!arready) @(posedge clk);
+            @(negedge clk);
+            arvalid = 0;
+            repeat (8) @(negedge clk);
+            resetn = 0;
+            repeat (4) @(negedge clk);
+            resetn = 1;
+            repeat (12) @(negedge clk);
+            if (rvalid || !arready) fail("Reset failed to flush SPU read pipeline");
+            check_spu_pipeline_burst(SPU_OUT_BASE, 17, 0, 0, 0);
+        end
+    endtask
     task init_case_data;
         input integer case_id;
         input integer rows;
@@ -1583,7 +1758,7 @@ module tb_AI_IP_top;
 
     task run_p2_nonuniform_scale_case;
         localparam integer ROWS = 17;
-        localparam integer BLOCKS = 5;
+        localparam integer BLOCKS = 10;
         integer beat;
         integer row;
         integer block_id;
@@ -2663,6 +2838,192 @@ module tb_AI_IP_top;
         end
     endtask
 
+    `include "../../TESTBENCH/q16_job1973_vectors.vh"
+
+    reg audit_watch = 0;
+    integer audit_raw_seen = 0;
+    integer audit_start_seen = 0;
+    integer audit_commit_seen = 0;
+    reg signed [63:0] audit_running_sum = 0;
+    `define AUDIT_MAP dut.u_my_ip.u_axi4_mapping
+    `define AUDIT_STREAM dut.u_my_ip.u_axi4_mapping.u_spu.u_vpu_stream8
+    integer audit_lane;
+    always @(posedge clk) begin
+        if (audit_watch && `AUDIT_MAP.core_spu_raw_valid && `AUDIT_MAP.core_spu_raw_ready) begin
+            for (audit_lane = 0; audit_lane < 8; audit_lane = audit_lane + 1) begin
+                if (`AUDIT_MAP.core_spu_raw_lane_valid[audit_lane] &&
+                    `AUDIT_MAP.core_spu_raw_lane_row[16*audit_lane +: 16] == 38) begin
+                    if (audit_raw_seen >= 24)
+                        $fatal(1, "[TB][FAIL] AUDIT duplicate raw token cycle=%0d", cycle_count);
+                    if (`AUDIT_MAP.core_spu_raw_lane_data[32*audit_lane +: 32] !== audit_raw[audit_raw_seen] ||
+                        `AUDIT_MAP.core_spu_raw_block !== audit_raw_seen[15:0] ||
+                        `AUDIT_MAP.core_spu_raw_lane_scale_index[32*audit_lane +: 32] !== (38*24 + audit_raw_seen) ||
+                        `AUDIT_MAP.core_spu_raw_group_blocks !== 16'd24 ||
+                        `AUDIT_MAP.core_spu_raw_job_id !== 32'd1973 ||
+                        `AUDIT_MAP.core_spu_raw_bank !== 1'b0 ||
+                        `AUDIT_MAP.core_spu_raw_clear_accum !== (audit_raw_seen == 0) ||
+                        `AUDIT_MAP.core_spu_raw_last_block !== (audit_raw_seen == 23))
+                        $fatal(1, "[TB][FAIL] AUDIT raw/metadata first divergence block=%0d cycle=%0d got=%0d expected=%0d",
+                               audit_raw_seen, cycle_count,
+                               $signed(`AUDIT_MAP.core_spu_raw_lane_data[32*audit_lane +: 32]), audit_raw[audit_raw_seen]);
+                    $display("[AUDIT][RAW] row=38 block=%0d cycle=%0d raw=%0d", audit_raw_seen, cycle_count, audit_raw[audit_raw_seen]);
+                    audit_raw_seen = audit_raw_seen + 1;
+                end
+            end
+        end
+    end
+    genvar audit_g;
+    generate for (audit_g = 0; audit_g < 8; audit_g = audit_g + 1) begin : AUDIT_LANE
+        `define AUDIT_ACC `AUDIT_STREAM.GEN_ACCUM8[audit_g].u_accum
+        always @(posedge clk) begin
+            if (audit_watch && `AUDIT_ACC.start && `AUDIT_ACC.row_id == 38) begin
+                if (audit_start_seen >= 24)
+                    $fatal(1, "[TB][FAIL] AUDIT duplicate accumulator start");
+                if (!((`AUDIT_ACC.state_r == 0) ||
+                      ((`AUDIT_ACC.state_r == 4) && !`AUDIT_ACC.last_block_r)) ||
+                    `AUDIT_ACC.raw_in !== audit_raw[audit_start_seen] ||
+                    {`AUDIT_ACC.weight_scale_fp16, `AUDIT_ACC.act_scale_fp16} !== audit_scale[audit_start_seen] ||
+                    `AUDIT_ACC.clear_accum !== (audit_start_seen == 0) ||
+                    `AUDIT_ACC.last_block !== (audit_start_seen == 23))
+                    $fatal(1, "[TB][FAIL] AUDIT accumulator alignment block=%0d cycle=%0d raw=%0d scale=%h expected_raw=%0d expected_scale=%h",
+                           audit_start_seen, cycle_count, `AUDIT_ACC.raw_in,
+                           {`AUDIT_ACC.weight_scale_fp16, `AUDIT_ACC.act_scale_fp16},
+                           audit_raw[audit_start_seen], audit_scale[audit_start_seen]);
+                $display("[AUDIT][START] row=38 block=%0d lane=%0d cycle=%0d raw=%0d scale=%h",
+                         audit_start_seen, audit_g, cycle_count, `AUDIT_ACC.raw_in,
+                         {`AUDIT_ACC.weight_scale_fp16, `AUDIT_ACC.act_scale_fp16});
+                audit_start_seen = audit_start_seen + 1;
+            end
+            if (audit_watch && `AUDIT_ACC.state_r == 4 && `AUDIT_ACC.row_id_r == 38) begin
+                if (audit_commit_seen >= 24)
+                    $fatal(1, "[TB][FAIL] AUDIT duplicate accumulator commit");
+                audit_running_sum = audit_running_sum + audit_contribution[audit_commit_seen];
+                if (`AUDIT_ACC.pending_error_r !== 1'b0 ||
+                    `AUDIT_ACC.contribution_shifted_q16_w !== audit_contribution[audit_commit_seen] ||
+                    `AUDIT_ACC.accum_next_w !== audit_running_sum)
+                    $fatal(1, "[TB][FAIL] AUDIT commit block=%0d cycle=%0d contribution=%0d expected=%0d sum=%0d expected_sum=%0d",
+                           audit_commit_seen, cycle_count, `AUDIT_ACC.contribution_shifted_q16_w,
+                           audit_contribution[audit_commit_seen], `AUDIT_ACC.accum_next_w, audit_running_sum);
+                audit_commit_seen = audit_commit_seen + 1;
+            end
+        end
+        `undef AUDIT_ACC
+    end endgenerate
+    `undef AUDIT_STREAM
+    `undef AUDIT_MAP
+
+    // Independent fixed-point reference, with a wide product before shifting.
+    function [63:0] audit_fp16_q32;
+        input [15:0] h;
+        reg [63:0] significand;
+        begin
+            significand = (h[14:10] == 0) ? h[9:0] : (1024 + h[9:0]);
+            audit_fp16_q32 = significand << ((h[14:10] == 0) ? 8 : (h[14:10] + 7));
+        end
+    endfunction
+    function signed [63:0] audit_q16;
+        input signed [31:0] raw_dot;
+        input [31:0] scales;
+        reg [127:0] product;
+        reg signed [128:0] scaled;
+        begin
+            product = audit_fp16_q32(scales[15:0]) * audit_fp16_q32(scales[31:16]);
+            product = product >> 32;
+            scaled = $signed(raw_dot) * $signed({1'b0, product});
+            audit_q16 = scaled >>> 16;
+        end
+    endfunction
+
+    task run_captured_vpu_case;
+        input integer integrated;
+        integer rows, blocks, beat, row, block_id, lane, idx, waited;
+        reg [127:0] data_word, rd_word;
+        reg [31:0] out_before, count_before, error_before, drop_before, rd32;
+        reg signed [63:0] expected_sum;
+        begin
+            rows = integrated ? 256 : 1;
+            blocks = integrated ? 24 : 1;
+            init_case_data(1973, rows, blocks*32);
+            for (beat = 0; beat < blocks*2; beat = beat + 1) begin
+                idx = integrated ? beat : (32 + beat);
+                for (lane = 0; lane < 16; lane = lane + 1) begin
+                    activation[beat*16 + lane] = audit_act[idx][lane*8 +: 8];
+                    weight[(integrated ? 38 : 0)*MAX_TEST_COLS + beat*16 + lane] = audit_weight[idx][lane*8 +: 8];
+                end
+            end
+            $display("[AUDIT] VPU replay integrated=%0d rows=%0d blocks=%0d", integrated, rows, blocks);
+            axi_write(REG_CTRL, word32(2), 16'h000f);
+            axi_write(REG_BANK, word32(0), 16'h000f);
+            axi_write(REG_JOB_ID, word32(1973), 16'h000f);
+            axi_write(REG_ROWS, word32(rows), 16'h000f);
+            axi_write(REG_COLS, word32(blocks*32), 16'h000f);
+            axi_write(REG_COL_BEATS, word32(blocks*2), 16'h000f);
+            axi_write(REG_SCALE, word32(32'h3c00), 16'h000f);
+            axi_write(REG_MODE, word32(VPU_MODE_PACKED_Q8 | (integrated ? VPU_MODE_P2_TWO_ROW : 0)), 16'h000f);
+            for (beat = 0; beat < blocks*2; beat = beat + 1)
+                axi_write(ACT_BASE + beat*16, pack_activation(beat), 16'hffff);
+            stage_pair_weight_image(rows, blocks*2);
+            for (idx = 0; idx < (rows*blocks + 3)/4; idx = idx + 1) begin
+                data_word = 0;
+                for (lane = 0; lane < 4; lane = lane + 1)
+                    if (idx*4 + lane < rows*blocks)
+                        data_word[lane*32 +: 32] = audit_scale[integrated ? ((idx*4 + lane)%24) : 16];
+                axi_write(SPU_PARAM_BASE + idx*16, data_word, 16'hffff);
+            end
+            axi_read32(REG_SPU_STREAM_OUT, out_before);
+            axi_read32(REG_SPU_STREAM_COUNT, count_before);
+            axi_read32(REG_SPU_STREAM_ERROR, error_before);
+            axi_read32(REG_SPU_STREAM_DROP, drop_before);
+            audit_raw_seen = 0; audit_start_seen = 0; audit_commit_seen = 0; audit_running_sum = 0;
+            audit_watch = integrated;
+            axi_write(REG_CTRL, word32(1), 16'h000f);
+            waited = 0; rd_word = 0;
+            while (rd_word[0] !== 1'b1 && waited < 100000) begin
+                axi_read(REG_STATUS, rd_word);
+                if (rd_word[2]) $fatal(1, "[TB][FAIL] AUDIT VPU configuration error");
+                waited = waited + 1;
+            end
+            if (rd_word[0] !== 1'b1) $fatal(1, "[TB][FAIL] AUDIT VPU timeout");
+            waited = 0; rd32 = out_before;
+            while (rd32 < out_before + rows && waited < 100000) begin
+                axi_read32(REG_SPU_STREAM_OUT, rd32);
+                waited = waited + 1;
+            end
+            if (rd32 !== out_before + rows) $fatal(1, "[TB][FAIL] AUDIT SPU output count/timeout");
+            axi_read32(REG_SPU_STREAM_STATUS, rd32);
+            if (rd32[4:0] !== 5'b11111) $fatal(1, "[TB][FAIL] AUDIT stream not quiescent");
+            audit_watch = 0;
+            if (integrated && (audit_raw_seen != 24 || audit_start_seen != 24 || audit_commit_seen != 24))
+                $fatal(1, "[TB][FAIL] AUDIT row38 missing entries raw=%0d start=%0d commit=%0d", audit_raw_seen, audit_start_seen, audit_commit_seen);
+            axi_read32(REG_SPU_STREAM_COUNT, rd32);
+            if (rd32 !== count_before + rows*blocks) $fatal(1, "[TB][FAIL] AUDIT stream input count");
+            axi_read32(REG_SPU_STREAM_ERROR, rd32);
+            if (rd32 !== error_before) $fatal(1, "[TB][FAIL] AUDIT stream error");
+            axi_read32(REG_SPU_STREAM_DROP, rd32);
+            if (rd32 !== drop_before) $fatal(1, "[TB][FAIL] AUDIT stream drop");
+            if (!integrated) begin
+                axi_read(RESULT_BASE, rd_word);
+                if ($signed(rd_word[31:0]) !== -32'sd1651)
+                    $fatal(1, "[TB][FAIL] AUDIT block16 VPU/PMAU got=%0d expected=-1651", $signed(rd_word[31:0]));
+                $display("[AUDIT][PASS] block16 VPU/PMAU raw=-1651");
+                pass_count = pass_count + 1;
+            end
+            for (row = 0; row < rows; row = row + 1) begin
+                expected_sum = 0;
+                for (block_id = 0; block_id < blocks; block_id = block_id + 1)
+                    expected_sum = expected_sum + audit_q16(golden_q8_block(row, block_id), audit_scale[integrated ? block_id : 16]);
+                if (integrated && row == 38 && expected_sum !== -64'sd82480)
+                    $fatal(1, "[TB][FAIL] AUDIT fixture reference drift");
+                axi_read(SPU_OUT_BASE + row*16, rd_word);
+                if (rd_word[15:0] !== row[15:0] || $signed(rd_word[79:16]) !== expected_sum)
+                    $fatal(1, "[TB][FAIL] AUDIT final row=%0d got_row=%0d got=%0d expected=%0d", row, rd_word[15:0], $signed(rd_word[79:16]), expected_sum);
+                pass_count = pass_count + 1;
+            end
+            if (integrated)
+                $display("[AUDIT][PASS] integrated 256x24 row38=-82480 raw/start/commit=24/24/24 all 256 rows checked");
+        end
+    endtask
+
     task run_act_burst_compute_case;
         integer beat;
         integer block_id;
@@ -2978,9 +3339,13 @@ module tb_AI_IP_top;
         run_pair_weight_port_ownership_case();
         run_group_case(132, 255, 36);
         run_group_case(133, 256, 64);
+        run_group_case(134, 17, 24);
         run_p3_axi_split_scale_case();
         run_group_case(137, 1, 1);
         run_act_burst_compute_case();
+        init_audit_vectors();
+        run_captured_vpu_case(0);
+        run_captured_vpu_case(1);
 
         if (pair_issue_desync_count != 0)
             fail("P2-v2 pair issue skew assertion failed");
@@ -2988,6 +3353,10 @@ module tb_AI_IP_top;
         if (stream_stall_ever_observed == 0)
             fail("ready/valid random-stall test did not observe a stalled raw token");
 
+        run_spu_pipeline_cases();
+        integration_completed = 1;
+        wait (&unit_completed);
+        $display("[TB][PASS] All 17 standalone module tests completed");
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
         if (fail_count == 0) begin
             $display("[TB] AXI4-Full VPU TEST PASSED");

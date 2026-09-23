@@ -9,7 +9,7 @@ module tb_VPU8_burst;
     reg ctrl_clear_done = 1'b0;
     reg [15:0] cfg_rows = 16'd8;
     reg [15:0] cfg_cols = 16'd320;
-    reg [15:0] cfg_col_beats = 16'd20; // 10 Q8 blocks -> bursts 4 + 4 + 2
+    reg [15:0] cfg_col_beats = 16'd20; // 10 Q8 blocks -> bursts 7 + 3
     reg [15:0] cfg_scale = 16'h3c00;
     reg [4:0] compute_mode = 5'b10001; // x8 P2 raw group mode
     reg cfg_wr_bank = 1'b0;
@@ -220,12 +220,12 @@ module tb_VPU8_burst;
 
     integer block;
     integer timeout;
-    reg saw_four_block_issue = 1'b0;
+    reg saw_seven_block_issue = 1'b0;
 
     always @(posedge clk) begin
-        if (resetn && dut.issue_block_idx_r == 16'd3 &&
-            dut.block_idx_r == 16'd0 && dut.raw_burst_blocks_r == 3'd4)
-            saw_four_block_issue <= 1'b1;
+        if (resetn && dut.issue_block_idx_r == 16'd6 &&
+            dut.block_idx_r == 16'd0 && dut.raw_burst_blocks_r == 3'd7)
+            saw_seven_block_issue <= 1'b1;
     end
 
     initial begin
@@ -251,8 +251,8 @@ module tb_VPU8_burst;
             $display("FAIL burst run done=%b error=%b timeout=%0d", done, error, timeout);
             $fatal(1);
         end
-        if (!saw_four_block_issue) begin
-            $display("FAIL scheduler never accumulated a four-block issue burst");
+        if (!saw_seven_block_issue) begin
+            $display("FAIL scheduler never accumulated a seven-block issue burst");
             $fatal(1);
         end
         if (done_job_id !== cfg_job_id) begin
@@ -260,7 +260,7 @@ module tb_VPU8_burst;
             $fatal(1);
         end
 
-        $display("PASS tb_VPU8_burst blocks=10 burst_pattern=4+4+2 ordered=1");
+        $display("PASS tb_VPU8_burst blocks=10 burst_pattern=7+3 ordered=1");
         $finish;
     end
 endmodule

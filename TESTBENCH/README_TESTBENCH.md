@@ -1,3 +1,80 @@
+# ZCU104 module testbenches
+
+The current suite covers all 18 Verilog modules in `RTL/ZCU104`. KV260 is outside this suite.
+Each `tb_<module>.v` instantiates the named RTL module and checks observable results.
+The tests are focused regressions, not exhaustive proof of every parameter combination.
+
+```text
+Standalone tb_<module> -> its own DUT -> checked result -> PASS / fatal failure
+
+tb_AI_IP_top
+  +-- existing complete-system integration tests
+  +-- 17 module testbenches (independent DUT instances)
+  +-- waits for every completion before reporting overall PASS
+```
+
+All child benches expose `completed` and default to `AUTO_FINISH=1`.
+The combined top sets `AUTO_FINISH=0`, so a child cannot terminate other tests.
+Failures use `$fatal`; watchdogs bound execution. A completed child's clock stops.
+
+| RTL module / testbench suffix | Focus |
+|---|---|
+| AI_IP_top | Existing AXI, GEMV, P2/P3, pipeline, ownership and captured-vector regression; joins all children |
+| AXI4_Mapping | Register writes, byte strobes, address translation, SPU data and invalid reads |
+| MY_IP | AXI write/read handshakes, response stalls, burst ordering and final beat |
+| Dual_Port_BRAM | Cross-port reads/writes, byte strobes, last address and disabled-port hold |
+| Matrix_Vector_Multiplication | Signed dot product, job identity and invalid row count |
+| PMAU_Full | Existing signed dot products, repeated jobs and input stalls |
+| VPU_Result_Requantizer | Signed shifts and saturation, including INT32 limits |
+| SPU_Controller | Copy data/addresses/strobes, invalid commands/lengths and soft reset |
+| SPU_Local_Memory | All memory regions, bounds and rejected ownership conflicts |
+| SPU_Q8_Scale_Accum | Multi-block signed sum, zero/invalid scales and row bounds |
+| SPU_Quantize_Q8_0 | Zero block, rounding, signed inputs and INT16 limits |
+| SPU_RMSInv_Engine | Known RMS values, epsilon and zero count |
+| SPU_RMSNorm | Signed normalization, sum of squares, masks and saturation |
+| SPU_RoPE | Signed rotations and masked lanes |
+| SPU_SiLU_Mul | Clipped sigmoid, signed multiplication, masks and saturation |
+| SPU_Softmax | Maximum, score sum, normalization, masks and zero denominator |
+| SPU_Top | Existing command and streaming regression, including captured arithmetic vectors |
+| SPU_VPU_Stream8 | Eight-lane scale/read/write flow, counters and stored Q16 results |
+
+## Combined run
+
+Run the existing simulation-only script from PowerShell:
+
+```powershell
+cd D:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim
+.\run_phase2a_vpu_spu_xsim.ps1
+```
+
+The existing source list compiles `tb_AI_IP_top.v`, which includes all child benches.
+The include paths intentionally use the existing `manual_sim` working directory.
+The script also runs `tb_SPU_Top` separately. It preserves the combined transcript in
+`phase2a_vpu_xsim.log`; `xsim.log` contains the subsequent SPU-only run.
+No project, RTL, or source-list edits are needed.
+
+## Selecting one standalone testbench
+
+All names in the table use the prefix `tb_` (for example, `tb_SPU_RMSNorm`).
+Compile the existing `source_files.f`, then select that name as the XSim top.
+The simulator commands, from `manual_sim` with Vivado 2022.2 on PATH, are:
+
+```powershell
+xvlog --sv -f .\source_files.f
+xelab -L xpm tb_SPU_RMSNorm -debug typical -s standalone_rmsnorm
+xsim standalone_rmsnorm -runall
+```
+
+These are owner reference commands; agent execution still follows the project's
+script-only Vivado authorization rules. Check for the selected bench's PASS line
+and absence of `Fatal:` or `[TB][FAIL]`; do not rely on simulator exit status alone.
+
+The older benches and notes below are retained for history. In particular,
+`Matrix_Vector_Multiplication_tb.v` is a legacy non-checking smoke test;
+use `tb_Matrix_Vector_Multiplication.v` for the current checked test.
+
+---
+
 # VPU RTL Testbench Documentation
 
 ## Overview
