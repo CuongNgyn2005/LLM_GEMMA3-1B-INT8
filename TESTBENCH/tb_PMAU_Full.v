@@ -1,3 +1,5 @@
+`ifndef TB_PMAU_FULL_V
+`define TB_PMAU_FULL_V
 /*
  *-----------------------------------------------------------------------------
  * Description   : Unit testbench for PMAU_Full module
@@ -17,7 +19,7 @@
 
 `timescale 1ns/1ps
 
-module tb_PMAU_Full;
+module tb_PMAU_Full #(parameter AUTO_FINISH = 1)(output reg completed = 0);
 
     //-------------------------------------//
     //        Test Parameters              //
@@ -132,13 +134,17 @@ module tb_PMAU_Full;
     
     initial begin
         clk = 0;
-        forever #(CLOCK_PERIOD/2) clk = ~clk;
+        forever #(CLOCK_PERIOD/2) if (!completed) clk = ~clk;
     end
     
     //-------------------------------------//
     //       Main Test Stimulus            //
     //-------------------------------------//
     
+    initial begin
+        #100000000;
+        if (!completed) $fatal(1, "[TB][FAIL] PMAU_Full watchdog timeout");
+    end
     initial begin
         // Initialize, active-low reset
         rst = 1'b0;
@@ -202,10 +208,10 @@ module tb_PMAU_Full;
         
         if (fail_count > 0) begin
             $display("[TB] [FAIL] Some tests failed!");
-            $finish(1);
+            $fatal(1, "[TB][FAIL] PMAU checks failed");
         end else begin
             $display("[TB] [PASS] All tests passed!");
-            $finish(0);
+            completed = 1; if (AUTO_FINISH) $finish;
         end
     end
     
@@ -512,3 +518,5 @@ module tb_PMAU_Full;
     endtask
     
 endmodule
+
+`endif

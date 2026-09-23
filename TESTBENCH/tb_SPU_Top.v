@@ -1,6 +1,8 @@
+`ifndef TB_SPU_TOP_V
+`define TB_SPU_TOP_V
 `timescale 1ns/1ps
 
-module tb_SPU_Top;
+module tb_SPU_Top #(parameter AUTO_FINISH = 1)(output reg completed = 0);
 
     localparam integer DATA_WIDTH = 128;
     localparam integer WORD_DEPTH = 64;
@@ -161,7 +163,7 @@ module tb_SPU_Top;
 
     initial begin
         clk = 1'b0;
-        forever #5 clk = ~clk;
+        forever #5 if (!completed) clk = ~clk;
     end
 
     task fail;
@@ -531,6 +533,35 @@ module tb_SPU_Top;
         end
     endtask
 
+    task run_mm_read_pipeline_case;
+        integer i;
+        integer prev_region;
+        reg [127:0] expected;
+        begin
+            for (i = 0; i < 4; i = i + 1)
+                mm_write(i, 0, 128'hfedcba98765432108000000000000000 + i);
+            @(negedge clk);
+            mm_rd_en = 0;
+            @(posedge clk);
+            @(negedge clk);
+            for (i = 0; i < 17; i = i + 1) begin
+                mm_rd_en = (i < 16);
+                mm_rd_region = i % 4;
+                mm_rd_index = 0;
+                @(posedge clk);
+                if (i > 0) begin
+                    prev_region = (i-1) % 4;
+                    expected = 128'hfedcba98765432108000000000000000 + prev_region;
+                    if (!mm_rd_valid || mm_rd_error || mm_rd_data !== expected)
+                        fail("Consecutive MMIO read region/data alignment mismatch");
+                    else
+                        pass_count = pass_count + 1;
+                end
+                @(negedge clk);
+            end
+            mm_rd_en = 0;
+        end
+    endtask
     task run_copy_case;
         reg [DATA_WIDTH-1:0] got0;
         reg [DATA_WIDTH-1:0] got1;
@@ -1279,6 +1310,8 @@ module tb_SPU_Top;
         input signed [63:0] product_q38;
         input signed [15:0] expected;
         begin
+            // Apply force away from the DUT sampling edge; nesting changes event order.
+            @(negedge clk);
             force dut.u_spu_controller.u_rmsnorm.state_r = 2'd3;
             force dut.u_spu_controller.u_rmsnorm.lane_active_r = 1'b1;
             force dut.u_spu_controller.u_rmsnorm.lane_idx_r = 3'd0;
@@ -1432,6 +1465,10 @@ module tb_SPU_Top;
     endtask
 
     initial begin
+        #100000000;
+        if (!completed) $fatal(1, "[TB][FAIL] SPU_Top watchdog timeout");
+    end
+    initial begin
         resetn = 1'b0;
         spu_start = 1'b0;
         spu_clear_done = 1'b0;
@@ -1488,6 +1525,7 @@ module tb_SPU_Top;
         init_audit_vectors();
         run_captured_accumulator(3);
         run_captured_accumulator(0);
+        run_mm_read_pipeline_case();
         run_copy_case();
         run_quant_case();
         run_scale_accum_case();
@@ -1510,7 +1548,9 @@ module tb_SPU_Top;
                      pass_count, fail_count);
             $fatal(1, "SPU testbench observed %0d failures", fail_count);
         end
-        $finish;
+        completed = 1; if (AUTO_FINISH) $finish;
     end
 
 endmodule
+
+`endif

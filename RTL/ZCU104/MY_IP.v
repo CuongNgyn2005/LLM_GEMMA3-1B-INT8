@@ -18,7 +18,7 @@
  *
  * The implementation keeps ordering simple on each side of the AXI interface:
  * the write side accepts one burst at a time, and the read side allows only
- * one local read request to be pending before issuing the next burst beat.
+ * up to sixteen reserved local read responses within the active burst.
  * Multiple outstanding read transactions are not supported.  This matches the
  * downstream register map and Result BRAM readback path, both of which return
  * read data as ordered local responses.
@@ -230,146 +230,101 @@ module MY_IP #(
     // ---------------------------------------------------------------------
     // Read channel
     // ---------------------------------------------------------------------
-    // Each AR beat is converted into map_rd_en_r.  MY_IP keeps a pending read
-    // entry until AXI4_Mapping asserts map_rd_valid, then returns the data on
-    // the R channel and generates RLAST on the final burst beat.
+    // Reserve one response slot before issuing each local read. Reservations
+    // include reads still in flight, so RREADY may drop for any duration without
+    // overflowing the queue. One AXI burst is active at a time.
+    localparam integer RD_QUEUE_DEPTH = 16;
     reg read_active_r;
     reg [C_S00_AXI_ADDR_WIDTH-1:0] rd_addr_r;
     reg [7:0] rd_len_r;
-    reg [7:0] rd_beat_r;
+    reg [8:0] rd_beat_r;
     reg [2:0] rd_size_r;
     reg [1:0] rd_burst_r;
     reg [C_S00_AXI_ID_WIDTH-1:0] rd_id_r;
+    reg [3:0] rd_issue_ptr_r;
+    reg [3:0] rd_return_ptr_r;
+    reg [3:0] rd_consume_ptr_r;
+    reg [4:0] rd_reserved_r;
+    reg [4:0] rd_available_r;
+    reg [C_S00_AXI_DATA_WIDTH-1:0] rd_data_r [0:RD_QUEUE_DEPTH-1];
+    reg [1:0] rd_resp_r [0:RD_QUEUE_DEPTH-1];
+    reg rd_last_r [0:RD_QUEUE_DEPTH-1];
 
-    reg rd_pending_r;
-    reg rd_pending_last_r;
-    reg [C_S00_AXI_ID_WIDTH-1:0] rd_pending_id_r;
-
-    reg rvalid_r;
-    reg rlast_r;
-    reg [1:0] rresp_r;
-    reg [C_S00_AXI_ID_WIDTH-1:0] rid_r;
-    reg [C_S00_AXI_DATA_WIDTH-1:0] rdata_r;
-
-    reg map_rd_en_r;
-    reg [C_S00_AXI_ADDR_WIDTH-1:0] map_rd_addr_r;
     wire [C_S00_AXI_DATA_WIDTH-1:0] map_rd_data;
     wire map_rd_valid;
     wire map_rd_error;
-
-    assign s00_axi_arready =
-        (!read_active_r) && (!rd_pending_r) && (!rvalid_r) &&
-        (!wr_active_r) && (!bvalid_r);
-    assign s00_axi_rvalid = rvalid_r;
-    assign s00_axi_rlast  = rlast_r;
-    assign s00_axi_rresp  = rresp_r;
-    assign s00_axi_rid    = rid_r;
-    assign s00_axi_rdata  = rdata_r;
-    assign s00_axi_ruser  = {C_S00_AXI_RUSER_WIDTH{1'b0}};
-
+    wire map_rd_ready;
+    wire rvalid_r = (rd_available_r != 0);
+    wire rd_pending_r = (rd_reserved_r != rd_available_r);
     wire ar_fire = s00_axi_arvalid && s00_axi_arready;
-    wire r_fire  = s00_axi_rvalid && s00_axi_rready;
+    wire r_fire = rvalid_r && s00_axi_rready;
+    wire map_rd_en_r = read_active_r &&
+        (rd_beat_r <= {1'b0, rd_len_r}) &&
+        (rd_reserved_r < RD_QUEUE_DEPTH) && map_rd_ready;
+    wire [C_S00_AXI_ADDR_WIDTH-1:0] map_rd_addr_r = rd_addr_r;
 
-    reg issue_read_r;
-    reg issue_last_r;
-    reg [C_S00_AXI_ADDR_WIDTH-1:0] issue_addr_r;
-    reg [C_S00_AXI_ID_WIDTH-1:0] issue_id_r;
-    reg [7:0] issue_beat_r;
-    reg [7:0] issue_len_r;
-
-    // Select the next local read request.  A newly accepted AR has priority;
-    // otherwise the next beat of the active burst is issued.  A new local read
-    // is only issued when no read is pending and no RVALID is waiting for the
-    // AXI master.
-    always @* begin
-        issue_read_r = 1'b0;
-        issue_last_r = 1'b0;
-        issue_addr_r = rd_addr_r;
-        issue_id_r   = rd_id_r;
-        issue_beat_r = rd_beat_r;
-        issue_len_r  = rd_len_r;
-
-        if (ar_fire) begin
-            issue_read_r = 1'b1;
-            issue_addr_r = s00_axi_araddr;
-            issue_id_r   = s00_axi_arid;
-            issue_beat_r = 8'd0;
-            issue_len_r  = s00_axi_arlen;
-            issue_last_r = (s00_axi_arlen == 8'd0);
-        end else if (read_active_r && (!rd_pending_r) && (!rvalid_r) && (rd_beat_r <= rd_len_r)) begin
-            issue_read_r = 1'b1;
-            issue_addr_r = rd_addr_r;
-            issue_id_r   = rd_id_r;
-            issue_beat_r = rd_beat_r;
-            issue_len_r  = rd_len_r;
-            issue_last_r = (rd_beat_r == rd_len_r);
-        end
-    end
+    assign s00_axi_arready = !read_active_r && !wr_active_r && !bvalid_r;
+    assign s00_axi_rvalid = rvalid_r;
+    assign s00_axi_rlast = rd_last_r[rd_consume_ptr_r];
+    assign s00_axi_rresp = rd_resp_r[rd_consume_ptr_r];
+    assign s00_axi_rid = rd_id_r;
+    assign s00_axi_rdata = rd_data_r[rd_consume_ptr_r];
+    assign s00_axi_ruser = {C_S00_AXI_RUSER_WIDTH{1'b0}};
 
     always @(posedge s00_axi_aclk) begin
         if (!s00_axi_aresetn) begin
-            read_active_r     <= 1'b0;
-            rd_addr_r         <= {C_S00_AXI_ADDR_WIDTH{1'b0}};
-            rd_len_r          <= 8'd0;
-            rd_beat_r         <= 8'd0;
-            rd_size_r         <= ADDR_LSB_3;
-            rd_burst_r        <= 2'b01;
-            rd_id_r           <= {C_S00_AXI_ID_WIDTH{1'b0}};
-            rd_pending_r      <= 1'b0;
-            rd_pending_last_r <= 1'b0;
-            rd_pending_id_r   <= {C_S00_AXI_ID_WIDTH{1'b0}};
-            rvalid_r          <= 1'b0;
-            rlast_r           <= 1'b0;
-            rresp_r           <= 2'b00;
-            rid_r             <= {C_S00_AXI_ID_WIDTH{1'b0}};
-            rdata_r           <= {C_S00_AXI_DATA_WIDTH{1'b0}};
-            map_rd_en_r       <= 1'b0;
-            map_rd_addr_r     <= {C_S00_AXI_ADDR_WIDTH{1'b0}};
+            read_active_r <= 1'b0;
+            rd_addr_r <= 0;
+            rd_len_r <= 0;
+            rd_beat_r <= 0;
+            rd_size_r <= ADDR_LSB_3;
+            rd_burst_r <= 2'b01;
+            rd_id_r <= 0;
+            rd_issue_ptr_r <= 0;
+            rd_return_ptr_r <= 0;
+            rd_consume_ptr_r <= 0;
+            rd_reserved_r <= 0;
+            rd_available_r <= 0;
         end else begin
-            // map_rd_en_r is a one-cycle local read request.  Returned data
-            // may come from the register map or from Result BRAM, so it is
-            // merged back into the AXI R channel only after map_rd_valid is
-            // asserted.
-            map_rd_en_r <= issue_read_r;
-            if (issue_read_r)
-                map_rd_addr_r <= issue_addr_r;
-
             if (ar_fire) begin
                 read_active_r <= 1'b1;
-                rd_addr_r     <= axi_next_addr(s00_axi_araddr, s00_axi_arsize, s00_axi_arburst);
-                rd_len_r      <= s00_axi_arlen;
-                rd_beat_r     <= 8'd1;
-                rd_size_r     <= s00_axi_arsize;
-                rd_burst_r    <= s00_axi_arburst;
-                rd_id_r       <= s00_axi_arid;
-            end else if (issue_read_r) begin
+                rd_addr_r <= s00_axi_araddr;
+                rd_len_r <= s00_axi_arlen;
+                rd_beat_r <= 0;
+                rd_size_r <= s00_axi_arsize;
+                rd_burst_r <= s00_axi_arburst;
+                rd_id_r <= s00_axi_arid;
+            end
+            if (map_rd_en_r) begin
+                rd_last_r[rd_issue_ptr_r] <= (rd_beat_r == {1'b0, rd_len_r});
+                rd_issue_ptr_r <= rd_issue_ptr_r + 1'b1;
                 rd_addr_r <= axi_next_addr(rd_addr_r, rd_size_r, rd_burst_r);
-                rd_beat_r <= rd_beat_r + 8'd1;
+                // Nine bits prevent wraparound after the 256th request.
+                rd_beat_r <= rd_beat_r + 1'b1;
             end
-
-            if (issue_read_r) begin
-                rd_pending_r      <= 1'b1;
-                rd_pending_last_r <= issue_last_r;
-                rd_pending_id_r   <= issue_id_r;
-            end else if (rd_pending_r && map_rd_valid && (!rvalid_r)) begin
-                rd_pending_r <= 1'b0;
+            if (map_rd_valid) begin
+                rd_data_r[rd_return_ptr_r] <= map_rd_data;
+                rd_resp_r[rd_return_ptr_r] <= map_rd_error ? 2'b10 : 2'b00;
+                rd_return_ptr_r <= rd_return_ptr_r + 1'b1;
             end
-
-            if ((!rvalid_r) && rd_pending_r && map_rd_valid) begin
-                rvalid_r <= 1'b1;
-                rlast_r  <= rd_pending_last_r;
-                rid_r    <= rd_pending_id_r;
-                rdata_r  <= map_rd_data;
-                rresp_r  <= map_rd_error ? 2'b10 : 2'b00;
-            end else if (r_fire) begin
-                rvalid_r <= 1'b0;
-                if (rlast_r)
+            if (r_fire) begin
+                rd_consume_ptr_r <= rd_consume_ptr_r + 1'b1;
+                if (s00_axi_rlast)
                     read_active_r <= 1'b0;
             end
+            case ({map_rd_en_r, r_fire})
+                2'b10: rd_reserved_r <= rd_reserved_r + 1'b1;
+                2'b01: rd_reserved_r <= rd_reserved_r - 1'b1;
+                default: ;
+            endcase
+            case ({map_rd_valid, r_fire})
+                2'b10: rd_available_r <= rd_available_r + 1'b1;
+                2'b01: rd_available_r <= rd_available_r - 1'b1;
+                default: ;
+            endcase
         end
     end
-
-    // The mapping layer receives serialized local requests and handles the
+    // The mapping layer accepts ordered local requests and handles the
     // register map, data windows, GEMV core connection, and read-range errors.
     AXI4_Mapping #(
         .AXI_DATA_WIDTH          (C_S00_AXI_DATA_WIDTH),
@@ -394,6 +349,7 @@ module MY_IP #(
         .map_wr_strb    (map_wr_strb_r),
         .map_rd_en      (map_rd_en_r),
         .map_rd_addr    (map_rd_addr_r),
+        .map_rd_ready   (map_rd_ready),
         .map_rd_data    (map_rd_data),
         .map_rd_valid   (map_rd_valid),
         .map_rd_error   (map_rd_error)

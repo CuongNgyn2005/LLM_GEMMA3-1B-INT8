@@ -4,7 +4,7 @@
  * Description : Local register map, memory-window decoder, and GEMV connector.
  *
  * AXI4_Mapping is the boundary between the AXI protocol adapter and the compute
- * core.  MY_IP has already serialized AXI traffic into map_wr_* and map_rd_*
+ * core.  MY_IP converts AXI traffic into ordered map_wr_* and map_rd_*
  * requests; this module interprets the local address, applies optional
  * VPU_BASE_ADDR translation, classifies the access, and drives the correct
  * internal control or memory path.
@@ -60,6 +60,7 @@ module AXI4_Mapping #(
 
     input  wire                                  map_rd_en,
     input  wire [AXI_ADDR_WIDTH-1:0]             map_rd_addr,
+    output wire                                  map_rd_ready,
     output reg  [AXI_DATA_WIDTH-1:0]             map_rd_data,
     output reg                                   map_rd_valid,
     output reg                                   map_rd_error
@@ -135,7 +136,6 @@ module AXI4_Mapping #(
 
     localparam [1:0] RD_KIND_REG   = 2'd0;
     localparam [1:0] RD_KIND_CORE  = 2'd1;
-    localparam [1:0] RD_KIND_SPU   = 2'd2;
     localparam [1:0] RD_KIND_ERROR = 2'd3;
 
     // Support two interconnect addressing styles:
@@ -666,7 +666,7 @@ module AXI4_Mapping #(
         end
     end
 
-    // MY_IP serializes map_rd_* requests.  Capture each request before decode
+    // Capture accepted map_rd_* requests before decode
     // so the inbound address has a registered timing boundary; all read decode,
     // register-data capture, and memory read issue use this aligned request.
     reg rd_req_en_r;
@@ -706,6 +706,29 @@ module AXI4_Mapping #(
     wire spu_rd_valid;
     wire spu_rd_error;
 
+    // SPU RAM accepts one read per clock. Keep consecutive SPU reads in
+    // flight, but drain before changing to/from the variable-latency register,
+    // invalid-address, or raw RESULT paths. MY_IP reserves response storage.
+    reg [4:0] rd_outstanding_r;
+    reg rd_spu_active_r;
+    wire incoming_spu = is_spu_mem_addr(local32(map_rd_addr)) &&
+                        spu_mem_index_in_range(local32(map_rd_addr));
+    assign map_rd_ready = (rd_outstanding_r == 0) ||
+                         (rd_spu_active_r && incoming_spu);
+    always @(posedge clk) begin
+        if (!resetn) begin
+            rd_outstanding_r <= 0;
+            rd_spu_active_r <= 1'b0;
+        end else begin
+            if (map_rd_en)
+                rd_spu_active_r <= incoming_spu;
+            case ({map_rd_en, map_rd_valid})
+                2'b10: rd_outstanding_r <= rd_outstanding_r + 1'b1;
+                2'b01: rd_outstanding_r <= rd_outstanding_r - 1'b1;
+                default: ;
+            endcase
+        end
+    end
     reg rd_pending_r;
     reg [1:0] rd_pending_kind_r;
     reg rd_pending_error_r;
@@ -714,8 +737,7 @@ module AXI4_Mapping #(
         rd_pending_r &&
         ((rd_pending_kind_r == RD_KIND_REG) ||
          (rd_pending_kind_r == RD_KIND_ERROR) ||
-         ((rd_pending_kind_r == RD_KIND_CORE) && core_rd_valid) ||
-         ((rd_pending_kind_r == RD_KIND_SPU) && spu_rd_valid));
+         ((rd_pending_kind_r == RD_KIND_CORE) && core_rd_valid));
 
     // Read response pipeline.  Register reads return after the registered
     // request/decode stage using rd_pending_reg_data_r; Result reads must wait
@@ -756,12 +778,10 @@ module AXI4_Mapping #(
                 spu_rd_index_r  <= spu_rd_index_w;
             end
 
-            if (rd_req_en_r) begin
+            if (rd_req_en_r && !mmio_spu_rd_en_w) begin
                 rd_pending_r <= 1'b1;
                 if (is_result_addr(rd_req_addr_local) && mem_index_in_range(rd_req_addr_local))
                     rd_pending_kind_r <= RD_KIND_CORE;
-                else if (is_spu_mem_addr(rd_req_addr_local) && spu_mem_index_in_range(rd_req_addr_local))
-                    rd_pending_kind_r <= RD_KIND_SPU;
                 else if (is_reg_addr(rd_req_addr_local))
                     rd_pending_kind_r <= RD_KIND_REG;
                 else
@@ -776,14 +796,15 @@ module AXI4_Mapping #(
                 rd_pending_r <= 1'b0;
             end
 
-            if (rd_pending_ready) begin
+            if (spu_rd_valid) begin
+                map_rd_valid <= 1'b1;
+                map_rd_data <= spu_rd_data;
+                map_rd_error <= spu_rd_error;
+            end else if (rd_pending_ready) begin
                 map_rd_valid <= 1'b1;
                 if (rd_pending_kind_r == RD_KIND_CORE) begin
                     map_rd_data  <= core_rd_data;
                     map_rd_error <= core_rd_error || (!core_rd_valid);
-                end else if (rd_pending_kind_r == RD_KIND_SPU) begin
-                    map_rd_data  <= spu_rd_data;
-                    map_rd_error <= spu_rd_error || (!spu_rd_valid);
                 end else begin
                     map_rd_data  <= rd_pending_reg_data_r;
                     map_rd_error <= rd_pending_error_r;

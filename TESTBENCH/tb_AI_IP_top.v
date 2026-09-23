@@ -1,6 +1,49 @@
+`include "../../TESTBENCH/tb_AXI4_Mapping.v"
+`include "../../TESTBENCH/tb_Dual_Port_BRAM.v"
+`include "../../TESTBENCH/tb_MY_IP.v"
+`include "../../TESTBENCH/tb_Matrix_Vector_Multiplication.v"
+`include "../../TESTBENCH/tb_PMAU_Full.v"
+`include "../../TESTBENCH/tb_SPU_Controller.v"
+`include "../../TESTBENCH/tb_SPU_Local_Memory.v"
+`include "../../TESTBENCH/tb_SPU_Q8_Scale_Accum.v"
+`include "../../TESTBENCH/tb_SPU_Quantize_Q8_0.v"
+`include "../../TESTBENCH/tb_SPU_RMSInv_Engine.v"
+`include "../../TESTBENCH/tb_SPU_RMSNorm.v"
+`include "../../TESTBENCH/tb_SPU_RoPE.v"
+`include "../../TESTBENCH/tb_SPU_SiLU_Mul.v"
+`include "../../TESTBENCH/tb_SPU_Softmax.v"
+`include "../../TESTBENCH/tb_SPU_Top.v"
+`include "../../TESTBENCH/tb_SPU_VPU_Stream8.v"
+`include "../../TESTBENCH/tb_VPU_Result_Requantizer.v"
 `timescale 1ns/1ps
 
 module tb_AI_IP_top;
+    // Each unit owns a separate DUT. Only this top ends the combined run.
+    reg integration_completed = 0;
+    wire [16:0] unit_completed;
+    tb_AXI4_Mapping #(.AUTO_FINISH(0)) unit_AXI4_Mapping(.completed(unit_completed[0]));
+    tb_Dual_Port_BRAM #(.AUTO_FINISH(0)) unit_Dual_Port_BRAM(.completed(unit_completed[1]));
+    tb_MY_IP #(.AUTO_FINISH(0)) unit_MY_IP(.completed(unit_completed[2]));
+    tb_Matrix_Vector_Multiplication #(.AUTO_FINISH(0)) unit_Matrix_Vector_Multiplication(.completed(unit_completed[3]));
+    tb_PMAU_Full #(.AUTO_FINISH(0)) unit_PMAU_Full(.completed(unit_completed[4]));
+    tb_SPU_Controller #(.AUTO_FINISH(0)) unit_SPU_Controller(.completed(unit_completed[5]));
+    tb_SPU_Local_Memory #(.AUTO_FINISH(0)) unit_SPU_Local_Memory(.completed(unit_completed[6]));
+    tb_SPU_Q8_Scale_Accum #(.AUTO_FINISH(0)) unit_SPU_Q8_Scale_Accum(.completed(unit_completed[7]));
+    tb_SPU_Quantize_Q8_0 #(.AUTO_FINISH(0)) unit_SPU_Quantize_Q8_0(.completed(unit_completed[8]));
+    tb_SPU_RMSInv_Engine #(.AUTO_FINISH(0)) unit_SPU_RMSInv_Engine(.completed(unit_completed[9]));
+    tb_SPU_RMSNorm #(.AUTO_FINISH(0)) unit_SPU_RMSNorm(.completed(unit_completed[10]));
+    tb_SPU_RoPE #(.AUTO_FINISH(0)) unit_SPU_RoPE(.completed(unit_completed[11]));
+    tb_SPU_SiLU_Mul #(.AUTO_FINISH(0)) unit_SPU_SiLU_Mul(.completed(unit_completed[12]));
+    tb_SPU_Softmax #(.AUTO_FINISH(0)) unit_SPU_Softmax(.completed(unit_completed[13]));
+    tb_SPU_Top #(.AUTO_FINISH(0)) unit_SPU_Top(.completed(unit_completed[14]));
+    tb_SPU_VPU_Stream8 #(.AUTO_FINISH(0)) unit_SPU_VPU_Stream8(.completed(unit_completed[15]));
+    tb_VPU_Result_Requantizer #(.AUTO_FINISH(0)) unit_VPU_Result_Requantizer(.completed(unit_completed[16]));
+    initial begin
+        #100000000;
+        if (!integration_completed || (&unit_completed !== 1'b1))
+            $fatal(1, "[TB][FAIL] unit suite timeout completed=%b", unit_completed);
+    end
+
 
     localparam integer ID_WIDTH      = 1;
     localparam integer DATA_WIDTH    = 128;
@@ -1078,6 +1121,7 @@ module tb_AI_IP_top;
                 fail("SPU_OUT full burst did not produce exactly one RLAST");
             else
                 pass_count = pass_count + 1;
+            $display("[TB] SPU_OUT_BURST cycles=%0d beats=256", cycle_count - start_cycle);
             if ((cycle_count - start_cycle) > 10000)
                 fail("SPU_OUT full burst exceeded bounded completion latency");
             else
@@ -1085,6 +1129,137 @@ module tb_AI_IP_top;
         end
     endtask
 
+    // Drive on falling edges and sample handshakes before the rising-edge NBA.
+    // This catches consecutive responses as well as long/full-queue stalls.
+    task check_spu_pipeline_burst;
+        input [ADDR_WIDTH-1:0] addr;
+        input integer beats;
+        input integer fixed_addr;
+        input integer stalls;
+        input integer expect_error;
+        integer received;
+        integer elapsed;
+        integer max_reserved;
+        integer first_cycle;
+        integer last_cycle;
+        reg stalled;
+        reg [DATA_WIDTH-1:0] held;
+        reg [1:0] held_resp;
+        reg held_last;
+        reg [ID_WIDTH-1:0] held_id;
+        reg [DATA_WIDTH-1:0] expected;
+        integer row_index;
+        begin
+            @(negedge clk);
+            araddr = addr;
+            arlen = beats - 1;
+            arsize = 4;
+            arburst = fixed_addr ? 2'b00 : 2'b01;
+            arid = {ID_WIDTH{1'b1}};
+            arvalid = 1;
+            rready = 0;
+            @(posedge clk);
+            while (!arready) @(posedge clk);
+            @(negedge clk);
+            arvalid = 0;
+            received = 0;
+            elapsed = 0;
+            max_reserved = 0;
+            first_cycle = -1;
+            last_cycle = -1;
+            stalled = 0;
+            while (received < beats && elapsed < 6000) begin
+                rready = !stalls || ((elapsed >= 40) &&
+                         ((elapsed % 53) >= 25) && ((elapsed % 7) != 0));
+                @(posedge clk);
+                if (dut.u_my_ip.rd_reserved_r > max_reserved)
+                    max_reserved = dut.u_my_ip.rd_reserved_r;
+                if (dut.u_my_ip.rd_reserved_r > 16 ||
+                    dut.u_my_ip.rd_available_r > dut.u_my_ip.rd_reserved_r)
+                    fail("SPU response reservation overflow/underflow");
+                if (stalled && (!rvalid || rdata !== held ||
+                    rresp !== held_resp || rlast !== held_last || rid !== held_id))
+                    fail("SPU pipeline changed held AXI response");
+                stalled = rvalid && !rready;
+                held = rdata;
+                held_resp = rresp;
+                held_last = rlast;
+                held_id = rid;
+                if (rvalid && rready) begin
+                    if (first_cycle < 0) first_cycle = cycle_count;
+                    last_cycle = cycle_count;
+                    if (rid !== {ID_WIDTH{1'b1}} || rlast !== (received == beats-1))
+                        fail("SPU pipeline ID/RLAST mismatch");
+                    if (rresp !== (expect_error ? 2'b10 : 2'b00))
+                        fail("SPU pipeline response status mismatch");
+                    if (!expect_error) begin
+                        row_index = fixed_addr ? 0 : received;
+                        expected = {48'habcde1234567, -64'sd123456789 - row_index, 16'h8000 + 16'(row_index)};
+                        if (rdata !== expected)
+                            fail("SPU pipeline payload/order mismatch");
+                    end
+                    received = received + 1;
+                end
+                @(negedge clk);
+                elapsed = elapsed + 1;
+            end
+            rready = 0;
+            if (stalls && beats == 256 && max_reserved != 16)
+                fail("SPU stall test did not fill the response queue");
+            if (received != beats) fail("SPU pipeline burst timeout");
+            if (!stalls && !expect_error && beats > 1 &&
+                (last_cycle - first_cycle) != beats - 1)
+                fail("SPU pipeline did not sustain one beat per clock");
+            repeat (3) @(negedge clk);
+            if (rvalid || !arready) fail("SPU pipeline left an extra response");
+            $display("[TB] SPU_PIPELINE beats=%0d stalls=%0d fixed=%0d error=%0d cycles=%0d response_span=%0d",
+                     beats, stalls, fixed_addr, expect_error, elapsed, last_cycle-first_cycle+1);
+            pass_count = pass_count + 1;
+        end
+    endtask
+
+    task run_spu_pipeline_cases;
+        integer row;
+        reg [127:0] payload;
+        begin
+            for (row = 0; row < 256; row = row + 1) begin
+                payload = {48'habcde1234567, -64'sd123456789 - row, 16'h8000 + 16'(row)};
+                axi_write(SPU_OUT_BASE + row*16, payload, 16'hffff);
+            end
+            check_spu_pipeline_burst(SPU_OUT_BASE, 256, 0, 0, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE, 256, 0, 1, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE + 40'hA0000000, 17, 0, 1, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE, 16, 1, 1, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE, 1, 0, 1, 0);
+            // Last implemented word followed by a separate out-of-range burst.
+            payload = {48'habcde1234567, -64'sd123456789, 16'h8000};
+            axi_write(SPU_OUT_BASE + 4095*16, payload, 16'hffff);
+            check_spu_pipeline_burst(SPU_OUT_BASE + 4095*16, 1, 0, 0, 0);
+            check_spu_pipeline_burst(SPU_OUT_BASE + 4096*16, 16, 0, 1, 1);
+            axi_read(REG_LIMITS, init_rd_word);
+            if (init_rd_word[15:0] !== 256) fail("Register read after SPU errors failed");
+
+            // Reset with responses queued and reads in flight, then reuse RAM.
+            @(negedge clk);
+            araddr = SPU_OUT_BASE;
+            arlen = 255;
+            arsize = 4;
+            arburst = 1;
+            arvalid = 1;
+            rready = 0;
+            @(posedge clk);
+            while (!arready) @(posedge clk);
+            @(negedge clk);
+            arvalid = 0;
+            repeat (8) @(negedge clk);
+            resetn = 0;
+            repeat (4) @(negedge clk);
+            resetn = 1;
+            repeat (12) @(negedge clk);
+            if (rvalid || !arready) fail("Reset failed to flush SPU read pipeline");
+            check_spu_pipeline_burst(SPU_OUT_BASE, 17, 0, 0, 0);
+        end
+    endtask
     task init_case_data;
         input integer case_id;
         input integer rows;
@@ -3178,6 +3353,10 @@ module tb_AI_IP_top;
         if (stream_stall_ever_observed == 0)
             fail("ready/valid random-stall test did not observe a stalled raw token");
 
+        run_spu_pipeline_cases();
+        integration_completed = 1;
+        wait (&unit_completed);
+        $display("[TB][PASS] All 17 standalone module tests completed");
         $display("[TB] pass_count=%0d fail_count=%0d", pass_count, fail_count);
         if (fail_count == 0) begin
             $display("[TB] AXI4-Full VPU TEST PASSED");

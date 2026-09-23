@@ -88,6 +88,7 @@ module SPU_Local_Memory #(
     localparam integer ADDR_WIDTH = (WORD_DEPTH <= 1) ? 1 : $clog2(WORD_DEPTH);
     localparam integer BANK_WORD_DEPTH = WORD_DEPTH / 2;
 
+    reg [1:0] mm_rd_region_r;
     reg [1:0] core_region_r;
     reg [1:0] core2_region_r;
 
@@ -140,14 +141,15 @@ module SPU_Local_Memory #(
     wire [AXI_DATA_WIDTH-1:0] out_core_rdata;
     wire [AXI_DATA_WIDTH-1:0] scratch_core_rdata;
 
-    // Dual_Port_BRAM registers each read.  These multiplexers intentionally
+    // Align the MMIO region with the registered RAM word, even when the next
+    // request changes region. Dual_Port_BRAM registers each read; these muxes
     // consume that registered RAM output directly; adding another register here
     // would shift the controller and AXI read protocol by an extra cycle.
     assign mm_rd_data =
-        (mm_rd_region == REGION_IN)      ? in_mm_rdata :
-        (mm_rd_region == REGION_OUT)     ? out_mm_rdata :
-        (mm_rd_region == REGION_PARAM)   ? param_mm_rdata :
-        (mm_rd_region == REGION_SCRATCH) ? scratch_mm_rdata :
+        (mm_rd_region_r == REGION_IN)      ? in_mm_rdata :
+        (mm_rd_region_r == REGION_OUT)     ? out_mm_rdata :
+        (mm_rd_region_r == REGION_PARAM)   ? param_mm_rdata :
+        (mm_rd_region_r == REGION_SCRATCH) ? scratch_mm_rdata :
                                           {AXI_DATA_WIDTH{1'b0}};
 
     assign core_rdata =
@@ -220,11 +222,14 @@ module SPU_Local_Memory #(
 
     always @(posedge clk) begin
         if (!resetn) begin
+            mm_rd_region_r <= REGION_IN;
             mm_rd_valid <= 1'b0;
             mm_rd_error <= 1'b0;
             core_region_r <= REGION_PARAM;
             core2_region_r <= 2'b00;
         end else begin
+            if (mm_rd_en)
+                mm_rd_region_r <= mm_rd_region;
             mm_rd_valid <= mm_rd_en;
             mm_rd_error <= mm_rd_en && !mm_rd_index_ok;
             if (core_en)
