@@ -61,8 +61,7 @@ in Simulation Sources. Launch Behavioral Simulation, then **Run All**; the defau
 1000 ns run can end before the test finishes. Expect the selected testbench's PASS
 message. The synthesis top does not need to change.
 
-For the combined suite select `tb_AI_IP_top`. Keep all sibling testbench files and
-`q16_job1973_vectors.vh` in this directory so source-relative includes resolve.
+For the combined suite select `tb_AI_IP_top`. Keep all sibling testbench files in this directory so source-relative includes resolve.
 VPU/system simulations also need the project's multiplier simulation model;
 manual_sim supplies `mult_gen_0_behav.v` for standalone simulation.
 
