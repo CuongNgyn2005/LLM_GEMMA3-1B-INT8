@@ -7,8 +7,8 @@ module tb_VPU_Result_Requantizer #(parameter AUTO_FINISH = 1)(output reg complet
     localparam SHIFT_WIDTH = 5;
     reg tb_clk = 0;
     always #5 if (!completed) tb_clk = ~tb_clk;
-    reg signed [ACC_WIDTH-1:0]        value_in = '0;
-    reg [SHIFT_WIDTH-1:0]             requant_shift = '0;
+    reg signed [ACC_WIDTH-1:0]        value_in = 0;
+    reg [SHIFT_WIDTH-1:0]             requant_shift = 0;
     wire signed [7:0]                  value_out;
     integer checks = 0;
     VPU_Result_Requantizer dut (

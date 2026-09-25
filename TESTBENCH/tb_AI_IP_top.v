@@ -1,20 +1,20 @@
-`include "../../TESTBENCH/tb_AXI4_Mapping.v"
-`include "../../TESTBENCH/tb_Dual_Port_BRAM.v"
-`include "../../TESTBENCH/tb_MY_IP.v"
-`include "../../TESTBENCH/tb_Matrix_Vector_Multiplication.v"
-`include "../../TESTBENCH/tb_PMAU_Full.v"
-`include "../../TESTBENCH/tb_SPU_Controller.v"
-`include "../../TESTBENCH/tb_SPU_Local_Memory.v"
-`include "../../TESTBENCH/tb_SPU_Q8_Scale_Accum.v"
-`include "../../TESTBENCH/tb_SPU_Quantize_Q8_0.v"
-`include "../../TESTBENCH/tb_SPU_RMSInv_Engine.v"
-`include "../../TESTBENCH/tb_SPU_RMSNorm.v"
-`include "../../TESTBENCH/tb_SPU_RoPE.v"
-`include "../../TESTBENCH/tb_SPU_SiLU_Mul.v"
-`include "../../TESTBENCH/tb_SPU_Softmax.v"
-`include "../../TESTBENCH/tb_SPU_Top.v"
-`include "../../TESTBENCH/tb_SPU_VPU_Stream8.v"
-`include "../../TESTBENCH/tb_VPU_Result_Requantizer.v"
+`include "tb_AXI4_Mapping.v"
+`include "tb_Dual_Port_BRAM.v"
+`include "tb_MY_IP.v"
+`include "tb_Matrix_Vector_Multiplication.v"
+`include "tb_PMAU_Full.v"
+`include "tb_SPU_Controller.v"
+`include "tb_SPU_Local_Memory.v"
+`include "tb_SPU_Q8_Scale_Accum.v"
+`include "tb_SPU_Quantize_Q8_0.v"
+`include "tb_SPU_RMSInv_Engine.v"
+`include "tb_SPU_RMSNorm.v"
+`include "tb_SPU_RoPE.v"
+`include "tb_SPU_SiLU_Mul.v"
+`include "tb_SPU_Softmax.v"
+`include "tb_SPU_Top.v"
+`include "tb_SPU_VPU_Stream8.v"
+`include "tb_VPU_Result_Requantizer.v"
 `timescale 1ns/1ps
 
 module tb_AI_IP_top;
@@ -1194,7 +1194,7 @@ module tb_AI_IP_top;
                         fail("SPU pipeline response status mismatch");
                     if (!expect_error) begin
                         row_index = fixed_addr ? 0 : received;
-                        expected = {48'habcde1234567, -64'sd123456789 - row_index, 16'h8000 + 16'(row_index)};
+                        expected = {48'habcde1234567, -64'sd123456789 - row_index, 16'h8000 + row_index[15:0]};
                         if (rdata !== expected)
                             fail("SPU pipeline payload/order mismatch");
                     end
@@ -1223,7 +1223,7 @@ module tb_AI_IP_top;
         reg [127:0] payload;
         begin
             for (row = 0; row < 256; row = row + 1) begin
-                payload = {48'habcde1234567, -64'sd123456789 - row, 16'h8000 + 16'(row)};
+                payload = {48'habcde1234567, -64'sd123456789 - row, 16'h8000 + row[15:0]};
                 axi_write(SPU_OUT_BASE + row*16, payload, 16'hffff);
             end
             check_spu_pipeline_burst(SPU_OUT_BASE, 256, 0, 0, 0);
@@ -2838,7 +2838,7 @@ module tb_AI_IP_top;
         end
     endtask
 
-    `include "../../TESTBENCH/q16_job1973_vectors.vh"
+    `include "q16_job1973_vectors.vh"
 
     reg audit_watch = 0;
     integer audit_raw_seen = 0;

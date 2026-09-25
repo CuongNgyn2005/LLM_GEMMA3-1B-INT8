@@ -7,11 +7,11 @@ module tb_SPU_RMSInv_Engine #(parameter AUTO_FINISH = 1)(output reg completed = 
     reg tb_clk = 0;
     always #5 if (!completed) tb_clk = ~tb_clk;
     wire clk = tb_clk;
-    reg resetn = '0;
-    reg start = '0;
-    reg [63:0] sumsq_q16 = '0;
-    reg [31:0] element_count = '0;
-    reg [31:0] epsilon_q16 = '0;
+    reg resetn = 0;
+    reg start = 0;
+    reg [63:0] sumsq_q16 = 0;
+    reg [31:0] element_count = 0;
+    reg [31:0] epsilon_q16 = 0;
     wire busy;
     wire done;
     wire error;

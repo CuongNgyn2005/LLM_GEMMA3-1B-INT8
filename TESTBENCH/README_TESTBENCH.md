@@ -48,11 +48,34 @@ cd D:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim
 ```
 
 The existing source list compiles `tb_AI_IP_top.v`, which includes all child benches.
-The include paths intentionally use the existing `manual_sim` working directory.
+Include filenames resolve beside the source files, independently of the simulation working directory.
 The script also runs `tb_SPU_Top` separately. It preserves the combined transcript in
 `phase2a_vpu_xsim.log`; `xsim.log` contains the subsequent SPU-only run.
 No project, RTL, or source-list edits are needed.
 
+## Vivado 2022.2 GUI
+
+Add the ZCU104 RTL files as Design Sources and the desired `tb_<module>.v` as a
+Simulation Source. Keep its file type as Verilog and select it with **Set as Top**
+in Simulation Sources. Launch Behavioral Simulation, then **Run All**; the default
+1000 ns run can end before the test finishes. Expect the selected testbench's PASS
+message. The synthesis top does not need to change.
+
+For the combined suite select `tb_AI_IP_top`. Keep all sibling testbench files and
+`q16_job1973_vectors.vh` in this directory so source-relative includes resolve.
+VPU/system simulations also need the project's multiplier simulation model;
+manual_sim supplies `mult_gen_0_behav.v` for standalone simulation.
+
+The standalone runner checks all 18 tops independently. Its GUI-compatible mode
+uses ordinary Verilog and a fresh working directory without include search paths:
+
+```powershell
+cd D:\DOAN\DATN_RTL\DATN_VIVADO\manual_sim
+.\run_zcu104_standalone_xsim.ps1 -GuiCompatible
+```
+
+This checks compiler/path compatibility and simulation results; it does not open
+or modify the Vivado project.
 ## Selecting one standalone testbench
 
 All names in the table use the prefix `tb_` (for example, `tb_SPU_RMSNorm`).

@@ -466,7 +466,7 @@ module tb_SPU_Top #(parameter AUTO_FINISH = 1)(output reg completed = 0);
         end
     endfunction
 
-    `include "../../TESTBENCH/q16_job1973_vectors.vh"
+    `include "q16_job1973_vectors.vh"
 
     reg audit_start = 0;
     reg signed [31:0] audit_raw_in;

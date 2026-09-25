@@ -9,9 +9,9 @@ module tb_SPU_Quantize_Q8_0 #(parameter AUTO_FINISH = 1)(output reg completed = 
     reg tb_clk = 0;
     always #5 if (!completed) tb_clk = ~tb_clk;
     wire clk = tb_clk;
-    reg resetn = '0;
-    reg start = '0;
-    reg [INPUT_WIDTH*BLOCK_SIZE-1:0]     values_in = '0;
+    reg resetn = 0;
+    reg start = 0;
+    reg [INPUT_WIDTH*BLOCK_SIZE-1:0]     values_in = 0;
     wire busy;
     wire done;
     wire [OUTPUT_WIDTH*BLOCK_SIZE-1:0]   qs_out;
