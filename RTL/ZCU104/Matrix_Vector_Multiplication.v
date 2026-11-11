@@ -424,6 +424,8 @@ module Matrix_Vector_Multiplication #(
     reg [2:0] read_quad7_row_slot_d_r, read_quad7_row_slot_q_r;
     reg [2:0] read_quad7_row_slot_x_r;
     (* keep = "true" *)
+    reg [2:0] read_quad6_row_slot_local_r [0:WEIGHT_COMPUTE_ADDR_COUNT-1];
+    (* keep = "true" *)
     reg [2:0] read_quad7_row_slot_local_r [0:WEIGHT_COMPUTE_ADDR_COUNT-1];
 
     reg [31:0] raw_group_offset_r [0:7];
@@ -1266,9 +1268,22 @@ module Matrix_Vector_Multiplication #(
                 weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT + mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_quad4_row_slot_x_r) +: WEIGHT_BANK_WIDTH];
             weight_quad5_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
                 weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT + mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_quad5_row_slot_x_r) +: WEIGHT_BANK_WIDTH];
-            weight_quad6_compute_data[WEIGHT_BANK_WIDTH*mux_bank_i +: WEIGHT_BANK_WIDTH] =
-                weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(active_bank_r*WEIGHT_RAM_COUNT + mux_bank_i*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_x_r) +: WEIGHT_BANK_WIDTH];
         end
+        case (active_bank_r)
+            1'b0: begin
+                weight_quad6_compute_data[WEIGHT_BANK_WIDTH*0 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 0*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_local_r[0]) +: WEIGHT_BANK_WIDTH];
+                weight_quad6_compute_data[WEIGHT_BANK_WIDTH*1 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 1*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_local_r[1]) +: WEIGHT_BANK_WIDTH];
+                weight_quad6_compute_data[WEIGHT_BANK_WIDTH*2 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 2*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_local_r[2]) +: WEIGHT_BANK_WIDTH];
+                weight_quad6_compute_data[WEIGHT_BANK_WIDTH*3 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 3*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_local_r[3]) +: WEIGHT_BANK_WIDTH];
+            end
+            1'b1: begin
+                weight_quad6_compute_data[WEIGHT_BANK_WIDTH*0 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(1*WEIGHT_RAM_COUNT + 0*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_local_r[4]) +: WEIGHT_BANK_WIDTH];
+                weight_quad6_compute_data[WEIGHT_BANK_WIDTH*1 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(1*WEIGHT_RAM_COUNT + 1*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_local_r[5]) +: WEIGHT_BANK_WIDTH];
+                weight_quad6_compute_data[WEIGHT_BANK_WIDTH*2 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(1*WEIGHT_RAM_COUNT + 2*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_local_r[6]) +: WEIGHT_BANK_WIDTH];
+                weight_quad6_compute_data[WEIGHT_BANK_WIDTH*3 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(1*WEIGHT_RAM_COUNT + 3*WEIGHT_ROW_SLOT_LEAVES + read_quad6_row_slot_local_r[7]) +: WEIGHT_BANK_WIDTH];
+            end
+            default: weight_quad6_compute_data = {WEIGHT_BEAT_WIDTH{1'bx}};
+        endcase
         case (active_bank_r)
             1'b0: begin
                 weight_quad7_compute_data[WEIGHT_BANK_WIDTH*0 +: WEIGHT_BANK_WIDTH] = weight_compute_data_leaf[WEIGHT_BANK_WIDTH*(0*WEIGHT_RAM_COUNT + 0*WEIGHT_ROW_SLOT_LEAVES + read_quad7_row_slot_local_r[0]) +: WEIGHT_BANK_WIDTH];
@@ -1493,8 +1508,10 @@ module Matrix_Vector_Multiplication #(
                 weight_compute_addr_shared[fsm_bank_i] <= {WEIGHT_LOCAL_ADDR_WIDTH{1'b0}};
             for (fsm_bank_i = 0; fsm_bank_i < BANK_COUNT; fsm_bank_i = fsm_bank_i + 1)
                 result_write_addr_bank_r[fsm_bank_i] <= {RESULT_ADDR_WIDTH{1'b0}};
-            for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_COMPUTE_ADDR_COUNT; fsm_bank_i = fsm_bank_i + 1)
+            for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_COMPUTE_ADDR_COUNT; fsm_bank_i = fsm_bank_i + 1) begin
+                read_quad6_row_slot_local_r[fsm_bank_i] <= 3'd0;
                 read_quad7_row_slot_local_r[fsm_bank_i] <= 3'd0;
+            end
             for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
                 raw_group_offset_r[fsm_bank_i] <= 32'd0;
             for (fsm_bank_i = 0; fsm_bank_i < 8; fsm_bank_i = fsm_bank_i + 1)
@@ -1681,8 +1698,10 @@ module Matrix_Vector_Multiplication #(
                         read_quad5_row_slot_x_r <= read_quad5_row_slot_q_r;
                         read_quad6_row_slot_x_r <= read_quad6_row_slot_q_r;
                         read_quad7_row_slot_x_r <= read_quad7_row_slot_q_r;
-                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_COMPUTE_ADDR_COUNT; fsm_bank_i = fsm_bank_i + 1)
+                        for (fsm_bank_i = 0; fsm_bank_i < WEIGHT_COMPUTE_ADDR_COUNT; fsm_bank_i = fsm_bank_i + 1) begin
+                            read_quad6_row_slot_local_r[fsm_bank_i] <= read_quad6_row_slot_q_r;
                             read_quad7_row_slot_local_r[fsm_bank_i] <= read_quad7_row_slot_q_r;
+                        end
                         read_valid_q_r <= 1'b0;
                     end
 

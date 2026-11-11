@@ -63,7 +63,42 @@ module AXI4_Mapping #(
     output wire                                  map_rd_ready,
     output reg  [AXI_DATA_WIDTH-1:0]             map_rd_data,
     output reg                                   map_rd_valid,
-    output reg                                   map_rd_error
+    output reg                                   map_rd_error,
+    output wire [0:0] m_att_axi_awid,
+    output wire [39:0] m_att_axi_awaddr,
+    output wire [7:0] m_att_axi_awlen,
+    output wire [2:0] m_att_axi_awsize,
+    output wire [1:0] m_att_axi_awburst,
+    output wire m_att_axi_awlock,
+    output wire [3:0] m_att_axi_awcache,
+    output wire [2:0] m_att_axi_awprot,
+    output wire [3:0] m_att_axi_awqos, m_att_axi_awregion,
+    output wire m_att_axi_awvalid,
+    input wire m_att_axi_awready,
+    output wire [127:0] m_att_axi_wdata,
+    output wire [15:0] m_att_axi_wstrb,
+    output wire m_att_axi_wlast, m_att_axi_wvalid,
+    input wire m_att_axi_wready,
+    input wire [0:0] m_att_axi_bid,
+    input wire [1:0] m_att_axi_bresp,
+    input wire m_att_axi_bvalid,
+    output wire m_att_axi_bready,
+    output wire [0:0] m_att_axi_arid,
+    output wire [39:0] m_att_axi_araddr,
+    output wire [7:0] m_att_axi_arlen,
+    output wire [2:0] m_att_axi_arsize,
+    output wire [1:0] m_att_axi_arburst,
+    output wire m_att_axi_arlock,
+    output wire [3:0] m_att_axi_arcache,
+    output wire [2:0] m_att_axi_arprot,
+    output wire [3:0] m_att_axi_arqos, m_att_axi_arregion,
+    output wire m_att_axi_arvalid,
+    input wire m_att_axi_arready,
+    input wire [0:0] m_att_axi_rid,
+    input wire [127:0] m_att_axi_rdata,
+    input wire [1:0] m_att_axi_rresp,
+    input wire m_att_axi_rlast, m_att_axi_rvalid,
+    output wire m_att_axi_rready
 );
 
     function integer clog2;
@@ -385,6 +420,8 @@ module AXI4_Mapping #(
     wire status_core_done = core_done && !core_waiting_for_spu;
     wire status_error = core_error;
 
+    wire [31:0] attention_reg_read_data;
+
     // Register read map.  Offset 0x0000 acts as a control register on writes
     // and as a status alias on reads.
     function [31:0] reg_read_word32;
@@ -481,11 +518,12 @@ module AXI4_Mapping #(
         end
     endfunction
 
-    function [AXI_DATA_WIDTH-1:0] reg_read_data;
-        input [31:0] addr;
+    function [AXI_DATA_WIDTH-1:0] reg_lane_data;
+        input [31:0] word;
+        input [1:0] lane;
         begin
-            reg_read_data = {AXI_DATA_WIDTH{1'b0}};
-            reg_read_data[32*addr[3:2] +: 32] = reg_read_word32(addr);
+            reg_lane_data = {AXI_DATA_WIDTH{1'b0}};
+            reg_lane_data[32*lane +: 32] = word;
         end
     endfunction
 
@@ -618,14 +656,18 @@ module AXI4_Mapping #(
             else if (ctrl_clear_done_hit)
                 core_completion_wait_spu_r <= 1'b0;
 
-            if (core_wr_hit) begin
+            // Capture payload on the simple decode enable. core_wr_en_r remains
+            // the range-checked acceptance strobe seen by the memory consumer.
+            if (wr_decode_en) begin
                 core_wr_region_r <= mem_region(wr_decode_addr);
                 core_wr_index_r  <= mem_index(wr_decode_addr);
                 core_wr_data_r   <= wr_decode_data;
                 core_wr_strb_r   <= wr_decode_strb;
             end
 
-            if (spu_wr_hit) begin
+            // Payload may change for other targets; only spu_wr_en_r permits
+            // the SPU memory to consume it, at the same edge as before.
+            if (wr_decode_en) begin
                 spu_wr_region_r <= spu_mem_region(wr_decode_addr);
                 spu_wr_index_r  <= {{(32-SPU_ADDR_WIDTH){1'b0}},
                                     spu_wr_index_w[SPU_ADDR_WIDTH-1:0]};
@@ -732,15 +774,19 @@ module AXI4_Mapping #(
     reg rd_pending_r;
     reg [1:0] rd_pending_kind_r;
     reg rd_pending_error_r;
-    reg [AXI_DATA_WIDTH-1:0] rd_pending_reg_data_r;
+    reg [31:0] rd_pending_legacy_word_r;
+    reg [31:0] rd_pending_attention_word_r;
+    reg rd_pending_attention_r;
+    reg [1:0] rd_pending_lane_r;
     wire rd_pending_ready =
         rd_pending_r &&
         ((rd_pending_kind_r == RD_KIND_REG) ||
          (rd_pending_kind_r == RD_KIND_ERROR) ||
          ((rd_pending_kind_r == RD_KIND_CORE) && core_rd_valid));
 
-    // Read response pipeline.  Register reads return after the registered
-    // request/decode stage using rd_pending_reg_data_r; Result reads must wait
+    // Capture both register words at the existing request/decode boundary;
+    // select the captured source and place its lane at the existing response
+    // boundary. Sampling and response cycles are unchanged. Result reads wait
     // for GEMV/Result BRAM to assert core_rd_valid before map_rd_valid is
     // returned to MY_IP.
     always @(posedge clk) begin
@@ -751,7 +797,10 @@ module AXI4_Mapping #(
             rd_pending_r <= 1'b0;
             rd_pending_kind_r <= RD_KIND_REG;
             rd_pending_error_r <= 1'b0;
-            rd_pending_reg_data_r <= {AXI_DATA_WIDTH{1'b0}};
+            rd_pending_legacy_word_r <= 32'd0;
+            rd_pending_attention_word_r <= 32'd0;
+            rd_pending_attention_r <= 1'b0;
+            rd_pending_lane_r <= 2'd0;
             rd_req_en_r <= 1'b0;
             rd_req_addr_r <= {AXI_ADDR_WIDTH{1'b0}};
             core_rd_en_r <= 1'b0;
@@ -765,8 +814,9 @@ module AXI4_Mapping #(
             map_rd_error <= 1'b0;
             map_rd_data  <= {AXI_DATA_WIDTH{1'b0}};
             rd_req_en_r <= map_rd_en;
-            if (map_rd_en)
-                rd_req_addr_r <= map_rd_addr;
+            // All consumers qualify this address with rd_req_en_r. Sampling
+            // idle addresses removes the admission decode from its enable.
+            rd_req_addr_r <= map_rd_addr;
             core_rd_en_r <= mmio_core_rd_en_w;
             mmio_spu_rd_en_r <= mmio_spu_rd_en_w;
             if (mmio_core_rd_en_w) begin
@@ -791,9 +841,22 @@ module AXI4_Mapping #(
                                           mem_index_in_range(rd_req_addr_local))) &&
                                        (!(is_spu_mem_addr(rd_req_addr_local) &&
                                           spu_mem_index_in_range(rd_req_addr_local)));
-                rd_pending_reg_data_r <= reg_read_data(rd_req_addr_local);
             end else if (rd_pending_ready) begin
                 rd_pending_r <= 1'b0;
+            end
+
+            // Capture payload on request validity, without SPU range decode
+            // in the enable. Pending control above still excludes SPU reads;
+            // admission drains those reads before switching response paths.
+            if (rd_req_en_r) begin
+                // Keep low-16 legacy aliases in ERROR payloads as before;
+                // only the attention selector uses the exact full local range.
+                rd_pending_legacy_word_r <= reg_read_word32(rd_req_addr_local);
+                rd_pending_attention_word_r <= attention_reg_read_data;
+                rd_pending_attention_r <=
+                    (rd_req_addr_local >= 32'h4000 && rd_req_addr_local <= 32'h404c &&
+                     rd_req_addr_local[1:0] == 0);
+                rd_pending_lane_r <= rd_req_addr_local[3:2];
             end
 
             if (spu_rd_valid) begin
@@ -806,7 +869,9 @@ module AXI4_Mapping #(
                     map_rd_data  <= core_rd_data;
                     map_rd_error <= core_rd_error || (!core_rd_valid);
                 end else begin
-                    map_rd_data  <= rd_pending_reg_data_r;
+                    map_rd_data <= reg_lane_data(
+                        rd_pending_attention_r ? rd_pending_attention_word_r : rd_pending_legacy_word_r,
+                        rd_pending_lane_r);
                     map_rd_error <= rd_pending_error_r;
                 end
             end
@@ -967,5 +1032,55 @@ module AXI4_Mapping #(
         .mm_rd_data      (spu_rd_data),
         .mm_rd_valid     (spu_rd_valid),
         .mm_rd_error     (spu_rd_error)
+    );
+    // Separate attention ABI; existing VPU2/P2/P3 registers remain unchanged.
+    // Dense 32-bit attention registers use the same address-selected 128-bit
+    // lane and four byte strobes as every existing register in this map.
+    Attention_Engine u_attention (
+        .clk(clk), .resetn(resetn),
+        .reg_wr_en(wr_decode_en && wr_decode_addr >= 32'h4000 &&
+                   wr_decode_addr <= 32'h404c && wr_decode_addr[1:0] == 0),
+        .reg_wr_addr(wr_decode_addr[7:0]), .reg_wr_data(wr_data32),
+        .reg_wr_strb(wr_strb4), .reg_rd_addr(rd_req_addr_local[7:0]),
+        .reg_rd_data(attention_reg_read_data),
+        .m_att_axi_awid(m_att_axi_awid),
+        .m_att_axi_awaddr(m_att_axi_awaddr),
+        .m_att_axi_awlen(m_att_axi_awlen),
+        .m_att_axi_awsize(m_att_axi_awsize),
+        .m_att_axi_awburst(m_att_axi_awburst),
+        .m_att_axi_awlock(m_att_axi_awlock),
+        .m_att_axi_awcache(m_att_axi_awcache),
+        .m_att_axi_awprot(m_att_axi_awprot),
+        .m_att_axi_awqos(m_att_axi_awqos),
+        .m_att_axi_awregion(m_att_axi_awregion),
+        .m_att_axi_awvalid(m_att_axi_awvalid),
+        .m_att_axi_awready(m_att_axi_awready),
+        .m_att_axi_wdata(m_att_axi_wdata),
+        .m_att_axi_wstrb(m_att_axi_wstrb),
+        .m_att_axi_wlast(m_att_axi_wlast),
+        .m_att_axi_wvalid(m_att_axi_wvalid),
+        .m_att_axi_wready(m_att_axi_wready),
+        .m_att_axi_bid(m_att_axi_bid),
+        .m_att_axi_bresp(m_att_axi_bresp),
+        .m_att_axi_bvalid(m_att_axi_bvalid),
+        .m_att_axi_bready(m_att_axi_bready),
+        .m_att_axi_arid(m_att_axi_arid),
+        .m_att_axi_araddr(m_att_axi_araddr),
+        .m_att_axi_arlen(m_att_axi_arlen),
+        .m_att_axi_arsize(m_att_axi_arsize),
+        .m_att_axi_arburst(m_att_axi_arburst),
+        .m_att_axi_arlock(m_att_axi_arlock),
+        .m_att_axi_arcache(m_att_axi_arcache),
+        .m_att_axi_arprot(m_att_axi_arprot),
+        .m_att_axi_arqos(m_att_axi_arqos),
+        .m_att_axi_arregion(m_att_axi_arregion),
+        .m_att_axi_arvalid(m_att_axi_arvalid),
+        .m_att_axi_arready(m_att_axi_arready),
+        .m_att_axi_rid(m_att_axi_rid),
+        .m_att_axi_rdata(m_att_axi_rdata),
+        .m_att_axi_rresp(m_att_axi_rresp),
+        .m_att_axi_rlast(m_att_axi_rlast),
+        .m_att_axi_rvalid(m_att_axi_rvalid),
+        .m_att_axi_rready(m_att_axi_rready)
     );
 endmodule

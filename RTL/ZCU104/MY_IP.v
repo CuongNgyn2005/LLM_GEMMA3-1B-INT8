@@ -50,7 +50,7 @@ module MY_IP #(
     parameter integer SPU_STREAM_TEST_STALL_ENABLE = 0
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
+    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi:m_att_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
     input  wire                                  s00_axi_aclk,
     (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 s00_axi_aresetn RST" *)
     (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
@@ -103,7 +103,42 @@ module MY_IP #(
     output wire                                  s00_axi_rlast,
     output wire [C_S00_AXI_RUSER_WIDTH-1:0]      s00_axi_ruser,
     output wire                                  s00_axi_rvalid,
-    input  wire                                  s00_axi_rready
+    input  wire                                  s00_axi_rready,
+    output wire [0:0] m_att_axi_awid,
+    output wire [39:0] m_att_axi_awaddr,
+    output wire [7:0] m_att_axi_awlen,
+    output wire [2:0] m_att_axi_awsize,
+    output wire [1:0] m_att_axi_awburst,
+    output wire m_att_axi_awlock,
+    output wire [3:0] m_att_axi_awcache,
+    output wire [2:0] m_att_axi_awprot,
+    output wire [3:0] m_att_axi_awqos, m_att_axi_awregion,
+    output wire m_att_axi_awvalid,
+    input wire m_att_axi_awready,
+    output wire [127:0] m_att_axi_wdata,
+    output wire [15:0] m_att_axi_wstrb,
+    output wire m_att_axi_wlast, m_att_axi_wvalid,
+    input wire m_att_axi_wready,
+    input wire [0:0] m_att_axi_bid,
+    input wire [1:0] m_att_axi_bresp,
+    input wire m_att_axi_bvalid,
+    output wire m_att_axi_bready,
+    output wire [0:0] m_att_axi_arid,
+    output wire [39:0] m_att_axi_araddr,
+    output wire [7:0] m_att_axi_arlen,
+    output wire [2:0] m_att_axi_arsize,
+    output wire [1:0] m_att_axi_arburst,
+    output wire m_att_axi_arlock,
+    output wire [3:0] m_att_axi_arcache,
+    output wire [2:0] m_att_axi_arprot,
+    output wire [3:0] m_att_axi_arqos, m_att_axi_arregion,
+    output wire m_att_axi_arvalid,
+    input wire m_att_axi_arready,
+    input wire [0:0] m_att_axi_rid,
+    input wire [127:0] m_att_axi_rdata,
+    input wire [1:0] m_att_axi_rresp,
+    input wire m_att_axi_rlast, m_att_axi_rvalid,
+    output wire m_att_axi_rready
 );
 
     function integer clog2;
@@ -352,7 +387,46 @@ module MY_IP #(
         .map_rd_ready   (map_rd_ready),
         .map_rd_data    (map_rd_data),
         .map_rd_valid   (map_rd_valid),
-        .map_rd_error   (map_rd_error)
+        .map_rd_error   (map_rd_error),
+        .m_att_axi_awid(m_att_axi_awid),
+        .m_att_axi_awaddr(m_att_axi_awaddr),
+        .m_att_axi_awlen(m_att_axi_awlen),
+        .m_att_axi_awsize(m_att_axi_awsize),
+        .m_att_axi_awburst(m_att_axi_awburst),
+        .m_att_axi_awlock(m_att_axi_awlock),
+        .m_att_axi_awcache(m_att_axi_awcache),
+        .m_att_axi_awprot(m_att_axi_awprot),
+        .m_att_axi_awqos(m_att_axi_awqos),
+        .m_att_axi_awregion(m_att_axi_awregion),
+        .m_att_axi_awvalid(m_att_axi_awvalid),
+        .m_att_axi_awready(m_att_axi_awready),
+        .m_att_axi_wdata(m_att_axi_wdata),
+        .m_att_axi_wstrb(m_att_axi_wstrb),
+        .m_att_axi_wlast(m_att_axi_wlast),
+        .m_att_axi_wvalid(m_att_axi_wvalid),
+        .m_att_axi_wready(m_att_axi_wready),
+        .m_att_axi_bid(m_att_axi_bid),
+        .m_att_axi_bresp(m_att_axi_bresp),
+        .m_att_axi_bvalid(m_att_axi_bvalid),
+        .m_att_axi_bready(m_att_axi_bready),
+        .m_att_axi_arid(m_att_axi_arid),
+        .m_att_axi_araddr(m_att_axi_araddr),
+        .m_att_axi_arlen(m_att_axi_arlen),
+        .m_att_axi_arsize(m_att_axi_arsize),
+        .m_att_axi_arburst(m_att_axi_arburst),
+        .m_att_axi_arlock(m_att_axi_arlock),
+        .m_att_axi_arcache(m_att_axi_arcache),
+        .m_att_axi_arprot(m_att_axi_arprot),
+        .m_att_axi_arqos(m_att_axi_arqos),
+        .m_att_axi_arregion(m_att_axi_arregion),
+        .m_att_axi_arvalid(m_att_axi_arvalid),
+        .m_att_axi_arready(m_att_axi_arready),
+        .m_att_axi_rid(m_att_axi_rid),
+        .m_att_axi_rdata(m_att_axi_rdata),
+        .m_att_axi_rresp(m_att_axi_rresp),
+        .m_att_axi_rlast(m_att_axi_rlast),
+        .m_att_axi_rvalid(m_att_axi_rvalid),
+        .m_att_axi_rready(m_att_axi_rready)
     );
 
 endmodule

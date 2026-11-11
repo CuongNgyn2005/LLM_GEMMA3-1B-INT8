@@ -4,13 +4,14 @@
  * Description : AXI4-Full top-level wrapper for the programmable-logic AI IP.
  *
  * AI_IP_top is the integration boundary that Vivado Block Design sees as the
- * custom accelerator IP.  It exposes the AXI4-Full slave interface, clock,
- * reset, user-side AXI metadata signals, and datapath sizing parameters, then
- * forwards these signals into MY_IP without adding extra behavior.
+ * custom accelerator IP. It exposes the existing AXI4-Full slave plus the
+ * independent attention DDR master (128-bit data, 40-bit address), the shared
+ * clock/reset, slave-side AXI metadata, and datapath sizing parameters. Both
+ * interfaces are forwarded into MY_IP without extra wrapper behavior.
  *
  * This module intentionally contains no register map, BRAM instance, compute
- * FSM, or arithmetic datapath.  Its contribution to the RTL system is to keep
- * the external IP interface stable while AXI protocol handling, address
+ * FSM, or arithmetic datapath. Existing slave semantics remain unchanged while
+ * the new master exposes attention DDR transactions. AXI handling, address
  * decoding, local memory storage, GEMV scheduling, and PMAU arithmetic remain
  * implemented in the lower modules.
  *
@@ -47,7 +48,7 @@ module AI_IP_top #(
     parameter integer SPU_STREAM_TEST_STALL_ENABLE = 0
 ) (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 s00_axi_aclk CLK" *)
-    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
+    (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF s00_axi:m_att_axi, ASSOCIATED_RESET s00_axi_aresetn" *)
     input  wire                                  s00_axi_aclk,
     (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 s00_axi_aresetn RST" *)
     (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
@@ -100,12 +101,91 @@ module AI_IP_top #(
     output wire                                  s00_axi_rlast,
     output wire [C_S00_AXI_RUSER_WIDTH-1:0]      s00_axi_ruser,
     output wire                                  s00_axi_rvalid,
-    input  wire                                  s00_axi_rready
+    input  wire                                  s00_axi_rready,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWID" *)
+    (* X_INTERFACE_PARAMETER = "XIL_INTERFACENAME m_att_axi, PROTOCOL AXI4, DATA_WIDTH 128, ADDR_WIDTH 40, ID_WIDTH 1, MAX_BURST_LENGTH 1, NUM_READ_OUTSTANDING 1, NUM_WRITE_OUTSTANDING 1" *)
+    output wire [0:0] m_att_axi_awid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWADDR" *)
+    output wire [39:0] m_att_axi_awaddr,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWLEN" *)
+    output wire [7:0] m_att_axi_awlen,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWSIZE" *)
+    output wire [2:0] m_att_axi_awsize,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWBURST" *)
+    output wire [1:0] m_att_axi_awburst,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWLOCK" *)
+    output wire m_att_axi_awlock,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWCACHE" *)
+    output wire [3:0] m_att_axi_awcache,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWPROT" *)
+    output wire [2:0] m_att_axi_awprot,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWQOS" *)
+    output wire [3:0] m_att_axi_awqos,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWREGION" *)
+    output wire [3:0] m_att_axi_awregion,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWVALID" *)
+    output wire m_att_axi_awvalid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi AWREADY" *)
+    input wire m_att_axi_awready,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi WDATA" *)
+    output wire [127:0] m_att_axi_wdata,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi WSTRB" *)
+    output wire [15:0] m_att_axi_wstrb,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi WLAST" *)
+    output wire m_att_axi_wlast,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi WVALID" *)
+    output wire m_att_axi_wvalid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi WREADY" *)
+    input wire m_att_axi_wready,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi BID" *)
+    input wire [0:0] m_att_axi_bid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi BRESP" *)
+    input wire [1:0] m_att_axi_bresp,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi BVALID" *)
+    input wire m_att_axi_bvalid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi BREADY" *)
+    output wire m_att_axi_bready,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARID" *)
+    output wire [0:0] m_att_axi_arid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARADDR" *)
+    output wire [39:0] m_att_axi_araddr,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARLEN" *)
+    output wire [7:0] m_att_axi_arlen,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARSIZE" *)
+    output wire [2:0] m_att_axi_arsize,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARBURST" *)
+    output wire [1:0] m_att_axi_arburst,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARLOCK" *)
+    output wire m_att_axi_arlock,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARCACHE" *)
+    output wire [3:0] m_att_axi_arcache,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARPROT" *)
+    output wire [2:0] m_att_axi_arprot,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARQOS" *)
+    output wire [3:0] m_att_axi_arqos,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARREGION" *)
+    output wire [3:0] m_att_axi_arregion,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARVALID" *)
+    output wire m_att_axi_arvalid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi ARREADY" *)
+    input wire m_att_axi_arready,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi RID" *)
+    input wire [0:0] m_att_axi_rid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi RDATA" *)
+    input wire [127:0] m_att_axi_rdata,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi RRESP" *)
+    input wire [1:0] m_att_axi_rresp,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi RLAST" *)
+    input wire m_att_axi_rlast,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi RVALID" *)
+    input wire m_att_axi_rvalid,
+    (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 m_att_axi RREADY" *)
+    output wire m_att_axi_rready
 );
 
-    // This top wrapper does not modify AXI traffic.  All AW/W/B/AR/R channels
-    // and system parameters are passed directly into MY_IP so the AXI slave
-    // protocol implementation is maintained in a single lower-level module.
+    // Both independent AXI interfaces and the system parameters pass through.
+    // Slave protocol handling remains in MY_IP; the attention master lives in
+    // Attention_AXI_Master below AXI4_Mapping/Attention_Engine.
     MY_IP #(
         .C_S00_AXI_ID_WIDTH     (C_S00_AXI_ID_WIDTH),
         .C_S00_AXI_DATA_WIDTH   (C_S00_AXI_DATA_WIDTH),
@@ -172,7 +252,46 @@ module AI_IP_top #(
         .s00_axi_rlast      (s00_axi_rlast),
         .s00_axi_ruser      (s00_axi_ruser),
         .s00_axi_rvalid     (s00_axi_rvalid),
-        .s00_axi_rready     (s00_axi_rready)
+        .s00_axi_rready     (s00_axi_rready),
+        .m_att_axi_awid(m_att_axi_awid),
+        .m_att_axi_awaddr(m_att_axi_awaddr),
+        .m_att_axi_awlen(m_att_axi_awlen),
+        .m_att_axi_awsize(m_att_axi_awsize),
+        .m_att_axi_awburst(m_att_axi_awburst),
+        .m_att_axi_awlock(m_att_axi_awlock),
+        .m_att_axi_awcache(m_att_axi_awcache),
+        .m_att_axi_awprot(m_att_axi_awprot),
+        .m_att_axi_awqos(m_att_axi_awqos),
+        .m_att_axi_awregion(m_att_axi_awregion),
+        .m_att_axi_awvalid(m_att_axi_awvalid),
+        .m_att_axi_awready(m_att_axi_awready),
+        .m_att_axi_wdata(m_att_axi_wdata),
+        .m_att_axi_wstrb(m_att_axi_wstrb),
+        .m_att_axi_wlast(m_att_axi_wlast),
+        .m_att_axi_wvalid(m_att_axi_wvalid),
+        .m_att_axi_wready(m_att_axi_wready),
+        .m_att_axi_bid(m_att_axi_bid),
+        .m_att_axi_bresp(m_att_axi_bresp),
+        .m_att_axi_bvalid(m_att_axi_bvalid),
+        .m_att_axi_bready(m_att_axi_bready),
+        .m_att_axi_arid(m_att_axi_arid),
+        .m_att_axi_araddr(m_att_axi_araddr),
+        .m_att_axi_arlen(m_att_axi_arlen),
+        .m_att_axi_arsize(m_att_axi_arsize),
+        .m_att_axi_arburst(m_att_axi_arburst),
+        .m_att_axi_arlock(m_att_axi_arlock),
+        .m_att_axi_arcache(m_att_axi_arcache),
+        .m_att_axi_arprot(m_att_axi_arprot),
+        .m_att_axi_arqos(m_att_axi_arqos),
+        .m_att_axi_arregion(m_att_axi_arregion),
+        .m_att_axi_arvalid(m_att_axi_arvalid),
+        .m_att_axi_arready(m_att_axi_arready),
+        .m_att_axi_rid(m_att_axi_rid),
+        .m_att_axi_rdata(m_att_axi_rdata),
+        .m_att_axi_rresp(m_att_axi_rresp),
+        .m_att_axi_rlast(m_att_axi_rlast),
+        .m_att_axi_rvalid(m_att_axi_rvalid),
+        .m_att_axi_rready(m_att_axi_rready)
     );
 
 endmodule
