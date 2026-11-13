@@ -530,6 +530,7 @@ module AXI4_Mapping #(
     wire [31:0] wr_addr_local = local32(map_wr_addr);
 
     reg wr_decode_en_r;
+    reg attention_wr_decode_en_r;
     reg [31:0] wr_decode_addr_r;
     reg [AXI_DATA_WIDTH-1:0] wr_decode_data_r;
     reg [(AXI_DATA_WIDTH/8)-1:0] wr_decode_strb_r;
@@ -616,6 +617,7 @@ module AXI4_Mapping #(
             cfg_stream_mode_reg <= 32'd0;
             core_completion_wait_spu_r <= 1'b0;
             wr_decode_en_r    <= 1'b0;
+            attention_wr_decode_en_r <= 1'b0;
             wr_decode_addr_r  <= 32'd0;
             wr_decode_data_r  <= {AXI_DATA_WIDTH{1'b0}};
             wr_decode_strb_r  <= {(AXI_DATA_WIDTH/8){1'b0}};
@@ -636,6 +638,10 @@ module AXI4_Mapping #(
             spu_wr_strb_r     <= {(AXI_DATA_WIDTH/8){1'b0}};
         end else begin
             wr_decode_en_r <= map_wr_en;
+            // Cat duong giai ma, giu dong bo voi dia chi/du lieu da chot.
+            attention_wr_decode_en_r <= map_wr_en &&
+                (wr_addr_local >= 32'h4000) && (wr_addr_local <= 32'h404c) &&
+                (wr_addr_local[1:0] == 0);
             if (map_wr_en) begin
                 wr_decode_addr_r <= wr_addr_local;
                 wr_decode_data_r <= map_wr_data;
@@ -1038,8 +1044,7 @@ module AXI4_Mapping #(
     // lane and four byte strobes as every existing register in this map.
     Attention_Engine u_attention (
         .clk(clk), .resetn(resetn),
-        .reg_wr_en(wr_decode_en && wr_decode_addr >= 32'h4000 &&
-                   wr_decode_addr <= 32'h404c && wr_decode_addr[1:0] == 0),
+        .reg_wr_en(attention_wr_decode_en_r),
         .reg_wr_addr(wr_decode_addr[7:0]), .reg_wr_data(wr_data32),
         .reg_wr_strb(wr_strb4), .reg_rd_addr(rd_req_addr_local[7:0]),
         .reg_rd_data(attention_reg_read_data),

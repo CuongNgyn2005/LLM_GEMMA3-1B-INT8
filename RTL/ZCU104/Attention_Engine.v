@@ -96,6 +96,7 @@ module Attention_Engine (
     reg seen_r;
     reg [1:0] update_r;
     reg [31:0] block_r, quant_index_r, amax_r, scale_r, inverse_r;
+    reg [31:0] amax_sample_r;
     reg mem_write_r;
     reg [31:0] mem_addr_r, mem_wdata_r, mem_value_r;
     reg [1:0] mem_size_r;
@@ -123,6 +124,10 @@ module Attention_Engine (
     // Head-entry states isolate the multiplier from the local array index.
     wire [31:0] output_index = head_base_r + dim_r;
     wire [31:0] quant_offset = block_r * 32 + quant_index_r;
+    // Dùng chung một cổng đọc tổ hợp cho AMAX và lượng tử hóa.
+    wire [31:0] output_read_addr = (state_r == S_QUANT_BLOCK) ? block_r * 32 :
+        ((state_r == S_AMAX) && (quant_index_r != 31)) ? quant_offset + 32'd1 : quant_offset;
+    wire [31:0] output_read_data = output_r[output_read_addr];
 
     function [31:0] merge_bytes;
         input [31:0] old_word, new_word;
@@ -327,7 +332,7 @@ module Attention_Engine (
             kv_key_product_r<=0; kv_head_index_r<=0; kv_vector_base_r<=0;
             score_r<=0; maximum_r<=0; sum_r<=0; weight_r<=0; value_r<=0;
             seen_r<=0; update_r<=UPDATE_FIRST; block_r<=0; quant_index_r<=0;
-            amax_r<=0; scale_r<=0; inverse_r<=0;
+            amax_r<=0; scale_r<=0; inverse_r<=0; amax_sample_r<=0;
             mem_write_r<=0; mem_addr_r<=0; mem_wdata_r<=0; mem_value_r<=0; mem_size_r<=0;
             fp_op_r<=0; fp_a_r<=0; fp_b_r<=0; fp_value_r<=0;
         end else begin
@@ -408,7 +413,7 @@ module Attention_Engine (
                 S_GROUP_BEGIN: begin
                     group_first_head_r<=kv_group_r*group_r;
                     group_next_r<=kv_group_r+1;
-                    key_r<=0; dim_r<=0; head_r<=kv_group_r*group_r;
+                    key_r<=0; dim_r<=0;
                     state_r<=S_MASK_REQ;
                 end
                 S_MASK_REQ: begin
@@ -427,6 +432,7 @@ module Attention_Engine (
                 // Register each operation once per visible key; K and V reuse
                 // the vector base while only the dimension index advances.
                 S_KV_HEAD: begin
+                    head_r<=group_first_head_r;
                     kv_head_index_r<=kv_key_product_r+kv_group_r;
                     state_r<=S_KV_BASE;
                 end
@@ -538,22 +544,29 @@ module Attention_Engine (
                         end else begin head_r<=head_r+1; state_r<=S_NORM_HEAD; end
                     end else begin dim_r<=dim_r+1; state_r<=S_NORM_REQ; end
                 end
-                S_QUANT_BLOCK: begin amax_r<=0; quant_index_r<=0; state_r<=S_AMAX; end
+                S_QUANT_BLOCK: begin
+                    amax_r<=0; quant_index_r<=0;
+                    // Đọc trước lane 0 để tách đường RAM khỏi so sánh AMAX.
+                    amax_sample_r<=output_read_data;
+                    state_r<=S_AMAX;
+                end
                 S_AMAX: begin
-                    if(output_r[quant_offset][30:0]>amax_r[30:0])
-                        amax_r<={1'b0,output_r[quant_offset][30:0]};
+                    if(amax_sample_r[30:0]>amax_r[30:0])
+                        amax_r<={1'b0,amax_sample_r[30:0]};
                     if(quant_index_r==31) begin
                         quant_index_r<=0;
                         // Include the final lane in the reduction before division.
-                        if((output_r[quant_offset][30:0]>amax_r[30:0] ?
-                            output_r[quant_offset][30:0] : amax_r[30:0])==0) begin
+                        if((amax_sample_r[30:0]==31'd0) && (amax_r[30:0]==31'd0)) begin
                             inverse_r<=0;
                             memory_command(1,desc_r[C_SCALE]+(block_r<<1),0,1,S_SCALE_WROTE);
                         end else floating_command(2,
-                            output_r[quant_offset][30:0]>amax_r[30:0] ?
-                            {1'b0,output_r[quant_offset][30:0]} : amax_r,
+                            amax_sample_r[30:0]>amax_r[30:0] ?
+                            {1'b0,amax_sample_r[30:0]} : amax_r,
                             32'h42fe0000,S_SCALE_GOT);
-                    end else quant_index_r<=quant_index_r+1;
+                    end else begin
+                        quant_index_r<=quant_index_r+1;
+                        amax_sample_r<=output_read_data;
+                    end
                 end
                 S_SCALE_GOT: begin
                     scale_r<=fp_value_r;
@@ -574,7 +587,7 @@ module Attention_Engine (
                 S_SCALE_WROTE: state_r<=S_QUANT_VALUE;
                 S_QUANT_VALUE: begin
                     if(inverse_r==0) memory_command(1,desc_r[C_Q8]+quant_offset,0,0,S_QUANT_WROTE);
-                    else floating_command(1,output_r[quant_offset],inverse_r,S_QUANT_MUL);
+                    else floating_command(1,output_read_data,inverse_r,S_QUANT_MUL);
                 end
                 S_QUANT_MUL: floating_command(5,fp_value_r,0,S_QUANT_INT);
                 S_QUANT_INT: begin

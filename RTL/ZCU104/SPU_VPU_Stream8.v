@@ -379,6 +379,8 @@ module SPU_VPU_Stream8 #(
             (* keep = "true" *) wire resetn_local;
             wire launch_prefetch_lane = p2_prefetch_launch &&
                                         prefetch_lane_valid_r[gi];
+            // Chon operand som; start da dang ky van giu bank dang xu ly.
+            wire use_prefetch_operands = prefetch_ready && !split_scale_enable && !accum_start_r[gi];
             // A stream soft reset aborts the complete transaction, including
             // arithmetic already accepted by a lane accumulator.  Resetting
             // only the FIFO/FSM clears lane_valid_r and can otherwise expose a
@@ -391,12 +393,12 @@ module SPU_VPU_Stream8 #(
                 .clk(clk),
                 .resetn(resetn_local),
                 .start(accum_start_r[gi] || launch_prefetch_lane),
-                .raw_in(p2_prefetch_launch ? prefetch_raw_r[gi] : raw_r[gi]),
-                .act_scale_fp16(p2_prefetch_launch ? prefetch_act_scale_r[gi] : act_scale_r[gi]),
-                .weight_scale_fp16(p2_prefetch_launch ? prefetch_weight_scale_r[gi] : weight_scale_r[gi]),
-                .row_id(p2_prefetch_launch ? prefetch_row_r[gi] : row_r[gi]),
-                .clear_accum(p2_prefetch_launch ? prefetch_clear_accum_r : clear_accum_r),
-                .last_block(p2_prefetch_launch ? prefetch_last_block_r : last_block_r),
+                .raw_in(use_prefetch_operands ? prefetch_raw_r[gi] : raw_r[gi]),
+                .act_scale_fp16(use_prefetch_operands ? prefetch_act_scale_r[gi] : act_scale_r[gi]),
+                .weight_scale_fp16(use_prefetch_operands ? prefetch_weight_scale_r[gi] : weight_scale_r[gi]),
+                .row_id(use_prefetch_operands ? prefetch_row_r[gi] : row_r[gi]),
+                .clear_accum(use_prefetch_operands ? prefetch_clear_accum_r : clear_accum_r),
+                .last_block(use_prefetch_operands ? prefetch_last_block_r : last_block_r),
                 .busy(accum_busy[gi]), .entry_done(accum_entry_done[gi]),
                 .out_valid(accum_out_valid[gi]),
                 .out_row_id(accum_out_row_bus[16*gi +: 16]),
@@ -607,21 +609,21 @@ module SPU_VPU_Stream8 #(
             if (!split_scale_enable) begin
                 case (prefetch_state_r)
                     PF_CHECK: begin
-                        if (prefetch_scale_cache_hit) begin
-                            // Registered-word hit: select the requested scale
-                            // entry without issuing a PARAM RAM command.
-                            for (i = 0; i < 8; i = i + 1) begin
-                                if (prefetch_lane_valid_r[i]) begin
-                                    prefetch_act_scale_r[i] <=
-                                        p2_scale_cache_word_r[i]
-                                            [32*prefetch_scale_lane_r[i] +: 16];
-                                    prefetch_weight_scale_r[i] <=
-                                        p2_scale_cache_word_r[i]
-                                            [32*prefetch_scale_lane_r[i]+16 +: 16];
-                                end
+                        // Nap truoc scale cache; miss se ghi de truoc PF_READY.
+                        for (i = 0; i < 8; i = i + 1) begin
+                            if (prefetch_lane_valid_r[i]) begin
+                                prefetch_act_scale_r[i] <=
+                                    p2_scale_cache_word_r[i]
+                                        [32*prefetch_scale_lane_r[i] +: 16];
+                                prefetch_weight_scale_r[i] <=
+                                    p2_scale_cache_word_r[i]
+                                        [32*prefetch_scale_lane_r[i]+16 +: 16];
                             end
+                        end
+                        if (prefetch_scale_cache_hit) begin
                             prefetch_state_r <= PF_READY;
-                        end else begin
+                        end else if (prefetch_mem_available && !((state_r == S_WAIT) && last_block_r)) begin
+                            // Cho ghi OUT cuoi nhom xong truoc khi bat dau miss.
                             // Cache miss: begin the retained registered
                             // two-port PARAM RAM prefetch sequence.
                             prefetch_req_valid_r <= 1'b1;

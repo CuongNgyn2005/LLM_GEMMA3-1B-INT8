@@ -51,6 +51,18 @@ module tb_SPU_Controller #(parameter AUTO_FINISH = 1)(output reg completed = 0);
         .mem_wstrb(mem_wstrb),
         .mem_rdata(mem_rdata)
     );
+    integer busy_state_checks = 0;
+    // Kiem tra sau NBA de so sanh cung trang thai moi tren moi canh clock.
+    always @(posedge tb_clk) begin
+        #1;
+        if ((^dut.state_r) === 1'bx ||
+            busy !== ((dut.state_r != dut.S_IDLE) &&
+                      (dut.state_r != dut.S_DONE) && (dut.state_r != dut.S_ERROR)))
+            $fatal(1, "[TB][FAIL] controller busy/state mismatch state=%0d busy=%b", dut.state_r, busy);
+        if ((!resetn || soft_reset) && busy !== 1'b0)
+            $fatal(1, "[TB][FAIL] controller busy during reset");
+        busy_state_checks = busy_state_checks + 1;
+    end
     task check;
         input condition;
         input [8*120-1:0] message;
@@ -95,10 +107,62 @@ module tb_SPU_Controller #(parameter AUTO_FINISH = 1)(output reg completed = 0);
             @(negedge tb_clk); clear_done=1;
             @(negedge tb_clk); clear_done=0; mode=cmd; len=count; start=1;
             @(negedge tb_clk); start=0;
+            check(busy && !done && !error && dut.state_r == dut.S_DECODE,"busy asserted on command start");
             t=0;
             while(!done && t<200) begin @(negedge tb_clk); t=t+1; end
             check(done,"command completion");
+            check(!busy,"busy cleared on success/decode error");
             repeat(2) @(negedge tb_clk);
+        end
+    endtask
+    task restart_terminal;
+        input expect_error;
+        integer t, writes_before;
+        begin
+            check(done && !busy && error == expect_error,"terminal state before restart");
+            writes_before = writes;
+            @(negedge tb_clk);
+            clear_done = 1; start = 1; mode = 8'h7f; len = 1;
+            @(negedge tb_clk);
+            check(busy && !done && !error && error_code == 0 && dut.state_r == dut.S_DECODE,
+                  "simultaneous clear_done/start restart wins");
+            clear_done = 0; start = 0;
+            t = 0;
+            while (!done && t < 200) begin @(negedge tb_clk); t = t + 1; end
+            check(done && !busy && !error,"restarted command completes");
+            repeat (2) @(negedge tb_clk);
+            check(writes == writes_before+1 && output_mem[0] === input_mem[0],"restart copy result");
+        end
+    endtask
+    task clear_terminal;
+        begin
+            check(done && !busy,"terminal state before clear only");
+            @(negedge tb_clk); clear_done = 1;
+            @(negedge tb_clk); clear_done = 0;
+            check(!busy && !done && !error && error_code == 0 && dut.state_r == dut.S_IDLE,
+                  "clear_done only returns idle");
+        end
+    endtask
+    task abort_active_copy;
+        integer t, writes_before;
+        begin
+            @(negedge tb_clk); mode = 8'h7f; len = 8; start = 1;
+            @(negedge tb_clk); start = 0;
+            check(busy && !done,"busy before active abort");
+            t = 0;
+            while (dut.state_r != dut.S_COPY_WAIT && t < 200) begin
+                @(negedge tb_clk); t = t + 1;
+            end
+            check(t < 200 && busy,"active copy state reached before abort");
+            writes_before = writes;
+            soft_reset = 1;
+            @(negedge tb_clk); soft_reset = 0;
+            check(!busy && !done && !error && dut.state_r == dut.S_IDLE,"active soft reset returns idle");
+            repeat (40) begin
+                @(negedge tb_clk);
+                check(!busy && !done && !error && !mem_en && !mem_we && writes == writes_before,
+                      "no stale completion or memory command after abort");
+            end
         end
     endtask
     initial begin
@@ -113,6 +177,16 @@ module tb_SPU_Controller #(parameter AUTO_FINISH = 1)(output reg completed = 0);
         @(negedge tb_clk); soft_reset=1;
         @(negedge tb_clk); soft_reset=0;
         check(!busy && !done && !error,"soft reset clears status");
+        command(8'h7f,1);
+        restart_terminal(0);
+        clear_terminal();
+        command(8'hff,1);
+        restart_terminal(1);
+        command(8'hff,1);
+        clear_terminal();
+        abort_active_copy();
+        check(busy_state_checks > 0,"busy invariant monitor exercised");
+        $display("[METRICS] controller_busy_state_checks=%0d",busy_state_checks);
         completed = 1;
         $display("[TB][PASS] tb_SPU_Controller checks=%0d", checks);
         if (AUTO_FINISH) $finish;

@@ -1,6 +1,10 @@
 `timescale 1ns/1ps
 
 module tb_VPU8_burst;
+    initial begin
+        #2000000;
+        $fatal(1, "FAIL tb_VPU8_burst watchdog timeout");
+    end
     reg clk = 1'b0;
     always #5 clk = ~clk;
 
@@ -9,7 +13,7 @@ module tb_VPU8_burst;
     reg ctrl_clear_done = 1'b0;
     reg [15:0] cfg_rows = 16'd8;
     reg [15:0] cfg_cols = 16'd320;
-    reg [15:0] cfg_col_beats = 16'd20; // 10 Q8 blocks -> bursts 7 + 3
+    reg [15:0] cfg_col_beats = 16'd20; // 10 Q8 blocks -> bursts 8 + 2
     reg [15:0] cfg_scale = 16'h3c00;
     reg [4:0] compute_mode = 5'b10001; // x8 P2 raw group mode
     reg cfg_wr_bank = 1'b0;
@@ -151,6 +155,7 @@ module tb_VPU8_burst;
         reg [255:0] held_data;
         reg [127:0] held_row;
         reg [255:0] held_index;
+        reg [303:0] held_metadata;
         begin
             // spu_raw_valid can remain asserted while the existing serialized
             // Result BRAM writer finishes the previously accepted bundle. Such
@@ -161,24 +166,24 @@ module tb_VPU8_burst;
 
             if (spu_raw_lane_valid !== 8'hff) begin
                 $display("FAIL block=%0d lane_valid=%02x", expected_block, spu_raw_lane_valid);
-                $fatal(1);
+                $fatal(1, "FAIL tb_VPU8_burst lane mask");
             end
             if (spu_raw_block !== expected_block[15:0] || spu_raw_group_blocks !== 16'd10) begin
                 $display("FAIL metadata expected_block=%0d got_block=%0d groups=%0d",
                          expected_block, spu_raw_block, spu_raw_group_blocks);
-                $fatal(1);
+                $fatal(1, "FAIL tb_VPU8_burst block/group metadata");
             end
             if (spu_raw_clear_accum !== (expected_block == 0)) begin
                 $display("FAIL clear flag block=%0d clear=%b", expected_block, spu_raw_clear_accum);
-                $fatal(1);
+                $fatal(1, "FAIL tb_VPU8_burst clear flag");
             end
             if (spu_raw_last_block !== (expected_block == 9)) begin
                 $display("FAIL last flag block=%0d last=%b", expected_block, spu_raw_last_block);
-                $fatal(1);
+                $fatal(1, "FAIL tb_VPU8_burst last flag");
             end
             if (spu_raw_job_id !== cfg_job_id || spu_raw_bank !== 1'b0) begin
                 $display("FAIL job/bank block=%0d job=%08x bank=%b", expected_block, spu_raw_job_id, spu_raw_bank);
-                $fatal(1);
+                $fatal(1, "FAIL tb_VPU8_burst job/bank");
             end
 
             for (i = 0; i < 8; i = i + 1) begin
@@ -187,17 +192,17 @@ module tb_VPU8_burst;
                 if ($signed(spu_raw_lane_data[32*i +: 32]) !== expected_raw) begin
                     $display("FAIL block=%0d lane=%0d raw=%0d expected=%0d",
                              expected_block, i, $signed(spu_raw_lane_data[32*i +: 32]), expected_raw);
-                    $fatal(1);
+                    $fatal(1, "FAIL tb_VPU8_burst lane raw data");
                 end
                 if (spu_raw_lane_row[16*i +: 16] !== i[15:0]) begin
                     $display("FAIL block=%0d lane=%0d row=%0d", expected_block, i,
                              spu_raw_lane_row[16*i +: 16]);
-                    $fatal(1);
+                    $fatal(1, "FAIL tb_VPU8_burst lane row");
                 end
                 if (spu_raw_lane_scale_index[32*i +: 32] !== expected_scale_index) begin
                     $display("FAIL block=%0d lane=%0d scale_index=%0d expected=%0d",
                              expected_block, i, spu_raw_lane_scale_index[32*i +: 32], expected_scale_index);
-                    $fatal(1);
+                    $fatal(1, "FAIL tb_VPU8_burst lane scale index");
                 end
             end
 
@@ -205,12 +210,28 @@ module tb_VPU8_burst;
             held_data = spu_raw_lane_data;
             held_row = spu_raw_lane_row;
             held_index = spu_raw_lane_scale_index;
+            held_metadata = {spu_raw_lane_valid, spu_raw_done,
+                spu_raw_data, spu_raw_row, spu_raw_block, spu_raw_group_blocks,
+                spu_raw_last_block, spu_raw_clear_accum, spu_raw_job_id,
+                spu_raw_bank, spu_raw_scale_index, spu_raw_pair_valid,
+                spu_raw_pair_data, spu_raw_pair_row, spu_raw_pair_block,
+                spu_raw_pair_group_blocks, spu_raw_pair_last_block,
+                spu_raw_pair_clear_accum, spu_raw_pair_job_id,
+                spu_raw_pair_bank, spu_raw_pair_scale_index};
             for (hold_cycle = 0; hold_cycle < 3; hold_cycle = hold_cycle + 1) begin
                 @(posedge clk); #1;
                 if (!spu_raw_valid || spu_raw_lane_data !== held_data ||
-                    spu_raw_lane_row !== held_row || spu_raw_lane_scale_index !== held_index) begin
+                    spu_raw_lane_row !== held_row || spu_raw_lane_scale_index !== held_index ||
+                    {spu_raw_lane_valid, spu_raw_done,
+                        spu_raw_data, spu_raw_row, spu_raw_block, spu_raw_group_blocks,
+                        spu_raw_last_block, spu_raw_clear_accum, spu_raw_job_id,
+                        spu_raw_bank, spu_raw_scale_index, spu_raw_pair_valid,
+                        spu_raw_pair_data, spu_raw_pair_row, spu_raw_pair_block,
+                        spu_raw_pair_group_blocks, spu_raw_pair_last_block,
+                        spu_raw_pair_clear_accum, spu_raw_pair_job_id,
+                        spu_raw_pair_bank, spu_raw_pair_scale_index} !== held_metadata) begin
                     $display("FAIL block=%0d changed under raw backpressure", expected_block);
-                    $fatal(1);
+                    $fatal(1, "FAIL tb_VPU8_burst raw backpressure stability");
                 end
             end
             @(negedge clk); spu_raw_ready = 1'b1;
@@ -220,12 +241,24 @@ module tb_VPU8_burst;
 
     integer block;
     integer timeout;
-    reg saw_seven_block_issue = 1'b0;
+    integer burst_end_count = 0;
 
+    // Lay mau truoc NBA: bo dem hien tai chua tinh block vua ket thuc.
     always @(posedge clk) begin
-        if (resetn && dut.issue_block_idx_r == 16'd6 &&
-            dut.block_idx_r == 16'd0 && dut.raw_burst_blocks_r == 3'd7)
-            saw_seven_block_issue <= 1'b1;
+        if (!resetn) begin
+            burst_end_count <= 0;
+        end else if (dut.p2_burst_end_fire) begin
+            case (burst_end_count)
+                0: if (dut.block_idx_r !== 16'd0 || dut.issue_block_idx_r !== 16'd7 ||
+                       (dut.raw_burst_blocks_r + 4'd1) !== 4'd8)
+                    $fatal(1, "FAIL first burst expected base=0 last=7 count=8");
+                1: if (dut.block_idx_r !== 16'd8 || dut.issue_block_idx_r !== 16'd9 ||
+                       (dut.raw_burst_blocks_r + 4'd1) !== 4'd2)
+                    $fatal(1, "FAIL second burst expected base=8 last=9 count=2");
+                default: $fatal(1, "FAIL unexpected third burst-end event");
+            endcase
+            burst_end_count <= burst_end_count + 1;
+        end
     end
 
     initial begin
@@ -249,18 +282,18 @@ module tb_VPU8_burst;
         end
         if (!done || error) begin
             $display("FAIL burst run done=%b error=%b timeout=%0d", done, error, timeout);
-            $fatal(1);
+            $fatal(1, "FAIL tb_VPU8_burst run completion");
         end
-        if (!saw_seven_block_issue) begin
-            $display("FAIL scheduler never accumulated a seven-block issue burst");
-            $fatal(1);
+        if (burst_end_count != 2) begin
+            $display("FAIL expected two burst-end events got=%0d", burst_end_count);
+            $fatal(1, "FAIL tb_VPU8_burst burst-end count");
         end
         if (done_job_id !== cfg_job_id) begin
             $display("FAIL done_job_id=%08x expected=%08x", done_job_id, cfg_job_id);
-            $fatal(1);
+            $fatal(1, "FAIL tb_VPU8_burst done job ID");
         end
 
-        $display("PASS tb_VPU8_burst blocks=10 burst_pattern=7+3 ordered=1");
+        $display("PASS tb_VPU8_burst blocks=10 burst_pattern=8+2 ordered=1");
         $finish;
     end
 endmodule

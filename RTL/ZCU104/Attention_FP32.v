@@ -26,7 +26,7 @@
  * exp(-104)<2^-150, the nearest-even zero threshold. No normal output clamps.
  *
  * Latency after acceptance: 9 cycles for add, 7 for multiply/FP16 conversion,
- * 58 for nonzero division, <=195 for exp, and 2 for integer conversion/early
+ * 58 for nonzero division, <=195 for exp, 4 for integer conversion, and 2 for early
  * exits. Exact addition and packing use registered stages without changing
  * arithmetic widths or rounding. Physical timing still requires verification.
  */
@@ -44,18 +44,19 @@ module Attention_FP32 (
     output reg  [31:0] result,
     output reg         error
 );
-    localparam [3:0] S_IDLE = 4'd0, S_EXEC = 4'd1, S_DIV = 4'd2,
-                     S_EXP_RANGE = 4'd3, S_EXP_POLY = 4'd4,
-                     S_EXP_PACK = 4'd5, S_DONE = 4'd6,
-                     S_ADD_SELECT = 4'd7, S_ADD_SUM = 4'd8,
-                     S_PACK_META = 4'd9, S_PACK_SHIFT = 4'd10,
-                     S_PACK_ROUND = 4'd11, S_PACK_ENCODE = 4'd12,
-                     S_EXP_ROUND = 4'd13, S_EXP_UPDATE = 4'd14,
-                     S_PACK_EXP_META = 4'd15;
+    localparam [4:0] S_IDLE = 5'd0, S_EXEC = 5'd1, S_DIV = 5'd2,
+                     S_EXP_RANGE = 5'd3, S_EXP_POLY = 5'd4,
+                     S_EXP_PACK = 5'd5, S_DONE = 5'd6,
+                     S_ADD_SELECT = 5'd7, S_ADD_SUM = 5'd8,
+                     S_PACK_META = 5'd9, S_PACK_SHIFT = 5'd10,
+                     S_PACK_ROUND = 5'd11, S_PACK_ENCODE = 5'd12,
+                     S_EXP_ROUND = 5'd13, S_EXP_UPDATE = 5'd14,
+                     S_PACK_EXP_META = 5'd15,
+                     S_INT_ROUND = 5'd16, S_INT_ENCODE = 5'd17;
     localparam [55:0] LN2_Q48 = 56'd195103586505167;
     localparam [48:0] ONE_Q48 = 49'd281474976710656;
 
-    reg [3:0] state_r;
+    reg [4:0] state_r;
     reg [2:0] op_r;
     reg [31:0] a_r, b_r;
     reg [31:0] pending_result_r;
@@ -66,6 +67,7 @@ module Attention_FP32 (
     reg [5:0] div_count_r;
     reg signed [31:0] div_exponent_r;
     reg signed [31:0] norm_exp_a_r, norm_exp_b_r;
+    reg [4:0] norm_shift_a_r, norm_shift_b_r;
     reg div_sign_r;
     reg [55:0] exp_remainder_r;
     reg [7:0] exp_scale_r;
@@ -82,11 +84,16 @@ module Attention_FP32 (
     reg [50:0] div_quotient_next;
 
     reg [23:0] sig_a, sig_b, norm_a, norm_b;
-    integer field_a, field_b, norm_exp_a, norm_exp_b;
+    reg [4:0] norm_shift_a, norm_shift_b;
+    integer field_a, field_b;
     integer i, exp_shift;
     reg [47:0] exact_product;
     reg [55:0] exp_input_q48;
-    reg [32:0] simple_result;
+    reg [319:0] int_shifted_r, int_rounded_r;
+    reg int_guard_r, int_sticky_r, int_sign_r;
+    reg [319:0] int_magnitude, int_shifted;
+    reg int_guard, int_sticky;
+    integer int_unit_exp, int_shift_count, int_j;
     integer pack_top, pack_j, pack_frac_bits, pack_min_exp, pack_max_exp, pack_bias;
     integer pack_value_exp, pack_shift_count, pack_normal_exp, pack_encoded_exp;
     reg [319:0] pack_shifted, pack_normalized;
@@ -141,35 +148,6 @@ module Attention_FP32 (
             pack_encoded_result = {1'b0, pack_sign_r, pack_encoded_exp[7:0], pack_normalized[22:0]};
     end
 
-    function [32:0] round_integer;
-        input sign_bit;
-        input [23:0] significand;
-        input integer unit_exp;
-        reg [319:0] magnitude, rounded;
-        reg guard_bit, sticky_bit;
-        integer shift_count, j;
-        begin
-            magnitude = {296'd0, significand};
-            guard_bit = 1'b0;
-            sticky_bit = 1'b0;
-            shift_count = -unit_exp;
-            if (unit_exp >= 0) rounded = magnitude << unit_exp;
-            else begin
-                rounded = magnitude >> shift_count;
-                if (shift_count <= 320) guard_bit = magnitude[shift_count-1];
-                for (j = 0; j < 320; j = j + 1)
-                    if (j < shift_count-1) sticky_bit = sticky_bit | magnitude[j];
-                if (guard_bit && (sticky_bit || rounded[0]))
-                    rounded = rounded + 320'd1;
-            end
-            if ((!sign_bit && (rounded > 320'd2147483647)) ||
-                (sign_bit && (rounded > 320'd2147483648)))
-                round_integer = {1'b1, 32'd0};
-            else
-                round_integer = {1'b0, (sign_bit ? (~rounded[31:0] + 32'd1) : rounded[31:0])};
-        end
-    endfunction
-
     function [48:0] exp_coefficient;
         input [3:0] index;
         begin
@@ -199,25 +177,33 @@ module Attention_FP32 (
         exact_product = sig_a * sig_b;
         norm_a = sig_a;
         norm_b = sig_b;
-        norm_exp_a = field_a - 127;
-        norm_exp_b = field_b - 127;
+        norm_shift_a = 5'd0;
+        norm_shift_b = 5'd0;
         for (i = 0; i < 23; i = i + 1) begin
             if (!norm_a[23]) begin
                 norm_a = norm_a << 1;
-                norm_exp_a = norm_exp_a - 1;
+                norm_shift_a = norm_shift_a + 5'd1;
             end
             if (!norm_b[23]) begin
                 norm_b = norm_b << 1;
-                norm_exp_b = norm_exp_b - 1;
+                norm_shift_b = norm_shift_b + 5'd1;
             end
         end
         exp_shift = field_a - 102;
         if (exp_shift >= 0) exp_input_q48 = {32'd0, sig_a} << exp_shift;
         else exp_input_q48 = {32'd0, sig_a} >> (-exp_shift);
-        case (op_r)
-            3'd5: simple_result = round_integer(a_r[31], sig_a, field_a-150);
-            default: simple_result = {1'b1, 32'd0};
-        endcase
+        int_magnitude = {296'd0, sig_a};
+        int_guard = 1'b0;
+        int_sticky = 1'b0;
+        int_unit_exp = field_a-150;
+        int_shift_count = -int_unit_exp;
+        if (int_unit_exp >= 0) int_shifted = int_magnitude << int_unit_exp;
+        else begin
+            int_shifted = int_magnitude >> int_shift_count;
+            if (int_shift_count <= 320) int_guard = int_magnitude[int_shift_count-1];
+            for (int_j = 0; int_j < 320; int_j = int_j + 1)
+                if (int_j < int_shift_count-1) int_sticky = int_sticky | int_magnitude[int_j];
+        end
         div_remainder_next = {remainder_r[23:0], dividend_r[50]};
         div_quotient_next = {quotient_r[49:0], 1'b0};
         if (div_remainder_next >= {1'b0, denominator_r}) begin
@@ -245,6 +231,8 @@ module Attention_FP32 (
             div_exponent_r <= 0;
             norm_exp_a_r <= 0;
             norm_exp_b_r <= 0;
+            norm_shift_a_r <= 5'd0;
+            norm_shift_b_r <= 5'd0;
             div_sign_r <= 1'b0;
             exp_remainder_r <= 56'd0;
             exp_scale_r <= 8'd0;
@@ -268,6 +256,11 @@ module Attention_FP32 (
             pack_top_r <= -1;
             pack_value_exp_r <= 0;
             pack_shift_count_r <= 0;
+            int_shifted_r <= 320'd0;
+            int_rounded_r <= 320'd0;
+            int_guard_r <= 1'b0;
+            int_sticky_r <= 1'b0;
+            int_sign_r <= 1'b0;
         end else begin
             done <= 1'b0;
             case (state_r)
@@ -280,6 +273,19 @@ module Attention_FP32 (
                     state_r <= S_EXEC;
                 end
                 S_EXEC: begin
+                    // Nap thanh ghi chia doc lap; chi phep chia hop le vao S_DIV.
+                    if (op_r == 3'd2) begin
+                        dividend_r <= {norm_a, 27'd0};
+                        denominator_r <= norm_b;
+                        quotient_r <= 51'd0;
+                        remainder_r <= 25'd0;
+                        div_count_r <= 6'd0;
+                        norm_exp_a_r <= field_a - 127;
+                        norm_exp_b_r <= field_b - 127;
+                        norm_shift_a_r <= norm_shift_a;
+                        norm_shift_b_r <= norm_shift_b;
+                        div_sign_r <= a_r[31] ^ b_r[31];
+                    end
                     if ((a_r[30:23] == 8'hff) ||
                         ((op_r <= 3'd2) && (b_r[30:23] == 8'hff)) || (op_r >= 3'd6)) begin
                         pending_result_r <= 32'd0;
@@ -294,14 +300,6 @@ module Attention_FP32 (
                             pending_result_r <= {a_r[31] ^ b_r[31], 31'd0};
                             state_r <= S_DONE;
                         end else begin
-                            dividend_r <= {norm_a, 27'd0};
-                            denominator_r <= norm_b;
-                            quotient_r <= 51'd0;
-                            remainder_r <= 25'd0;
-                            div_count_r <= 6'd0;
-                            norm_exp_a_r <= norm_exp_a;
-                            norm_exp_b_r <= norm_exp_b;
-                            div_sign_r <= a_r[31] ^ b_r[31];
                             state_r <= S_DIV;
                         end
                     end else if (op_r == 3'd3) begin
@@ -334,13 +332,37 @@ module Attention_FP32 (
                         pack_half_r <= 1'b1;
                         state_r <= S_PACK_META;
                     end else begin
-                        {pending_error_r, pending_result_r} <= simple_result;
-                        state_r <= S_DONE;
+                        int_shifted_r <= int_shifted;
+                        int_guard_r <= int_guard;
+                        int_sticky_r <= int_sticky;
+                        int_sign_r <= a_r[31];
+                        state_r <= S_INT_ROUND;
                     end
                 end
+                S_INT_ROUND: begin
+                    int_rounded_r <= int_shifted_r +
+                        ((int_guard_r && (int_sticky_r || int_shifted_r[0])) ? 320'd1 : 320'd0);
+                    state_r <= S_INT_ENCODE;
+                end
+                S_INT_ENCODE: begin
+                    if ((!int_sign_r && (int_rounded_r > 320'd2147483647)) ||
+                        (int_sign_r && (int_rounded_r > 320'd2147483648))) begin
+                        pending_error_r <= 1'b1;
+                        pending_result_r <= 32'd0;
+                    end else begin
+                        pending_error_r <= 1'b0;
+                        pending_result_r <= int_sign_r ? (~int_rounded_r[31:0] + 32'd1) : int_rounded_r[31:0];
+                    end
+                    state_r <= S_DONE;
+                end
                 S_DIV: begin
-                    if (div_count_r == 6'd0)
-                        div_exponent_r <= norm_exp_a_r - norm_exp_b_r - 28;
+                    // Tách hiệu chỉnh số mũ qua hai chu kỳ chia sẵn có.
+                    if (div_count_r == 6'd0) begin
+                        norm_exp_a_r <= norm_exp_a_r - $signed({27'd0, norm_shift_a_r});
+                        norm_exp_b_r <= norm_exp_b_r - $signed({27'd0, norm_shift_b_r});
+                    end
+                    if (div_count_r == 6'd1)
+                        div_exponent_r <= norm_exp_a_r - norm_exp_b_r - 32'sd28;
                     dividend_r <= {dividend_r[49:0], 1'b0};
                     remainder_r <= div_remainder_next;
                     quotient_r <= div_quotient_next;

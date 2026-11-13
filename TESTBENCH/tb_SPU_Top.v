@@ -86,6 +86,20 @@ module tb_SPU_Top #(parameter AUTO_FINISH = 1)(output reg completed = 0);
     wire                             mm_rd_valid;
     wire                             mm_rd_error;
 
+    integer busy_state_checks = 0;
+    // Kiem tra ca reset, loi runtime va moi che do qua controller that.
+    always @(posedge clk) begin
+        #1;
+        if ((^dut.u_spu_controller.state_r) === 1'bx ||
+            spu_busy !== ((dut.u_spu_controller.state_r != dut.u_spu_controller.S_IDLE) &&
+                          (dut.u_spu_controller.state_r != dut.u_spu_controller.S_DONE) &&
+                          (dut.u_spu_controller.state_r != dut.u_spu_controller.S_ERROR)))
+            $fatal(1, "[TB][FAIL] SPU_Top busy/state mismatch state=%0d busy=%b",
+                   dut.u_spu_controller.state_r, spu_busy);
+        if ((!resetn || spu_soft_reset) && spu_busy !== 1'b0)
+            $fatal(1, "[TB][FAIL] SPU_Top busy during reset");
+        busy_state_checks = busy_state_checks + 1;
+    end
     integer pass_count;
     integer fail_count;
     integer timeout;
@@ -1647,6 +1661,9 @@ module tb_SPU_Top #(parameter AUTO_FINISH = 1)(output reg completed = 0);
         run_rope_case();
         run_softmax_case();
 
+        if (busy_state_checks == 0)
+            $fatal(1, "[TB][FAIL] SPU_Top busy invariant monitor not exercised");
+        $display("[METRICS] spu_top_busy_state_checks=%0d",busy_state_checks);
         if (fail_count == 0) begin
             $display("[TB][PASS] SPU_Top tests passed pass_count=%0d", pass_count);
         end else begin

@@ -127,6 +127,8 @@ module SPU_Controller #(
     localparam integer Q8_OUTPUT_WORDS      = 2;
 
     reg [5:0]  state_r;
+    // Busy cap nhat cung canh chuyen trang thai, khong tre mot chu ky.
+    reg busy_r;
     reg [7:0]  mode_r;
     reg [31:0] len_r;
     reg [31:0] word_idx_r;
@@ -202,7 +204,7 @@ module SPU_Controller #(
         (state_r == S_SOFT_SCORE_START) ||
         (state_r == S_SOFT_NORM_START);
 
-    assign busy = (state_r != S_IDLE) && (state_r != S_DONE) && (state_r != S_ERROR);
+    assign busy = busy_r;
 
     SPU_Quantize_Q8_0 u_quantize_q8_0 (
         .clk        (clk),
@@ -401,12 +403,14 @@ module SPU_Controller #(
             softmax_sum_r <= 64'd0;
             softmax_op_r <= 2'd0;
             state_r <= S_DECODE;
+            busy_r <= 1'b1;
         end
     endtask
 
     always @(posedge clk) begin
         if (!resetn) begin
             state_r        <= S_IDLE;
+            busy_r <= 1'b0;
             mode_r         <= 8'd0;
             len_r          <= 32'd0;
             done           <= 1'b0;
@@ -449,6 +453,7 @@ module SPU_Controller #(
 
             if (soft_reset) begin
                 state_r    <= S_IDLE;
+                busy_r <= 1'b0;
                 done       <= 1'b0;
                 error      <= 1'b0;
                 error_code <= ERR_NONE;
@@ -459,6 +464,7 @@ module SPU_Controller #(
                 done       <= 1'b0;
                 error      <= 1'b0;
                 error_code <= ERR_NONE;
+                busy_r <= 1'b0;
                 if (state_r != S_IDLE)
                     state_r <= S_IDLE;
             end
@@ -476,11 +482,13 @@ module SPU_Controller #(
                             error_code <= ERR_BAD_LENGTH;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else if (len_r > WORD_DEPTH) begin
                             error <= 1'b1;
                             error_code <= ERR_RANGE;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else begin
                             state_r <= S_COPY_READ;
                         end
@@ -490,6 +498,7 @@ module SPU_Controller #(
                             error_code <= ERR_BAD_LENGTH;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else if ((ceil_div32(len_r) * Q8_INPUT_WORDS > WORD_DEPTH) ||
                                      (ceil_div32(len_r) * Q8_OUTPUT_WORDS > WORD_DEPTH) ||
                                      (ceil_div32(len_r) > WORD_DEPTH)) begin
@@ -497,6 +506,7 @@ module SPU_Controller #(
                             error_code <= ERR_RANGE;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else begin
                             state_r <= S_Q_READ;
                         end
@@ -506,11 +516,13 @@ module SPU_Controller #(
                             error_code <= ERR_BAD_LENGTH;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else if (len_r > WORD_DEPTH) begin
                             error <= 1'b1;
                             error_code <= ERR_RANGE;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else begin
                             scale_out_count_r <= 32'd0;
                             state_r <= S_SA_READ;
@@ -524,12 +536,14 @@ module SPU_Controller #(
                             error_code <= ERR_BAD_LENGTH;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else if ((ceil_div8(len_r) > WORD_DEPTH) ||
                                      ((mode_r == SPU_MODE_ROPE) && len_r[0])) begin
                             error <= 1'b1;
                             error_code <= ERR_RANGE;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else begin
                             word_count_r <= ceil_div8(len_r);
                             word_idx_r <= 32'd0;
@@ -549,6 +563,7 @@ module SPU_Controller #(
                         error_code <= ERR_BAD_MODE;
                         done <= 1'b1;
                         state_r <= S_ERROR;
+                        busy_r <= 1'b0;
                     end
                 end
 
@@ -574,6 +589,7 @@ module SPU_Controller #(
                     if (word_idx_r + 32'd1 >= len_r) begin
                         done    <= 1'b1;
                         state_r <= S_DONE;
+                        busy_r <= 1'b0;
                     end else begin
                         word_idx_r <= word_idx_r + 32'd1;
                         state_r    <= S_COPY_READ;
@@ -662,6 +678,7 @@ module SPU_Controller #(
                     if (block_idx_r + 32'd1 >= block_count_r) begin
                         done    <= 1'b1;
                         state_r <= S_DONE;
+                        busy_r <= 1'b0;
                     end else begin
                         block_idx_r    <= block_idx_r + 32'd1;
                         q_word_idx_r   <= 2'd0;
@@ -699,6 +716,7 @@ module SPU_Controller #(
                                           ERR_BAD_SCALE : ERR_RANGE;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else if (scale_accum_out_valid) begin
                             scale_out_row_r <= scale_accum_out_row_id;
                             scale_out_accum_r <= scale_accum_out_accum_q16;
@@ -740,6 +758,7 @@ module SPU_Controller #(
                     mem_wstrb        <= 16'h000f;
                     done             <= 1'b1;
                     state_r          <= S_DONE;
+                    busy_r <= 1'b0;
                 end
 
                 S_VEC_READ_IN: begin
@@ -798,6 +817,7 @@ module SPU_Controller #(
                     if (word_idx_r + 32'd1 >= word_count_r) begin
                         done <= 1'b1;
                         state_r <= S_DONE;
+                        busy_r <= 1'b0;
                     end else begin
                         word_idx_r <= word_idx_r + 32'd1;
                         state_r <= S_VEC_READ_IN;
@@ -850,6 +870,7 @@ module SPU_Controller #(
                             error_code <= ERR_RANGE;
                             done <= 1'b1;
                             state_r <= S_ERROR;
+                            busy_r <= 1'b0;
                         end else begin
                             rms_inv_q15_r <= rms_inv_value_q15;
                             word_idx_r <= 32'd0;
@@ -983,6 +1004,7 @@ module SPU_Controller #(
                     if (word_idx_r + 32'd1 >= word_count_r) begin
                         done <= 1'b1;
                         state_r <= S_DONE;
+                        busy_r <= 1'b0;
                     end else begin
                         word_idx_r <= word_idx_r + 32'd1;
                         state_r <= S_SOFT_NORM_READ;
@@ -1001,6 +1023,7 @@ module SPU_Controller #(
 
                 default: begin
                     state_r <= S_IDLE;
+                    busy_r <= 1'b0;
                 end
             endcase
             end

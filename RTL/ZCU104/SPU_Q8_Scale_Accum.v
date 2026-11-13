@@ -63,6 +63,8 @@ module SPU_Q8_Scale_Accum #(
     localparam [3:0] ERR_ROW_RANGE = 4'd2;
 
     reg [2:0] state_r;
+    reg busy_r;
+    reg accepted_start_w;
 
     reg signed [31:0] raw_r;
     reg [ROW_ID_WIDTH-1:0] row_id_r;
@@ -136,17 +138,25 @@ module SPU_Q8_Scale_Accum #(
     wire signed [ACC_WIDTH-1:0] accum_next_w =
         accum_prev_r + contribution_shifted_q16_w;
 
-    assign busy = (state_r != S_IDLE);
+    assign busy = busy_r;
+
+    always @* begin
+        accepted_start_w = 1'b0;
+        case (state_r)
+            S_IDLE: if (start) accepted_start_w = 1'b1;
+            S_ACCUM: begin
+                if (last_block_r) accepted_start_w = 1'b0;
+                else if (start) accepted_start_w = 1'b1;
+            end
+            default: accepted_start_w = 1'b0;
+        endcase
+    end
 
     task capture_valid_start;
         begin
             raw_r <= raw_in;
             row_id_r <= row_id;
             last_block_r <= last_block;
-            product_scale_sig_r <= start_product_scale_sig_w;
-            product_scale_shift_r <= start_product_scale_shift_w;
-            accum_prev_r <= clear_accum ?
-                            {ACC_WIDTH{1'b0}} : accum_mem[row_id];
             pending_error_r <= 1'b0;
             error <= 1'b0;
             error_code <= ERR_NONE;
@@ -157,6 +167,7 @@ module SPU_Q8_Scale_Accum #(
     always @(posedge clk) begin
         if (!resetn) begin
             state_r <= S_IDLE;
+            busy_r <= 1'b0;
             raw_r <= 32'sd0;
             row_id_r <= {ROW_ID_WIDTH{1'b0}};
             last_block_r <= 1'b0;
@@ -175,6 +186,28 @@ module SPU_Q8_Scale_Accum #(
         end else begin
             entry_done <= 1'b0;
             out_valid <= 1'b0;
+
+            // Chot busy theo trang thai ke tiep, khong them chu ky tre.
+            case (state_r)
+                S_IDLE, S_ACCUM: busy_r <= accepted_start_w;
+                S_PRODUCT_MUL, S_PRODUCT_ALIGN, S_RAW_MUL: busy_r <= 1'b1;
+                default: busy_r <= 1'b0;
+            endcase
+
+            // Chot toan hang truoc kiem tra; pending_error bo qua muc loi.
+            if (accepted_start_w) begin
+                product_scale_sig_r <= start_product_scale_sig_w;
+                product_scale_shift_r <= start_product_scale_shift_w;
+                if (row_id < MAX_ROWS) begin
+                    if (clear_accum)
+                        accum_prev_r <= {ACC_WIDTH{1'b0}};
+                    else if (state_r == S_ACCUM && !pending_error_r &&
+                             row_id == row_id_r)
+                        accum_prev_r <= accum_next_w;
+                    else
+                        accum_prev_r <= accum_mem[row_id];
+                end
+            end
 
             case (state_r)
                 S_IDLE: begin
@@ -276,12 +309,6 @@ module SPU_Q8_Scale_Accum #(
                                 raw_r <= raw_in;
                                 row_id_r <= row_id;
                                 last_block_r <= last_block;
-                                product_scale_sig_r <= start_product_scale_sig_w;
-                                product_scale_shift_r <= start_product_scale_shift_w;
-                                accum_prev_r <= clear_accum ?
-                                                {ACC_WIDTH{1'b0}} :
-                                                ((row_id == row_id_r) ? accum_next_w :
-                                                                        accum_mem[row_id]);
                                 pending_error_r <= 1'b0;
                                 error <= 1'b0;
                                 error_code <= ERR_NONE;

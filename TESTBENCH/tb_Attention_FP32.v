@@ -111,7 +111,7 @@ module tb_Attention_FP32 #(parameter AUTO_FINISH = 1)(output reg completed = 0);
     // start must be ignored, and synchronous reset must discard that boundary's
     // data before it can publish. Arithmetic expectations remain independent.
     task probe_stage;
-        input [3:0] stage;
+        input [4:0] stage;
         input [2:0] operation;
         input [31:0] operand_a, operand_b, expected;
         integer timeout, pass;
@@ -615,8 +615,8 @@ run_case(0, 32'h64776947, 32'h4b7d0064, 32'h64776947, 0);
         reset_dut();
         run_case(3, 32'hbf800000, 0, 32'h3ebc5ab2, 0);
 
-        // Exact acceptance-to-publication timing, including unchanged early
-        // exits/integer conversion and the longest supported exp reduction.
+        // Exact acceptance-to-publication timing: finite integer conversion
+        // takes 4 cycles; early exits stay at 2. Include the longest exp reduction.
         run_timed_case(0, 32'h3f800000, 32'h40000000, 32'h40400000, 0, 9);
         run_timed_case(0, 32'h80000000, 32'h80000000, 32'h80000000, 0, 9);
         run_timed_case(0, 32'hbf800000, 32'h3f800000, 0, 0, 9);
@@ -625,7 +625,7 @@ run_case(0, 32'h64776947, 32'h4b7d0064, 32'h64776947, 0);
         run_timed_case(2, 32'h3f800000, 32'h40400000, 32'h3eaaaaab, 0, 58);
         run_timed_case(2, 0, 32'hbf800000, 32'h80000000, 0, 2);
         run_timed_case(2, 32'h3f800000, 0, 0, 1, 2);
-        run_timed_case(5, 32'h3fc00000, 0, 2, 0, 2);
+        run_timed_case(5, 32'h3fc00000, 0, 2, 0, 4);
         run_timed_case(0, 32'h7f800000, 0, 0, 1, 2);
         run_timed_case(3, 0, 0, 32'h3f800000, 0, 45);
         run_timed_case(3, 32'hc2cfffff, 0, 0, 0, 195);
@@ -651,6 +651,8 @@ run_case(0, 32'h64776947, 32'h4b7d0064, 32'h64776947, 0);
         probe_stage(dut.S_PACK_EXP_META, 2, 32'h3f800000, 32'h40400000, 32'h3eaaaaab);
         probe_stage(dut.S_PACK_EXP_META, 3, 32'hbf800000, 0, 32'h3ebc5ab2);
         probe_stage(dut.S_PACK_EXP_META, 4, 32'h33000001, 0, 1);
+        probe_stage(dut.S_INT_ROUND, 5, 32'h3fc00000, 0, 2);
+        probe_stage(dut.S_INT_ENCODE, 5, 32'h3fc00000, 0, 2);
         probe_stage(dut.S_EXP_ROUND, 3, 32'hbf800000, 0, 32'h3ebc5ab2);
         probe_stage(dut.S_EXP_UPDATE, 3, 32'hbf800000, 0, 32'h3ebc5ab2);
         probe_done_restart(0, 1, 32'h3f800000, 32'h40000000, 32'h40400000, 0,
@@ -662,11 +664,11 @@ run_case(0, 32'h64776947, 32'h4b7d0064, 32'h64776947, 0);
         probe_done_restart(2, 2, 32'h3f800000, 0, 0, 1,
                            32'h3f800000, 32'h40400000, 32'h3eaaaaab, 58);
         probe_done_restart(4, 5, 32'h33000001, 0, 1, 0,
-                           32'h3fc00000, 0, 2, 2);
+                           32'h3fc00000, 0, 2, 4);
         probe_done_restart(5, 3, 32'h3fc00000, 0, 2, 0,
                            0, 0, 32'h3f800000, 45);
         $display("[TB] First-edge-after-DONE restart pairs=6 including error recovery PASS");
-        $display("[TB] Pipeline control stage_probes=%0d ignored_start/reset=PASS latency add=9 mul/half=7 div=58 exp_max=195 integer/early=2", stage_checks);
+        $display("[TB] Pipeline control stage_probes=%0d ignored_start/reset=PASS latency add=9 mul/half=7 div=58 exp_max=195 integer=4 early=2", stage_checks);
 
         $display("[TB][PASS] tb_Attention_FP32 checks=%0d commands=%0d exp_sweep=%0d worst_normal_rel=%e worst_subnormal_ulp=%e",
                  checks, commands, exp_checks, worst_exp_relative, worst_exp_subnormal_ulp);
